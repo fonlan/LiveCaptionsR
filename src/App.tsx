@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
@@ -243,6 +244,7 @@ function App() {
   const [status, setStatus] = useState<string>("Ready");
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [appVersion, setAppVersion] = useState<string>("");
   const [cards, setCards] = useState<SentenceCard[]>([]);
   const [partialText, setPartialText] = useState<string>("");
   const historyEndRef = useRef<HTMLDivElement>(null);
@@ -261,6 +263,8 @@ function App() {
   useEffect(() => {
     async function init() {
       try {
+        const v = await getVersion();
+        setAppVersion(v);
         const savedConfig = await invoke<AppConfig>("get_config");
         if (savedConfig) {
           // Ensure backwards compatibility
@@ -474,9 +478,12 @@ function App() {
             <span>{isRunning ? "STOP" : "START"}</span>
           </button>
         </div>
-        <button className="btn-icon settings-btn" onClick={() => setIsSettingsOpen(true)} title="Settings">
-          <IconSettings />
-        </button>
+        <div className="controls-right">
+          {appVersion && <span className="app-version">v{appVersion}</span>}
+          <button className="btn-icon settings-btn" onClick={() => setIsSettingsOpen(true)} title="Settings">
+            <IconSettings />
+          </button>
+        </div>
       </footer>
 
       <div className={`settings-overlay ${isSettingsOpen ? 'open' : ''}`} onClick={() => setIsSettingsOpen(false)}>

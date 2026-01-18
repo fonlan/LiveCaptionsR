@@ -322,6 +322,18 @@ body, html {
   box-shadow: 0 0 20px var(--accent);
 }
 
+.controls-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.app-version {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
 .btn-icon {
   background: transparent;
   border: none;
