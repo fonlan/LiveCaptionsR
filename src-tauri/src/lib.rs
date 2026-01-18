@@ -52,6 +52,7 @@ pub struct AppConfig {
     pub provider: String,
     pub source_lang: String,
     pub target_lang: String,
+    pub theme: String,
     pub hide_system_window: bool,
     pub always_on_top: bool,
     // Google proxy
@@ -70,6 +71,7 @@ impl Default for AppConfig {
             provider: "google".to_string(),
             source_lang: "en".to_string(),
             target_lang: "zh-CN".to_string(),
+            theme: "dark".to_string(),
             hide_system_window: true,
             always_on_top: false,
             google_proxy: ProxyConfigDTO::default(),

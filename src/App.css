@@ -21,6 +21,25 @@
   --ease: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
+[data-theme="light"] {
+  --bg-app: #f1f5f9;
+  --bg-panel: #ffffff;
+  --bg-input: #e2e8f0;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  
+  --primary: #0891b2;
+  --primary-dim: rgba(8, 145, 178, 0.1);
+  --primary-glow: rgba(8, 145, 178, 0.3);
+  --accent: #e11d48;
+  
+  --text-main: #0f172a;
+  --text-sec: #475569;
+  --text-muted: #94a3b8;
+  
+  --border: #cbd5e1;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;

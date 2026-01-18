@@ -35,6 +35,7 @@ interface AppConfig {
   provider: string;
   source_lang: string;
   target_lang: string;
+  theme: string;
   hide_system_window: boolean;
   always_on_top: boolean;
   google_proxy: ProxyConfig;
@@ -59,6 +60,7 @@ const DEFAULT_CONFIG: AppConfig = {
   provider: "google",
   source_lang: "en",
   target_lang: "zh-CN",
+  theme: "dark",
   hide_system_window: true,
   always_on_top: false,
   google_proxy: DEFAULT_PROXY,
@@ -261,6 +263,10 @@ function App() {
     }
     init();
   }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', config.theme || 'dark');
+  }, [config.theme]);
 
   const retryTranslation = async (cardId: string, originalText: string) => {
     setCards(prev => prev.map(c => c.id === cardId ? { ...c, retrying: true } : c));
@@ -592,7 +598,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
         </div>
       )}
 
-      {/* Language Settings */}
+        {/* Language Settings */}
       <div className="form-row">
         <div className="form-group">
           <label>Source Language</label>
@@ -602,6 +608,18 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           <label>Target Language</label>
           <input type="text" value={formData.target_lang} onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))} placeholder="zh-CN" />
         </div>
+      </div>
+
+      {/* Theme Settings */}
+      <div className="form-group">
+        <label>Theme</label>
+        <select
+          value={formData.theme || 'dark'}
+          onChange={e => setFormData(prev => ({ ...prev, theme: e.target.value }))}
+        >
+          <option value="dark">Dark (Cyber-noir)</option>
+          <option value="light">Light</option>
+        </select>
       </div>
 
       {/* Hide Window */}
