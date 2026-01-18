@@ -412,7 +412,7 @@ function App() {
   };
 
   return (
-    <div className="app-container">
+    <div className="app-container" onContextMenu={(e) => e.preventDefault()}>
       <div className="history-area">
         <div className="history-header">
           <div className="history-header-left">
