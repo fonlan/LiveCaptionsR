@@ -243,54 +243,41 @@ impl TranslationService {
             anyhow::bail!("OpenAI API key not configured for endpoint '{}'", endpoint.name);
         }
 
-        let client = build_client(&endpoint.proxy)?;
-
-        let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
-
         let system_prompt = format!(
             "You are a professional translator. Translate the following text from {} to {}. \
              Only output the translation, nothing else. Keep the original formatting and tone.",
             self.config.source_lang, self.config.target_lang
         );
 
-        #[derive(Serialize)]
-        struct ChatRequest {
-            model: String,
-            messages: Vec<ChatMessage>,
-            temperature: f32,
+        self.send_openai_request(endpoint, &system_prompt, text).await
+    }
+
+
+
+    /// Helper for OpenAI requests
+    async fn send_openai_request(
+        &self,
+        endpoint: &OpenAIEndpoint,
+        system_prompt: &str,
+        user_content: &str,
+    ) -> Result<String> {
+        if endpoint.api_key.trim().is_empty() {
+            anyhow::bail!("OpenAI API key not configured for endpoint '{}'", endpoint.name);
         }
 
-        #[derive(Serialize)]
-        struct ChatMessage {
-            role: String,
-            content: String,
-        }
-
-        #[derive(Deserialize)]
-        struct ChatResponse {
-            choices: Vec<Choice>,
-        }
-
-        #[derive(Deserialize)]
-        struct Choice {
-            message: ResponseMessage,
-        }
-
-        #[derive(Deserialize)]
-        struct ResponseMessage {
-            content: String,
-        }
+        let client = build_client(&endpoint.proxy)?;
+        let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
 
         let request = ChatRequest {
             model: endpoint.model.clone(),
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
-                    content: system_prompt,
+                    content: system_prompt.to_string(),
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: text.to_string(),
+                    content: user_content.to_string(),
                 },
             ],
             temperature: 0.3,
@@ -316,4 +303,60 @@ impl TranslationService {
             .map(|c| c.message.content.trim().to_string())
             .context("Empty response from OpenAI")
     }
+
+    pub async fn summarize(&self, text: &str, provider_id: &str) -> Result<String> {
+        // Only OpenAI supports summarization for now
+        let endpoint_id = if provider_id.starts_with("openai:") {
+            provider_id.strip_prefix("openai:").unwrap_or("default")
+        } else {
+            // Fallback or error if other providers selected (UI should prevent this)
+            return Err(anyhow::anyhow!("Summarization only supported with OpenAI providers"));
+        };
+
+        let endpoint = self
+            .config
+            .openai_endpoints
+            .iter()
+            .find(|e| e.id == endpoint_id)
+            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+
+        let system_prompt = format!(
+            "You are a professional summarizer. Summarize the following text in {}. \
+             Capture the key points clearly and concisely. formatting with markdown.",
+            self.config.target_lang
+        );
+
+        self.send_openai_request(endpoint, &system_prompt, text).await
+    }
 }
+
+// --- OpenAI DTOs (Moved to module level) ---
+
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    temperature: f32,
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: ResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct ResponseMessage {
+    content: String,
+}
+

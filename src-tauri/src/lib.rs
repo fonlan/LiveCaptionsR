@@ -55,6 +55,8 @@ pub struct AppConfig {
     pub theme: String,
     pub hide_system_window: bool,
     pub always_on_top: bool,
+    /// Provider for summarization: "openai:{endpoint_id}"
+    pub summary_provider: String,
     // Google proxy
     pub google_proxy: ProxyConfigDTO,
     // Microsoft settings
@@ -74,6 +76,7 @@ impl Default for AppConfig {
             theme: "dark".to_string(),
             hide_system_window: true,
             always_on_top: false,
+            summary_provider: "openai:default".to_string(),
             google_proxy: ProxyConfigDTO::default(),
             microsoft_api_key: None,
             microsoft_region: None,
@@ -219,6 +222,29 @@ async fn translate_text(text: String) -> Result<String, String> {
     }
 }
 
+/// Summarize a list of text segments
+#[tauri::command]
+async fn summarize_text(segments: Vec<String>, provider_id: String) -> Result<String, String> {
+    if segments.is_empty() {
+        return Ok(String::new());
+    }
+
+    let svc_clone = {
+        let service = TRANSLATION_SERVICE.lock().unwrap();
+        match &*service {
+            Some(svc) => svc.clone(),
+            None => return Err("Translation service not initialized".to_string()),
+        }
+    };
+
+    let full_text = segments.join("\n");
+    
+    match svc_clone.summarize(&full_text, &provider_id).await {
+        Ok(summary) => Ok(summary),
+        Err(e) => Err(format!("Summarization error: {}", e)),
+    }
+}
+
 /// Start caption watcher - simplified to only emit raw text
 #[tauri::command]
 async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
@@ -359,6 +385,7 @@ pub fn run() {
             stop_caption_watcher,
             is_watcher_running,
             translate_text,
+            summarize_text,
             set_always_on_top
         ])
         .build(tauri::generate_context!())

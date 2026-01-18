@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import Markdown from 'react-markdown';
 import "./App.css";
 
 // --- Types ---
@@ -39,6 +40,7 @@ interface AppConfig {
   theme: string;
   hide_system_window: boolean;
   always_on_top: boolean;
+  summary_provider: string;
   google_proxy: ProxyConfig;
   microsoft_api_key: string | null;
   microsoft_region: string | null;
@@ -64,6 +66,7 @@ const DEFAULT_CONFIG: AppConfig = {
   theme: "dark",
   hide_system_window: true,
   always_on_top: false,
+  summary_provider: "openai:default",
   google_proxy: DEFAULT_PROXY,
   microsoft_api_key: "",
   microsoft_region: "",
@@ -95,6 +98,23 @@ const IconSettings = () => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3"></circle>
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+  </svg>
+);
+
+const IconFileText = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+    <polyline points="14 2 14 8 20 8"></polyline>
+    <line x1="16" y1="13" x2="8" y2="13"></line>
+    <line x1="16" y1="17" x2="8" y2="17"></line>
+    <line x1="10" y1="9" x2="8" y2="9"></line>
+  </svg>
+);
+
+const IconCopy = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
   </svg>
 );
 
@@ -244,6 +264,9 @@ function App() {
   const [status, setStatus] = useState<string>("Ready");
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
+  const [summaryText, setSummaryText] = useState<string>("");
+  const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
   const [cards, setCards] = useState<SentenceCard[]>([]);
   const [partialText, setPartialText] = useState<string>("");
@@ -415,6 +438,27 @@ function App() {
     }
   };
 
+  const handleSummarize = async () => {
+    if (cards.length === 0) return;
+    setIsSummaryOpen(true);
+    setIsSummarizing(true);
+    setSummaryText("");
+
+    try {
+      const segments = cards.map(c => c.original);
+      const result = await invoke<string>("summarize_text", { 
+        segments,
+        providerId: config.summary_provider
+      });
+      setSummaryText(result);
+    } catch (err) {
+      console.error("Summary error:", err);
+      setSummaryText(`Error generating summary: ${err}`);
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
   return (
     <div className="app-container" onContextMenu={(e) => e.preventDefault()}>
       <div className="history-area">
@@ -477,6 +521,28 @@ function App() {
             {isRunning ? <IconSquare /> : <IconPlay />}
             <span>{isRunning ? "STOP" : "START"}</span>
           </button>
+          <button 
+            className="btn-summary"
+            onClick={handleSummarize}
+            disabled={cards.length === 0}
+            title="Summarize Captions"
+            style={{ 
+              marginLeft: '12px',
+              height: '48px',
+              width: '48px',
+              borderRadius: '24px',
+              border: 'none',
+              background: 'var(--bg-secondary)',
+              color: cards.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
+              cursor: cards.length > 0 ? 'pointer' : 'not-allowed',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.2s'
+            }}
+          >
+            <IconFileText />
+          </button>
         </div>
         <div className="controls-right">
           {appVersion && <span className="app-version">v{appVersion}</span>}
@@ -499,6 +565,13 @@ function App() {
           </div>
         </div>
       </div>
+      
+      <SummaryModal 
+        isOpen={isSummaryOpen} 
+        onClose={() => setIsSummaryOpen(false)} 
+        text={summaryText} 
+        isLoading={isSummarizing} 
+      />
     </div>
   );
 }
@@ -525,6 +598,64 @@ function ProxyConfigForm({ proxy, onChange, label }: { proxy: ProxyConfig; onCha
           />
         </div>
       )}
+    </div>
+  );
+}
+
+// --- Summary Modal Component ---
+function SummaryModal({ isOpen, onClose, text, isLoading }: { isOpen: boolean; onClose: () => void; text: string; isLoading: boolean }) {
+  const [isCopied, setIsCopied] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) setIsCopied(false);
+  }, [isOpen]);
+
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+    }
+  };
+
+  if (!isOpen) return null;
+  return (
+    <div className="settings-overlay open" onClick={onClose}>
+      <div className="settings-drawer summary-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '800px', width: '90%' }}>
+        <header className="settings-header">
+          <h2>AI Summary</h2>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {!isLoading && text && (
+              <button 
+                className="btn-icon" 
+                onClick={handleCopy} 
+                title="Copy to Clipboard"
+                style={{ color: isCopied ? '#4ade80' : 'currentColor' }}
+              >
+                {isCopied ? <IconCheck /> : <IconCopy />}
+              </button>
+            )}
+            <button className="btn-icon" onClick={onClose}>
+              <IconX />
+            </button>
+          </div>
+        </header>
+        <div className="settings-content summary-content">
+          {isLoading ? (
+            <div className="summary-loading" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+              <span className="spinner" style={{ display: 'inline-block', marginBottom: '10px' }}></span>
+              <div>Generating summary...</div>
+            </div>
+          ) : (
+             <div className="summary-text markdown-body" style={{ lineHeight: '1.6', fontSize: '15px', color: 'var(--text-primary)', padding: '0 5px' }}>
+               <Markdown>{text}</Markdown>
+             </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -622,6 +753,21 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           </select>
         </div>
       )}
+
+        {/* Summary Provider Selection */}
+      <div className="form-group">
+        <label>Summary Provider (OpenAI Only)</label>
+        <select
+          value={formData.summary_provider || (formData.openai_endpoints[0] ? `openai:${formData.openai_endpoints[0].id}` : '')}
+          onChange={e => setFormData(prev => ({ ...prev, summary_provider: e.target.value }))}
+        >
+          {formData.openai_endpoints.map(ep => (
+            <option key={ep.id} value={`openai:${ep.id}`}>
+              {ep.name} ({ep.model})
+            </option>
+          ))}
+        </select>
+      </div>
 
         {/* Language Settings */}
       <div className="form-row">
