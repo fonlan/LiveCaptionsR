@@ -70,6 +70,24 @@ const DEFAULT_CONFIG: AppConfig = {
   openai_endpoints: [DEFAULT_OPENAI_ENDPOINT],
 };
 
+const LANGUAGES = [
+  { code: "en", name: "English" },
+  { code: "zh-CN", name: "Chinese (Simplified)" },
+  { code: "zh-TW", name: "Chinese (Traditional)" },
+  { code: "ja", name: "Japanese" },
+  { code: "ko", name: "Korean" },
+  { code: "es", name: "Spanish" },
+  { code: "fr", name: "French" },
+  { code: "de", name: "German" },
+  { code: "it", name: "Italian" },
+  { code: "pt", name: "Portuguese" },
+  { code: "ru", name: "Russian" },
+  { code: "vi", name: "Vietnamese" },
+  { code: "th", name: "Thai" },
+  { code: "id", name: "Indonesian" },
+  { code: "hi", name: "Hindi" },
+];
+
 // --- Icons (SVG) ---
 
 const IconSettings = () => (
@@ -602,11 +620,29 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
       <div className="form-row">
         <div className="form-group">
           <label>Source Language</label>
-          <input type="text" value={formData.source_lang} onChange={e => setFormData(prev => ({ ...prev, source_lang: e.target.value }))} placeholder="en" />
+          <select
+            value={formData.source_lang}
+            onChange={e => setFormData(prev => ({ ...prev, source_lang: e.target.value }))}
+          >
+            {LANGUAGES.map(lang => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="form-group">
           <label>Target Language</label>
-          <input type="text" value={formData.target_lang} onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))} placeholder="zh-CN" />
+          <select
+            value={formData.target_lang}
+            onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))}
+          >
+            {LANGUAGES.map(lang => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
