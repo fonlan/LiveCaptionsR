@@ -330,20 +330,41 @@ function App() {
 
     try {
       const translated = await invoke<string>("translate_text", { text: originalText });
-      if (shouldOverwrite(lastOriginalTextRef.current, originalText)) {
-        setCards(prev => {
-          if (prev.length === 0) return [{ id: generateId(), original: originalText, translated }];
+      // Translation succeeded
+      setCards(prev => {
+        if (prev.length === 0) {
+          return [{ id: generateId(), original: originalText, translated }];
+        }
+        const lastCard = prev[prev.length - 1];
+        // Check similarity with last card's original text, overwrite if similar
+        if (shouldOverwrite(lastCard.original, originalText)) {
           const newCards = [...prev];
           newCards[newCards.length - 1] = { id: generateId(), original: originalText, translated };
           return newCards;
-        });
-      } else {
-        setCards(prev => [...prev, { id: generateId(), original: originalText, translated }].slice(-200));
-      }
+        }
+        return [...prev, { id: generateId(), original: originalText, translated }].slice(-200);
+      });
       lastOriginalTextRef.current = originalText;
     } catch (e) {
       console.error("Translation error:", e);
-      setCards(prev => [...prev, { id: generateId(), original: originalText, translated: null }].slice(-200));
+      // Translation failed
+      setCards(prev => {
+        if (prev.length === 0) {
+          return [{ id: generateId(), original: originalText, translated: null }];
+        }
+        const lastCard = prev[prev.length - 1];
+        // If last card succeeded, never overwrite - always append
+        if (lastCard.translated !== null) {
+          return [...prev, { id: generateId(), original: originalText, translated: null }].slice(-200);
+        }
+        // Last card also failed - check similarity, overwrite if similar
+        if (shouldOverwrite(lastCard.original, originalText)) {
+          const newCards = [...prev];
+          newCards[newCards.length - 1] = { id: generateId(), original: originalText, translated: null };
+          return newCards;
+        }
+        return [...prev, { id: generateId(), original: originalText, translated: null }].slice(-200);
+      });
       lastOriginalTextRef.current = originalText;
     } finally {
       isTranslatingRef.current = false;
@@ -663,6 +684,7 @@ function SummaryModal({ isOpen, onClose, text, isLoading }: { isOpen: boolean; o
 // --- Settings Form ---
 function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppConfig) => void }) {
   const [formData, setFormData] = useState<AppConfig>(config);
+  const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'ai' | 'summary'>('general');
 
   useEffect(() => {
     setFormData(config);
@@ -711,96 +733,20 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
       if (prev.provider === `openai:${removedId}`) {
         newProvider = `openai:${newEndpoints[0].id}`;
       }
-      return { ...prev, openai_endpoints: newEndpoints, provider: newProvider };
+      let newSummaryProvider = prev.summary_provider;
+      if (prev.summary_provider === `openai:${removedId}`) {
+        newSummaryProvider = `openai:${newEndpoints[0].id}`;
+      }
+      return { ...prev, openai_endpoints: newEndpoints, provider: newProvider, summary_provider: newSummaryProvider };
     });
   };
 
   const selectedProvider = getSelectedProvider();
 
-  return (
-    <div className="form-stack">
-      {/* Provider Selection */}
-      <div className="form-group">
-        <label>Translation Provider</label>
-        <select
-          value={selectedProvider.type === 'openai' ? 'openai' : formData.provider}
-          onChange={e => {
-            const val = e.target.value;
-            if (val === 'openai') {
-              setProvider('openai', formData.openai_endpoints[0]?.id || 'default');
-            } else {
-              setProvider(val);
-            }
-          }}
-        >
-          <option value="google">Google Translate (Free)</option>
-          <option value="microsoft">Microsoft Azure</option>
-          <option value="openai">OpenAI Compatible</option>
-        </select>
-      </div>
-
-      {/* OpenAI Endpoint Selection */}
-      {selectedProvider.type === 'openai' && formData.openai_endpoints.length > 1 && (
-        <div className="form-group">
-          <label>Select Endpoint</label>
-          <select
-            value={selectedProvider.endpointId}
-            onChange={e => setProvider('openai', e.target.value)}
-          >
-            {formData.openai_endpoints.map(ep => (
-              <option key={ep.id} value={ep.id}>{ep.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-        {/* Summary Provider Selection */}
-      <div className="form-group">
-        <label>Summary Provider (OpenAI Only)</label>
-        <select
-          value={formData.summary_provider || (formData.openai_endpoints[0] ? `openai:${formData.openai_endpoints[0].id}` : '')}
-          onChange={e => setFormData(prev => ({ ...prev, summary_provider: e.target.value }))}
-        >
-          {formData.openai_endpoints.map(ep => (
-            <option key={ep.id} value={`openai:${ep.id}`}>
-              {ep.name} ({ep.model})
-            </option>
-          ))}
-        </select>
-      </div>
-
-        {/* Language Settings */}
-      <div className="form-row">
-        <div className="form-group">
-          <label>Source Language</label>
-          <select
-            value={formData.source_lang}
-            onChange={e => setFormData(prev => ({ ...prev, source_lang: e.target.value }))}
-          >
-            {LANGUAGES.map(lang => (
-              <option key={lang.code} value={lang.code}>
-                {lang.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="form-group">
-          <label>Target Language</label>
-          <select
-            value={formData.target_lang}
-            onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))}
-          >
-            {LANGUAGES.map(lang => (
-              <option key={lang.code} value={lang.code}>
-                {lang.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Theme Settings */}
-      <div className="form-group">
+  const renderGeneralTab = () => (
+    <div className="tab-panel">
+       {/* Theme Settings */}
+       <div className="form-group">
         <label>Theme</label>
         <select
           value={formData.theme || 'dark'}
@@ -841,6 +787,75 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
         </label>
         <span>Always on Top</span>
       </div>
+    </div>
+  );
+
+  const renderTranslationTab = () => (
+    <div className="tab-panel">
+      {/* Language Settings */}
+      <div className="form-row">
+        <div className="form-group">
+          <label>Source Language</label>
+          <select
+            value={formData.source_lang}
+            onChange={e => setFormData(prev => ({ ...prev, source_lang: e.target.value }))}
+          >
+            {LANGUAGES.map(lang => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label>Target Language</label>
+          <select
+            value={formData.target_lang}
+            onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))}
+          >
+            {LANGUAGES.map(lang => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Provider Selection */}
+      <div className="form-group">
+        <label>Translation Provider</label>
+        <select
+          value={selectedProvider.type === 'openai' ? 'openai' : formData.provider}
+          onChange={e => {
+            const val = e.target.value;
+            if (val === 'openai') {
+              setProvider('openai', formData.openai_endpoints[0]?.id || 'default');
+            } else {
+              setProvider(val);
+            }
+          }}
+        >
+          <option value="google">Google Translate (Free)</option>
+          <option value="microsoft">Microsoft Azure</option>
+          <option value="openai">OpenAI Compatible</option>
+        </select>
+      </div>
+
+      {/* OpenAI Endpoint Selection */}
+      {selectedProvider.type === 'openai' && formData.openai_endpoints.length > 1 && (
+        <div className="form-group">
+          <label>Select Endpoint</label>
+          <select
+            value={selectedProvider.endpointId}
+            onChange={e => setProvider('openai', e.target.value)}
+          >
+            {formData.openai_endpoints.map(ep => (
+              <option key={ep.id} value={ep.id}>{ep.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Google Settings */}
       {formData.provider === 'google' && (
@@ -873,56 +888,116 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           />
         </>
       )}
+    </div>
+  );
 
-      {/* OpenAI Settings */}
-      {selectedProvider.type === 'openai' && (
-        <>
-          <div className="divider">
-            OpenAI Compatible Endpoints
-            <button className="btn-add-endpoint" onClick={addEndpoint} title="Add Endpoint">
-              <IconPlus />
-            </button>
+  const renderAIConfigTab = () => (
+    <div className="tab-panel">
+      <div className="divider">
+        AI Providers Configuration
+        <button className="btn-add-endpoint" onClick={addEndpoint} title="Add Endpoint">
+          <IconPlus />
+        </button>
+      </div>
+      {formData.openai_endpoints.map((ep, idx) => (
+        <div key={ep.id} className="endpoint-card">
+          <div className="endpoint-header">
+            <input
+              type="text"
+              value={ep.name}
+              onChange={e => updateEndpoint(idx, { name: e.target.value })}
+              className="endpoint-name-input"
+              placeholder="Endpoint Name"
+            />
+            {formData.openai_endpoints.length > 1 && (
+              <button className="btn-remove-endpoint" onClick={() => removeEndpoint(idx)} title="Remove">
+                <IconMinus />
+              </button>
+            )}
           </div>
-          {formData.openai_endpoints.map((ep, idx) => (
-            <div key={ep.id} className="endpoint-card">
-              <div className="endpoint-header">
-                <input
-                  type="text"
-                  value={ep.name}
-                  onChange={e => updateEndpoint(idx, { name: e.target.value })}
-                  className="endpoint-name-input"
-                  placeholder="Endpoint Name"
-                />
-                {formData.openai_endpoints.length > 1 && (
-                  <button className="btn-remove-endpoint" onClick={() => removeEndpoint(idx)} title="Remove">
-                    <IconMinus />
-                  </button>
-                )}
-              </div>
-              <div className="form-group">
-                <label>API Key</label>
-                <input type="password" value={ep.api_key} onChange={e => updateEndpoint(idx, { api_key: e.target.value })} />
-              </div>
-              <div className="form-group">
-                <label>Base URL</label>
-                <input type="text" value={ep.base_url} onChange={e => updateEndpoint(idx, { base_url: e.target.value })} placeholder="https://api.openai.com/v1" />
-              </div>
-              <div className="form-group">
-                <label>Model</label>
-                <input type="text" value={ep.model} onChange={e => updateEndpoint(idx, { model: e.target.value })} placeholder="gpt-4o-mini" />
-              </div>
-              <ProxyConfigForm
-                proxy={ep.proxy}
-                onChange={p => updateEndpoint(idx, { proxy: p })}
-                label="Use Proxy"
-              />
-            </div>
+          <div className="form-group">
+            <label>API Key</label>
+            <input type="password" value={ep.api_key} onChange={e => updateEndpoint(idx, { api_key: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <label>Base URL</label>
+            <input type="text" value={ep.base_url} onChange={e => updateEndpoint(idx, { base_url: e.target.value })} placeholder="https://api.openai.com/v1" />
+          </div>
+          <div className="form-group">
+            <label>Model</label>
+            <input type="text" value={ep.model} onChange={e => updateEndpoint(idx, { model: e.target.value })} placeholder="gpt-4o-mini" />
+          </div>
+          <ProxyConfigForm
+            proxy={ep.proxy}
+            onChange={p => updateEndpoint(idx, { proxy: p })}
+            label="Use Proxy"
+          />
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderSummaryTab = () => (
+    <div className="tab-panel">
+      <div className="form-group">
+        <label>Summary Provider (OpenAI Only)</label>
+        <select
+          value={formData.summary_provider || (formData.openai_endpoints[0] ? `openai:${formData.openai_endpoints[0].id}` : '')}
+          onChange={e => setFormData(prev => ({ ...prev, summary_provider: e.target.value }))}
+        >
+          {formData.openai_endpoints.map(ep => (
+            <option key={ep.id} value={`openai:${ep.id}`}>
+              {ep.name} ({ep.model})
+            </option>
           ))}
-        </>
-      )}
+        </select>
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
+          Configures which AI model generates summaries of your captions. Ensure the selected provider is configured in the "AI Config" tab.
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="form-stack">
+      {/* Tabs */}
+      <div className="settings-tabs">
+        <button 
+          className={`tab-btn ${activeTab === 'general' ? 'active' : ''}`}
+          onClick={() => setActiveTab('general')}
+        >
+          General
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'translation' ? 'active' : ''}`}
+          onClick={() => setActiveTab('translation')}
+        >
+          Translation
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'ai' ? 'active' : ''}`}
+          onClick={() => setActiveTab('ai')}
+        >
+          AI Config
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'summary' ? 'active' : ''}`}
+          onClick={() => setActiveTab('summary')}
+        >
+          Summary
+        </button>
+      </div>
+
+      {/* Tab Content */}
+      <div className="tab-content-container" style={{ flex: 1, minHeight: 0 }}>
+        {activeTab === 'general' && renderGeneralTab()}
+        {activeTab === 'translation' && renderTranslationTab()}
+        {activeTab === 'ai' && renderAIConfigTab()}
+        {activeTab === 'summary' && renderSummaryTab()}
+      </div>
 
       {/* Save Button */}
-      <div className="form-actions">
+      <div className="form-actions" style={{ marginTop: 'auto', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
         <button className="btn-save" onClick={() => onSave(formData)}>
           <IconCheck /> Save Configuration
         </button>
