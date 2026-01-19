@@ -3,12 +3,13 @@
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::process::Command;
 use std::os::windows::process::CommandExt;
+use std::sync::OnceLock;
 use windows::{
     core::*,
-    Win32::Foundation::{HWND, RECT},
+    Win32::Foundation::{BOOL, HWND, LPARAM, RECT, TRUE},
     Win32::System::Com::*,
     Win32::UI::Accessibility::*,
     Win32::UI::WindowsAndMessaging::*,
@@ -16,46 +17,141 @@ use windows::{
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-/// Launch Windows LiveCaptions using PowerShell to simulate Win+Ctrl+L
-pub fn launch_livecaptions() -> Result<()> {
-    // Use PowerShell to send Win+Ctrl+L keystroke
-    let _ = Command::new("powershell")
-        .args([
-            "-WindowStyle", "Hidden",
-            "-Command",
-            r#"
-            Add-Type -TypeDefinition '
-            using System;
-            using System.Runtime.InteropServices;
-            public class KeyboardSimulator {
-                [DllImport("user32.dll")]
-                public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
-                
-                public const byte VK_LWIN = 0x5B;
-                public const byte VK_CONTROL = 0x11;
-                public const byte VK_L = 0x4C;
-                public const uint KEYEVENTF_KEYUP = 0x02;
-                
-                public static void SendWinCtrlL() {
-                    keybd_event(VK_LWIN, 0, 0, UIntPtr.Zero);
-                    keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
-                    keybd_event(VK_L, 0, 0, UIntPtr.Zero);
-                    keybd_event(VK_L, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-                    keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-                    keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+// Global flag to signal when LiveCaptions window has been found and hidden
+static WINDOW_READY: OnceLock<std::sync::Mutex<bool>> = OnceLock::new();
+static WINDOW_HIDDEN_BY_HOOK: AtomicBool = AtomicBool::new(false);
+
+/// Callback for EnumWindows to find and hide LiveCaptions window
+unsafe extern "system" fn enum_windows_callback(hwnd: HWND, _: LPARAM) -> BOOL {
+    let mut class_name = [0u16; 256];
+    let len = GetClassNameW(hwnd, &mut class_name);
+    if len > 0 {
+        let class = String::from_utf16_lossy(&class_name[..len as usize]);
+        if class == "LiveCaptionsDesktopWindow" {
+            // Found it! Move off-screen immediately
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOP,
+                -10000,
+                -10000,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+            );
+            
+            // Also set TOOLWINDOW style to hide from taskbar
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as isize;
+            let new_ex_style = (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !WS_EX_APPWINDOW.0 as isize;
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
+            
+            WINDOW_HIDDEN_BY_HOOK.store(true, Ordering::SeqCst);
+            
+            // Signal that window is ready
+            if let Some(mutex) = WINDOW_READY.get() {
+                if let Ok(mut ready) = mutex.lock() {
+                    *ready = true;
                 }
             }
-            '
-            [KeyboardSimulator]::SendWinCtrlL()
-            "#
-        ])
+            
+            return BOOL(0); // Stop enumeration
+        }
+    }
+    TRUE // Continue enumeration
+}
+
+/// Aggressively poll for LiveCaptions window using EnumWindows
+/// This is faster than UI Automation for initial detection
+fn poll_and_hide_livecaptions() {
+    unsafe {
+        let _ = EnumWindows(Some(enum_windows_callback), LPARAM(0));
+    }
+}
+
+/// Launch Windows LiveCaptions by directly starting the process.
+/// Uses aggressive polling to hide the window as soon as it appears.
+/// Returns Ok(()) when window is ready and hidden, or Err after timeout.
+pub fn launch_livecaptions() -> Result<()> {
+    // Initialize the ready flag
+    let _ = WINDOW_READY.get_or_init(|| std::sync::Mutex::new(false));
+    WINDOW_HIDDEN_BY_HOOK.store(false, Ordering::SeqCst);
+    
+    // Reset ready flag
+    if let Some(mutex) = WINDOW_READY.get() {
+        if let Ok(mut ready) = mutex.lock() {
+            *ready = false;
+        }
+    }
+    
+    // Check if LiveCaptions is already running
+    let already_running = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq LiveCaptions.exe", "/NH"])
         .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("LiveCaptions.exe"))
+        .unwrap_or(false);
     
-    // Wait for LiveCaptions to start
-    std::thread::sleep(Duration::from_millis(2000));
+    if already_running {
+        // Already running, just find and hide it
+        poll_and_hide_livecaptions();
+        if WINDOW_HIDDEN_BY_HOOK.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+    }
     
-    Ok(())
+    // Start aggressive polling in a separate thread BEFORE launching
+    // This minimizes the time between window creation and hiding
+    let poll_handle = std::thread::spawn(|| {
+        let start = Instant::now();
+        let timeout = Duration::from_secs(30);
+        
+        while start.elapsed() < timeout {
+            poll_and_hide_livecaptions();
+            
+            if WINDOW_HIDDEN_BY_HOOK.load(Ordering::SeqCst) {
+                return true;
+            }
+            
+            // Very fast polling - 10ms intervals
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    });
+    
+    if !already_running {
+        // Launch LiveCaptions.exe
+        Command::new("C:\\Windows\\System32\\LiveCaptions.exe")
+            .spawn()
+            .context("Failed to launch LiveCaptions.exe. Please ensure LiveCaptions is installed.")?;
+    }
+    
+    // Wait for the polling thread to find and hide the window
+    match poll_handle.join() {
+        Ok(true) => {
+            // Window found by EnumWindows, but UI Automation may not be ready yet.
+            // Wait for UI Automation to also find the window before returning.
+            let start = Instant::now();
+            let timeout = Duration::from_secs(10);
+            let poll_interval = Duration::from_millis(100);
+            
+            let watcher = LiveCaptionsWatcher::new()?;
+            
+            while start.elapsed() < timeout {
+                if watcher.find_livecaptions_window().is_ok() {
+                    return Ok(());
+                }
+                std::thread::sleep(poll_interval);
+            }
+            
+            // UI Automation couldn't find it, but window exists - still return Ok
+            // connect() will retry
+            Ok(())
+        }
+        Ok(false) => Err(anyhow::anyhow!(
+            "Timeout waiting for LiveCaptions to start (30s). \
+            Please ensure LiveCaptions is installed and try again."
+        )),
+        Err(_) => Err(anyhow::anyhow!("Polling thread panicked")),
+    }
 }
 
 /// Close Windows LiveCaptions
@@ -269,6 +365,10 @@ impl CaptionStream {
         match self.watcher.find_livecaptions_window() {
             Ok(window) => {
                 if hide_system_window {
+                    // Window may already be hidden by launch_livecaptions(),
+                    // but we call hide_window anyway to ensure this watcher
+                    // captures the original_rect for proper restore on stop.
+                    // hide_window is idempotent (moving off-screen twice is fine).
                     if let Err(e) = self.watcher.hide_window(&window) {
                         eprintln!("Warning: Failed to hide LiveCaptions window: {}", e);
                     } else {
