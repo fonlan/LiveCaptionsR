@@ -117,7 +117,7 @@ impl TranslationService {
         self.config = config;
     }
 
-    pub async fn translate(&self, text: &str) -> Result<String> {
+    pub async fn translate(&self, text: &str, context: Option<&[String]>) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
@@ -126,7 +126,7 @@ impl TranslationService {
             TranslationProvider::Google => self.translate_google(text).await,
             TranslationProvider::Microsoft => self.translate_microsoft(text).await,
             TranslationProvider::OpenAI(endpoint_id) => {
-                self.translate_openai(text, endpoint_id).await
+                self.translate_openai(text, endpoint_id, context).await
             }
         }
     }
@@ -231,7 +231,7 @@ impl TranslationService {
             .context("Empty response from Microsoft Translator")
     }
 
-    async fn translate_openai(&self, text: &str, endpoint_id: &str) -> Result<String> {
+    async fn translate_openai(&self, text: &str, endpoint_id: &str, context: Option<&[String]>) -> Result<String> {
         let endpoint = self
             .config
             .openai_endpoints
@@ -243,13 +243,38 @@ impl TranslationService {
             anyhow::bail!("OpenAI API key not configured for endpoint '{}'", endpoint.name);
         }
 
-        let system_prompt = format!(
-            "You are a professional translator. Translate the following text from {} to {}. \
-             Only output the translation, nothing else. Keep the original formatting and tone.",
-            self.config.source_lang, self.config.target_lang
-        );
+        // Build user content with context if provided
+        let user_content = if let Some(ctx) = context {
+            if ctx.is_empty() {
+                text.to_string()
+            } else {
+                // Format: context as numbered previous sentences, then current text
+                let context_text = ctx.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("{}. {}", i + 1, s))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("Previous sentences for context:\n{}\n\nCurrent sentence to translate:\n{}", context_text, text)
+            }
+        } else {
+            text.to_string()
+        };
 
-        self.send_openai_request(endpoint, &system_prompt, text).await
+        let system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
+            format!(
+                "You are a translator. Translate the current sentence from {} to {}. \
+                 Use the previous sentences only as context to ensure consistency. \
+                 Output ONLY the translation of the current sentence, no labels or explanations.",
+                self.config.source_lang, self.config.target_lang
+            )
+        } else {
+            format!(
+                "You are a translator. Translate from {} to {}. Output ONLY the translation.",
+                self.config.source_lang, self.config.target_lang
+            )
+        };
+
+        self.send_openai_request(endpoint, &system_prompt, &user_content).await
     }
 
 

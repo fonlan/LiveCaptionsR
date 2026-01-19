@@ -1,6 +1,11 @@
 :root {
-  --bg-app: #0f111a;
-  --bg-panel: #161b28;
+  --app-opacity: 1;
+  
+  --bg-app-rgb: 15, 17, 26;
+  --bg-panel-rgb: 22, 27, 40;
+  --bg-app: rgba(var(--bg-app-rgb), var(--app-opacity));
+  --bg-panel: rgba(var(--bg-panel-rgb), var(--app-opacity));
+  
   --bg-input: #0a0c12;
   --bg-card: #1a1f2e;
   --bg-card-hover: #222838;
@@ -22,8 +27,11 @@
 }
 
 [data-theme="light"] {
-  --bg-app: #f8fafc;
-  --bg-panel: #ffffff;
+  --bg-app-rgb: 248, 250, 252;
+  --bg-panel-rgb: 255, 255, 255;
+  --bg-app: rgba(var(--bg-app-rgb), var(--app-opacity));
+  --bg-panel: rgba(var(--bg-panel-rgb), var(--app-opacity));
+
   --bg-input: #f1f5f9;
   --bg-card: #ffffff;
   --bg-card-hover: #f8fafc;
@@ -474,6 +482,7 @@ body {
 
 .form-group input[type="text"],
 .form-group input[type="password"],
+.form-group input[type="number"],
 .form-group select {
   background: var(--bg-input);
   border: 1px solid var(--border-color);
@@ -739,4 +748,99 @@ input:checked + .slider:before {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Toast Notifications */
+.toast-container {
+  position: fixed;
+  bottom: 100px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  animation: toastSlideIn 0.3s ease-out, toastFadeOut 0.3s ease-in 2.7s forwards;
+  pointer-events: auto;
+}
+
+.toast svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.toast-success {
+  background: var(--success);
+  color: #fff;
+}
+
+.toast-error {
+  background: var(--error);
+  color: #fff;
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes toastFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* Typing Dots Animation */
+.typing-dots {
+  display: flex;
+  gap: 4px;
+  padding: 8px 0;
+  color: var(--primary);
+  font-size: 24px;
+  line-height: 12px;
+  align-items: center;
+}
+
+.typing-dots span {
+  animation: typing 1.4s infinite ease-in-out both;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+  border-radius: 50%;
+  opacity: 0.4;
+}
+
+/* Use opacity/scale instead of text content for better dots */
+.typing-dots span {
+  /* Override text content dot with shape */
+  font-size: 0; 
+}
+
+.typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+.typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes typing {
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1.2); }
 }

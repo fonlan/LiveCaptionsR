@@ -65,6 +65,20 @@ pub struct AppConfig {
     pub microsoft_proxy: ProxyConfigDTO,
     // Multiple OpenAI endpoints
     pub openai_endpoints: Vec<OpenAIEndpointDTO>,
+    /// Window background opacity (0.1 to 1.0)
+    #[serde(default = "default_opacity")]
+    pub opacity: f64,
+    /// Number of previous captions to include as context for OpenAI translation (default: 2)
+    #[serde(default = "default_openai_context_count")]
+    pub openai_context_count: u32,
+}
+
+fn default_opacity() -> f64 {
+    1.0
+}
+
+fn default_openai_context_count() -> u32 {
+    2
 }
 
 impl Default for AppConfig {
@@ -82,6 +96,8 @@ impl Default for AppConfig {
             microsoft_region: None,
             microsoft_proxy: ProxyConfigDTO::default(),
             openai_endpoints: vec![OpenAIEndpointDTO::default()],
+            opacity: 1.0,
+            openai_context_count: 2,
         }
     }
 }
@@ -94,7 +110,11 @@ static TRANSLATION_SERVICE: Lazy<Mutex<Option<TranslationService>>> = Lazy::new(
 
 #[tauri::command]
 fn get_config() -> AppConfig {
-    let config = APP_CONFIG.lock().unwrap();
+    let mut config = APP_CONFIG.lock().unwrap();
+    // Load from file if not yet loaded (first call)
+    if let Some(loaded) = load_config_from_file() {
+        *config = loaded;
+    }
     config.clone()
 }
 
@@ -205,8 +225,9 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
 }
 
 /// Translate a single piece of text - called from frontend
+/// context: Optional list of previous caption texts for OpenAI context-aware translation
 #[tauri::command]
-async fn translate_text(text: String) -> Result<String, String> {
+async fn translate_text(text: String, context: Option<Vec<String>>) -> Result<String, String> {
     // Clone service inside a block to release lock immediately
     let svc_clone = {
         let service = TRANSLATION_SERVICE.lock().unwrap();
@@ -216,7 +237,7 @@ async fn translate_text(text: String) -> Result<String, String> {
         }
     };
     
-    match svc_clone.translate(&text).await {
+    match svc_clone.translate(&text, context.as_deref()).await {
         Ok(translated) => Ok(translated),
         Err(e) => Err(format!("Translation error: {}", e)),
     }

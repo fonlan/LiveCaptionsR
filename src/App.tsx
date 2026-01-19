@@ -16,7 +16,14 @@ interface SentenceCard {
   id: string;
   original: string;
   translated: string | null;
+  status?: 'translating' | 'success' | 'error';
   retrying?: boolean;
+}
+
+interface Toast {
+  id: string;
+  type: 'success' | 'error';
+  message: string;
 }
 
 interface ProxyConfig {
@@ -46,6 +53,8 @@ interface AppConfig {
   microsoft_region: string | null;
   microsoft_proxy: ProxyConfig;
   openai_endpoints: OpenAIEndpoint[];
+  openai_context_count: number;
+  opacity: number;
 }
 
 const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
@@ -72,6 +81,8 @@ const DEFAULT_CONFIG: AppConfig = {
   microsoft_region: "",
   microsoft_proxy: DEFAULT_PROXY,
   openai_endpoints: [DEFAULT_OPENAI_ENDPOINT],
+  openai_context_count: 2,
+  opacity: 1.0,
 };
 
 const LANGUAGES = [
@@ -270,7 +281,10 @@ function App() {
   const [appVersion, setAppVersion] = useState<string>("");
   const [cards, setCards] = useState<SentenceCard[]>([]);
   const [partialText, setPartialText] = useState<string>("");
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const historyEndRef = useRef<HTMLDivElement>(null);
+  const cardsRef = useRef<SentenceCard[]>([]);
+  const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
 
   const lastFullTextRef = useRef<string>("");
   const lastOriginalTextRef = useRef<string>("");
@@ -278,10 +292,24 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const isTranslatingRef = useRef<boolean>(false);
+  const overlayMouseDownRef = useRef<boolean>(false);
+
+  const addToast = (type: 'success' | 'error', message: string) => {
+    const id = generateId();
+    setToasts(prev => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  };
 
   useEffect(() => {
     historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    cardsRef.current = cards;
   }, [cards, partialText]);
+
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
 
   useEffect(() => {
     async function init() {
@@ -313,10 +341,25 @@ function App() {
     document.documentElement.setAttribute('data-theme', config.theme || 'dark');
   }, [config.theme]);
 
+  useEffect(() => {
+    document.documentElement.style.setProperty('--app-opacity', (config.opacity ?? 1.0).toString());
+  }, [config.opacity]);
+
   const retryTranslation = async (cardId: string, originalText: string) => {
     setCards(prev => prev.map(c => c.id === cardId ? { ...c, retrying: true } : c));
     try {
-      const translated = await invoke<string>("translate_text", { text: originalText });
+      // Get context for OpenAI translation
+      const currentCards = cardsRef.current;
+      const currentConfig = configRef.current;
+      const cardIndex = currentCards.findIndex(c => c.id === cardId);
+      let context: string[] | null = null;
+      
+      if (currentConfig.provider.startsWith('openai:') && currentConfig.openai_context_count > 0 && cardIndex > 0) {
+        const startIdx = Math.max(0, cardIndex - currentConfig.openai_context_count);
+        context = currentCards.slice(startIdx, cardIndex).map(c => c.original);
+      }
+      
+      const translated = await invoke<string>("translate_text", { text: originalText, context });
       setCards(prev => prev.map(c => c.id === cardId ? { ...c, translated, retrying: false } : c));
     } catch (e) {
       console.error("Retry failed:", e);
@@ -327,44 +370,44 @@ function App() {
   const translateAndDisplay = async (originalText: string) => {
     if (!originalText.trim() || isTranslatingRef.current) return;
     isTranslatingRef.current = true;
+    const newId = generateId();
+
+    // Optimistic update: Add card immediately
+    setCards(prev => {
+      const newCard: SentenceCard = { id: newId, original: originalText, translated: null, status: 'translating' };
+      if (prev.length === 0) return [newCard];
+
+      const lastCard = prev[prev.length - 1];
+      if (shouldOverwrite(lastCard.original, originalText)) {
+        const newCards = [...prev];
+        newCards[newCards.length - 1] = newCard;
+        return newCards;
+      }
+      return [...prev, newCard].slice(-200);
+    });
 
     try {
-      const translated = await invoke<string>("translate_text", { text: originalText });
-      // Translation succeeded
-      setCards(prev => {
-        if (prev.length === 0) {
-          return [{ id: generateId(), original: originalText, translated }];
-        }
-        const lastCard = prev[prev.length - 1];
-        // Check similarity with last card's original text, overwrite if similar
-        if (shouldOverwrite(lastCard.original, originalText)) {
-          const newCards = [...prev];
-          newCards[newCards.length - 1] = { id: generateId(), original: originalText, translated };
-          return newCards;
-        }
-        return [...prev, { id: generateId(), original: originalText, translated }].slice(-200);
-      });
+      // Get context for OpenAI translation (previous N cards' original text)
+      let context: string[] | null = null;
+      const currentCards = cardsRef.current;
+      const currentConfig = configRef.current;
+      
+      if (currentConfig.provider.startsWith('openai:') && currentConfig.openai_context_count > 0 && currentCards.length > 0) {
+        const startIdx = Math.max(0, currentCards.length - currentConfig.openai_context_count);
+        context = currentCards.slice(startIdx).map(c => c.original);
+      }
+      
+      const translated = await invoke<string>("translate_text", { text: originalText, context });
+      
+      setCards(prev => prev.map(c => 
+        c.id === newId ? { ...c, translated, status: 'success' } : c
+      ));
       lastOriginalTextRef.current = originalText;
     } catch (e) {
       console.error("Translation error:", e);
-      // Translation failed
-      setCards(prev => {
-        if (prev.length === 0) {
-          return [{ id: generateId(), original: originalText, translated: null }];
-        }
-        const lastCard = prev[prev.length - 1];
-        // If last card succeeded, never overwrite - always append
-        if (lastCard.translated !== null) {
-          return [...prev, { id: generateId(), original: originalText, translated: null }].slice(-200);
-        }
-        // Last card also failed - check similarity, overwrite if similar
-        if (shouldOverwrite(lastCard.original, originalText)) {
-          const newCards = [...prev];
-          newCards[newCards.length - 1] = { id: generateId(), original: originalText, translated: null };
-          return newCards;
-        }
-        return [...prev, { id: generateId(), original: originalText, translated: null }].slice(-200);
-      });
+      setCards(prev => prev.map(c => 
+        c.id === newId ? { ...c, translated: null, status: 'error' } : c
+      ));
       lastOriginalTextRef.current = originalText;
     } finally {
       isTranslatingRef.current = false;
@@ -453,9 +496,10 @@ function App() {
     try {
       await invoke("save_config", { config: newConfig });
       setConfig(newConfig);
-      setIsSettingsOpen(false);
+      addToast('success', 'Configuration saved successfully');
     } catch (err) {
       console.error("Failed to save config:", err);
+      addToast('error', `Failed to save configuration: ${err}`);
     }
   };
 
@@ -501,9 +545,13 @@ function App() {
           ) : (
             <>
               {cards.map((item) => (
-                <div key={item.id} className={`history-card ${item.translated === null ? 'failed' : ''}`}>
+                <div key={item.id} className={`history-card ${item.status === 'error' || (!item.status && item.translated === null) ? 'failed' : ''}`}>
                   <div className="card-original">{item.original}</div>
-                  {item.translated ? (
+                  {item.status === 'translating' ? (
+                    <div className="typing-dots">
+                      <span>.</span><span>.</span><span>.</span>
+                    </div>
+                  ) : item.translated ? (
                     <div className="card-translated">{item.translated}</div>
                   ) : (
                     <div className="card-failed">
@@ -573,8 +621,17 @@ function App() {
         </div>
       </footer>
 
-      <div className={`settings-overlay ${isSettingsOpen ? 'open' : ''}`} onClick={() => setIsSettingsOpen(false)}>
-        <div className="settings-drawer" onClick={e => e.stopPropagation()}>
+      <div 
+        className={`settings-overlay ${isSettingsOpen ? 'open' : ''}`} 
+        onMouseDown={() => { overlayMouseDownRef.current = true; }}
+        onMouseUp={() => { 
+          if (overlayMouseDownRef.current) {
+            setIsSettingsOpen(false);
+          }
+          overlayMouseDownRef.current = false;
+        }}
+      >
+        <div className="settings-drawer" onMouseDown={e => e.stopPropagation()} onMouseUp={e => e.stopPropagation()}>
           <header className="settings-header">
             <h2>Configuration</h2>
             <button className="btn-icon" onClick={() => setIsSettingsOpen(false)}>
@@ -593,6 +650,16 @@ function App() {
         text={summaryText} 
         isLoading={isSummarizing} 
       />
+
+      {/* Toast Container */}
+      <div className="toast-container">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`toast toast-${toast.type}`}>
+            {toast.type === 'success' ? <IconCheck /> : <IconX />}
+            <span>{toast.message}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -752,9 +819,26 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           value={formData.theme || 'dark'}
           onChange={e => setFormData(prev => ({ ...prev, theme: e.target.value }))}
         >
-          <option value="dark">Dark (Cyber-noir)</option>
+          <option value="dark">Dark</option>
           <option value="light">Light</option>
         </select>
+      </div>
+
+      {/* Opacity Settings */}
+      <div className="form-group">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+          <label>Background Opacity</label>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{Math.round((formData.opacity ?? 1.0) * 100)}%</span>
+        </div>
+        <input
+          type="range"
+          min="0.1"
+          max="1.0"
+          step="0.05"
+          value={formData.opacity ?? 1.0}
+          onChange={e => setFormData(prev => ({ ...prev, opacity: parseFloat(e.target.value) }))}
+          style={{ width: '100%', accentColor: 'var(--primary)', cursor: 'pointer' }}
+        />
       </div>
 
       {/* Hide Window */}
@@ -854,6 +938,53 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
               <option key={ep.id} value={ep.id}>{ep.name}</option>
             ))}
           </select>
+        </div>
+      )}
+
+      {/* OpenAI Context Count */}
+      {selectedProvider.type === 'openai' && (
+        <div className="endpoint-card" style={{ marginTop: '0px' }}>
+          <div className="form-group">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+              <label style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Context Memory</label>
+              <span style={{ 
+                color: 'var(--primary)', 
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border-color)',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                fontSize: '12px',
+                fontWeight: 600,
+                minWidth: '100px',
+                textAlign: 'center'
+              }}>
+                {formData.openai_context_count ?? 2} previous cards
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="10"
+              step="1"
+              value={formData.openai_context_count ?? 2}
+              onChange={e => setFormData(prev => ({ ...prev, openai_context_count: parseInt(e.target.value) }))}
+              style={{ 
+                width: '100%', 
+                accentColor: 'var(--primary)',
+                cursor: 'pointer',
+                marginTop: '8px',
+                marginBottom: '8px'
+              }}
+            />
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+              Includes previous captions in the translation prompt. 
+              { (formData.openai_context_count ?? 2) > 4 && 
+                <span style={{ color: 'var(--warning)', marginLeft: '6px' }}>
+                  High context may increase latency.
+                </span>
+              }
+            </div>
+          </div>
         </div>
       )}
 
