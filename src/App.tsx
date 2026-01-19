@@ -701,9 +701,9 @@ function App() {
                 title="Summarize Captions"
                 style={{ 
                 marginLeft: '12px',
-                height: '48px',
-                width: '48px',
-                borderRadius: '24px',
+                height: '40px',
+                width: '40px',
+                borderRadius: '20px',
                 border: 'none',
                 background: 'var(--bg-secondary)',
                 color: cards.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
