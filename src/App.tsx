@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import Markdown from 'react-markdown';
 import "./App.css";
 import { 
@@ -29,8 +30,10 @@ import {
   IconRetry, 
   IconSettings, 
   IconSquare, 
-  IconTrash, 
-  IconX 
+  IconX,
+  IconWindowMinimize,
+  IconWindowMaximize,
+  IconWindowClose
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 
@@ -513,15 +516,6 @@ function App() {
     }
   };
 
-  const clearHistory = () => {
-    setCards([]);
-    setPartialText("");
-    lastFullTextRef.current = "";
-    lastOriginalTextRef.current = "";
-    idleCountRef.current = 0;
-    syncCountRef.current = 0;
-    translationQueueRef.current = [];
-  };
 
   const saveConfig = async (newConfig: AppConfig) => {
     try {
@@ -555,15 +549,40 @@ function App() {
     }
   };
 
+  const appWindow = getCurrentWindow();
+
+  const handleWindowMinimize = () => appWindow.minimize();
+  const handleWindowMaximize = () => appWindow.toggleMaximize();
+  const handleWindowClose = () => appWindow.close();
+
   return (
     <div className="app-container" onContextMenu={import.meta.env.PROD ? (e) => e.preventDefault() : undefined}>
-      <Sidebar 
-        sessions={sessions}
-        currentId={activeSessionId}
-        onSelect={handleSelectSession}
-        onDelete={handleDeleteSession}
-        isOpen={isSidebarOpen} 
-      />
+      {/* Custom Titlebar */}
+      <div className="custom-titlebar">
+        <div className="titlebar-drag" data-tauri-drag-region>
+          <span className="titlebar-title" data-tauri-drag-region>LiveCaptionsR</span>
+        </div>
+        <div className="titlebar-controls">
+          <button className="titlebar-btn" onClick={handleWindowMinimize} title="Minimize">
+            <IconWindowMinimize />
+          </button>
+          <button className="titlebar-btn" onClick={handleWindowMaximize} title="Maximize">
+            <IconWindowMaximize />
+          </button>
+          <button className="titlebar-btn titlebar-btn-close" onClick={handleWindowClose} title="Close">
+            <IconWindowClose />
+          </button>
+        </div>
+      </div>
+
+      <div className="app-content">
+        <Sidebar 
+          sessions={sessions}
+          currentId={activeSessionId}
+          onSelect={handleSelectSession}
+          onDelete={handleDeleteSession}
+          isOpen={isSidebarOpen} 
+        />
 
       <div className="history-area">
         <div className="history-header">
@@ -608,9 +627,7 @@ function App() {
               <span style={{opacity: 0.5, marginLeft: 8}}>({cards.length})</span>
             </span>
           </div>
-          <button className="btn-clear" onClick={clearHistory} title="Clear View (Does not delete session)">
-            <IconTrash />
-          </button>
+
         </div>
 
         <div className="history-scroll">
@@ -707,7 +724,8 @@ function App() {
             </button>
             </div>
         </footer>
-      </div>
+      </div>{/* End history-area */}
+      </div>{/* End app-content */}
 
       <div 
         className={`settings-overlay ${isSettingsOpen ? 'open' : ''}`} 
