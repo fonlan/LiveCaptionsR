@@ -22,6 +22,7 @@ import {
   IconCheck, 
   IconCopy, 
   IconFileText, 
+  IconList,
   IconMinus, 
   IconPlay, 
   IconPlus, 
@@ -136,8 +137,10 @@ function App() {
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeSessionName, setActiveSessionName] = useState<string>("");
+  const [activeSessionCreatedAt, setActiveSessionCreatedAt] = useState<number>(0);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
   const [cards, setCards] = useState<SentenceCard[]>([]);
   const [partialText, setPartialText] = useState<string>("");
@@ -154,6 +157,7 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const isTranslatingRef = useRef<boolean>(false);
+  const translationQueueRef = useRef<string[]>([]);
   const overlayMouseDownRef = useRef<boolean>(false);
 
   const addToast = (type: 'success' | 'error', message: string) => {
@@ -183,6 +187,7 @@ function App() {
       await refreshSessionList();
       setActiveSessionId(session.id);
       setActiveSessionName(session.name);
+      setActiveSessionCreatedAt(session.created_at);
       setCards([]); // Clear cards for new session
       setPartialText("");
       lastFullTextRef.current = "";
@@ -210,6 +215,7 @@ function App() {
       const session = await invoke<Session>("load_session_data", { id });
       setActiveSessionId(session.id);
       setActiveSessionName(session.name);
+      setActiveSessionCreatedAt(session.created_at);
       setCards(session.cards);
       setPartialText("");
     } catch (e) {
@@ -238,15 +244,12 @@ function App() {
   };
 
   const handleRenameSession = async (newName: string) => {
-      if (!activeSessionId || !newName.trim() || newName === activeSessionName) return;
+      if (!activeSessionId || !activeSessionCreatedAt || !newName.trim() || newName === activeSessionName) return;
       try {
-          const meta = sessions.find(s => s.id === activeSessionId);
-          if (!meta) return;
-          
           const updatedSession: Session = {
               id: activeSessionId,
               name: newName,
-              created_at: meta.created_at,
+              created_at: activeSessionCreatedAt,
               cards: cards
           };
           
@@ -262,7 +265,7 @@ function App() {
 
   // Auto-save logic
   useEffect(() => {
-    if (!activeSessionId) return;
+    if (!activeSessionId || !activeSessionCreatedAt) return;
 
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
@@ -272,31 +275,16 @@ function App() {
         const sessionToSave: Session = {
             id: activeSessionId,
             name: activeSessionName,
-            created_at: 0, // Backend handles this logic or we preserve it. 
-            // WAIT, saving requires full object. 
-            // If we only have partial data here, we might overwrite 'created_at' if not careful.
-            // But we don't have 'created_at' in state efficiently.
-            // Solution: We should probably just send cards update, or keep full session object in state.
-            // For now, let's look up the session metadata to get created_at, or just send 0 and backend ignores/updates?
-            // Backend `save_session` overwrites. 
-            // Let's store `sessionCreatedAt` in state.
-            // Or better: `save_session_data` takes a `Session`.
-            // I need to fetch the original `created_at` from `sessions` list.
+            created_at: activeSessionCreatedAt,
             cards: cards
         };
-        
-        // Find created_at from session list
-        const meta = sessions.find(s => s.id === activeSessionId);
-        if (meta) {
-            sessionToSave.created_at = meta.created_at;
-            invoke("save_session_data", { session: sessionToSave }).catch(e => console.error("Auto-save failed", e));
-        }
+        invoke("save_session_data", { session: sessionToSave }).catch(e => console.error("Auto-save failed", e));
     }, 2000); // 2 seconds debounce
 
     return () => {
         if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-  }, [cards, activeSessionId, activeSessionName, sessions]); // cards dependency triggers save
+  }, [cards, activeSessionId, activeSessionName, activeSessionCreatedAt]); // cards dependency triggers save
 
   // --- Effects ---
 
@@ -368,10 +356,17 @@ function App() {
   };
 
   const translateAndDisplay = async (originalText: string) => {
-    if (!originalText.trim() || isTranslatingRef.current) return;
+    if (!originalText.trim()) return;
+    
+    // If already translating, queue this text and return
+    if (isTranslatingRef.current) {
+      translationQueueRef.current.push(originalText);
+      return;
+    }
+    
     isTranslatingRef.current = true;
     const newId = generateId();
-    const timestamp = Date.now() / 1000;
+    const timestamp = Math.floor(Date.now() / 1000);
 
     setCards(prev => {
       const newCard: SentenceCard = { 
@@ -421,6 +416,12 @@ function App() {
     } finally {
       isTranslatingRef.current = false;
       syncCountRef.current = 0;
+      
+      // Process next item in queue if any
+      if (translationQueueRef.current.length > 0) {
+        const nextText = translationQueueRef.current.shift()!;
+        translateAndDisplay(nextText);
+      }
     }
   };
 
@@ -480,6 +481,22 @@ function App() {
       setIsRunning(false);
       setStatus("Stopped");
       setPartialText("");
+      
+      // Immediate save and refresh list to show preview
+      if (activeSessionId && activeSessionCreatedAt) {
+        const sessionToSave: Session = {
+          id: activeSessionId,
+          name: activeSessionName,
+          created_at: activeSessionCreatedAt,
+          cards: cardsRef.current // Use ref for latest value
+        };
+        try {
+          await invoke("save_session_data", { session: sessionToSave });
+          await refreshSessionList();
+        } catch (e) {
+          console.error("Failed to save on stop:", e);
+        }
+      }
     } else {
       // Starting: Create new session
       const sessionId = await handleCreateSession();
@@ -503,6 +520,7 @@ function App() {
     lastOriginalTextRef.current = "";
     idleCountRef.current = 0;
     syncCountRef.current = 0;
+    translationQueueRef.current = [];
   };
 
   const saveConfig = async (newConfig: AppConfig) => {
@@ -538,19 +556,26 @@ function App() {
   };
 
   return (
-    <div className="app-container" onContextMenu={(e) => e.preventDefault()}>
+    <div className="app-container" onContextMenu={import.meta.env.PROD ? (e) => e.preventDefault() : undefined}>
       <Sidebar 
         sessions={sessions}
         currentId={activeSessionId}
         onSelect={handleSelectSession}
-        onCreate={handleCreateSession}
         onDelete={handleDeleteSession}
-        isOpen={true} // Always open for now, could be collapsible
+        isOpen={isSidebarOpen} 
       />
 
       <div className="history-area">
         <div className="history-header">
           <div className="history-header-left">
+            <button 
+              className="btn-icon" 
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+              title={isSidebarOpen ? "Close Sidebar" : "Open Sessions"}
+              style={{ marginRight: '8px' }}
+            >
+              <IconList />
+            </button>
             <span className="history-label">
               <span className={`label-icon ${isRunning ? 'active' : ''}`}>●</span>
               {isRenaming ? (

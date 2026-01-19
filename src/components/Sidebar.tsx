@@ -1,26 +1,20 @@
 import React from 'react';
 import { SessionMetadata } from '../types';
-import { IconPlus, IconTrash } from './Icons';
+import { IconTrash } from './Icons';
 
 interface SidebarProps {
   sessions: SessionMetadata[];
   currentId: string | null;
   onSelect: (id: string) => void;
-  onCreate: () => void;
   onDelete: (id: string, e: React.MouseEvent) => void;
   isOpen: boolean;
 }
 
-export function Sidebar({ sessions, currentId, onSelect, onCreate, onDelete, isOpen }: SidebarProps) {
-  if (!isOpen) return null;
-
+export function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: SidebarProps) {
   return (
-    <div className="sidebar">
+    <div className={`sidebar ${isOpen ? 'open' : 'closed'}`}>
       <div className="sidebar-header">
         <h3>Sessions</h3>
-        <button className="btn-icon-new" onClick={onCreate} title="New Session">
-          <IconPlus />
-        </button>
       </div>
       <div className="session-list">
         {sessions.map(session => (
@@ -58,7 +52,6 @@ export function Sidebar({ sessions, currentId, onSelect, onCreate, onDelete, isO
         {sessions.length === 0 && (
           <div className="empty-sessions">
             <span>No saved sessions</span>
-            <button className="btn-create-first" onClick={onCreate}>Start New</button>
           </div>
         )}
       </div>
