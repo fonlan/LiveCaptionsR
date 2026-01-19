@@ -4,184 +4,36 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import Markdown from 'react-markdown';
 import "./App.css";
+import { 
+  AppConfig, 
+  DEFAULT_CONFIG, 
+  DEFAULT_OPENAI_ENDPOINT, 
+  DEFAULT_PROXY,
+  LANGUAGES, 
+  OpenAIEndpoint, 
+  ProxyConfig, 
+  RawCaption, 
+  SentenceCard, 
+  Session, 
+  SessionMetadata, 
+  Toast 
+} from "./types";
+import { 
+  IconCheck, 
+  IconCopy, 
+  IconFileText, 
+  IconMinus, 
+  IconPlay, 
+  IconPlus, 
+  IconRetry, 
+  IconSettings, 
+  IconSquare, 
+  IconTrash, 
+  IconX 
+} from "./components/Icons";
+import { Sidebar } from "./components/Sidebar";
 
-// --- Types ---
-
-interface RawCaption {
-  text: string;
-  timestamp: number;
-}
-
-interface SentenceCard {
-  id: string;
-  original: string;
-  translated: string | null;
-  status?: 'translating' | 'success' | 'error';
-  retrying?: boolean;
-}
-
-interface Toast {
-  id: string;
-  type: 'success' | 'error';
-  message: string;
-}
-
-interface ProxyConfig {
-  url: string | null;
-  enabled: boolean;
-}
-
-interface OpenAIEndpoint {
-  id: string;
-  name: string;
-  api_key: string;
-  base_url: string;
-  model: string;
-  proxy: ProxyConfig;
-}
-
-interface AppConfig {
-  provider: string;
-  source_lang: string;
-  target_lang: string;
-  theme: string;
-  hide_system_window: boolean;
-  always_on_top: boolean;
-  summary_provider: string;
-  google_proxy: ProxyConfig;
-  microsoft_api_key: string | null;
-  microsoft_region: string | null;
-  microsoft_proxy: ProxyConfig;
-  openai_endpoints: OpenAIEndpoint[];
-  openai_context_count: number;
-  opacity: number;
-}
-
-const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
-
-const DEFAULT_OPENAI_ENDPOINT: OpenAIEndpoint = {
-  id: "default",
-  name: "OpenAI",
-  api_key: "",
-  base_url: "https://api.openai.com/v1",
-  model: "gpt-4o-mini",
-  proxy: { url: "", enabled: false },
-};
-
-const DEFAULT_CONFIG: AppConfig = {
-  provider: "google",
-  source_lang: "en",
-  target_lang: "zh-CN",
-  theme: "dark",
-  hide_system_window: true,
-  always_on_top: false,
-  summary_provider: "openai:default",
-  google_proxy: DEFAULT_PROXY,
-  microsoft_api_key: "",
-  microsoft_region: "",
-  microsoft_proxy: DEFAULT_PROXY,
-  openai_endpoints: [DEFAULT_OPENAI_ENDPOINT],
-  openai_context_count: 2,
-  opacity: 1.0,
-};
-
-const LANGUAGES = [
-  { code: "en", name: "English" },
-  { code: "zh-CN", name: "Chinese (Simplified)" },
-  { code: "zh-TW", name: "Chinese (Traditional)" },
-  { code: "ja", name: "Japanese" },
-  { code: "ko", name: "Korean" },
-  { code: "es", name: "Spanish" },
-  { code: "fr", name: "French" },
-  { code: "de", name: "German" },
-  { code: "it", name: "Italian" },
-  { code: "pt", name: "Portuguese" },
-  { code: "ru", name: "Russian" },
-  { code: "vi", name: "Vietnamese" },
-  { code: "th", name: "Thai" },
-  { code: "id", name: "Indonesian" },
-  { code: "hi", name: "Hindi" },
-];
-
-// --- Icons (SVG) ---
-
-const IconSettings = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="3"></circle>
-    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-  </svg>
-);
-
-const IconFileText = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
-    <polyline points="14 2 14 8 20 8"></polyline>
-    <line x1="16" y1="13" x2="8" y2="13"></line>
-    <line x1="16" y1="17" x2="8" y2="17"></line>
-    <line x1="10" y1="9" x2="8" y2="9"></line>
-  </svg>
-);
-
-const IconCopy = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-  </svg>
-);
-
-const IconPlay = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="5 3 19 12 5 21 5 3"></polygon>
-  </svg>
-);
-
-const IconSquare = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-  </svg>
-);
-
-const IconX = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="18" y1="6" x2="6" y2="18"></line>
-    <line x1="6" y1="6" x2="18" y2="18"></line>
-  </svg>
-);
-
-const IconCheck = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="20 6 9 17 4 12"></polyline>
-  </svg>
-);
-
-const IconTrash = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="3 6 5 6 21 6"></polyline>
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-  </svg>
-);
-
-const IconRetry = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="23 4 23 10 17 10"></polyline>
-    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-  </svg>
-);
-
-const IconPlus = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="12" y1="5" x2="12" y2="19"></line>
-    <line x1="5" y1="12" x2="19" y2="12"></line>
-  </svg>
-);
-
-const IconMinus = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="5" y1="12" x2="19" y2="12"></line>
-  </svg>
-);
-
-// --- Constants (matching C# original) ---
+// --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
 const MAX_SYNC_INTERVAL = 20;
 const SIMILARITY_THRESHOLD = 0.66;
@@ -268,7 +120,7 @@ function generateId(): string {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-// --- Components ---
+// --- Main App Component ---
 
 function App() {
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
@@ -279,12 +131,22 @@ function App() {
   const [summaryText, setSummaryText] = useState<string>("");
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
+  
+  // Session State
+  const [sessions, setSessions] = useState<SessionMetadata[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionName, setActiveSessionName] = useState<string>("");
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  
   const [cards, setCards] = useState<SentenceCard[]>([]);
   const [partialText, setPartialText] = useState<string>("");
   const [toasts, setToasts] = useState<Toast[]>([]);
+  
   const historyEndRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
+  const saveTimeoutRef = useRef<number | null>(null);
 
   const lastFullTextRef = useRef<string>("");
   const lastOriginalTextRef = useRef<string>("");
@@ -302,6 +164,142 @@ function App() {
     }, 3000);
   };
 
+  // --- Session Management ---
+
+  const refreshSessionList = async () => {
+    try {
+      const list = await invoke<SessionMetadata[]>("get_sessions");
+      setSessions(list);
+    } catch (e) {
+      console.error("Failed to load sessions:", e);
+    }
+  };
+
+  const handleCreateSession = async () => {
+    try {
+      const date = new Date();
+      const name = `Session ${date.toLocaleString()}`;
+      const session = await invoke<Session>("create_session", { name });
+      await refreshSessionList();
+      setActiveSessionId(session.id);
+      setActiveSessionName(session.name);
+      setCards([]); // Clear cards for new session
+      setPartialText("");
+      lastFullTextRef.current = "";
+      return session.id;
+    } catch (e) {
+      console.error("Failed to create session:", e);
+      addToast('error', "Failed to create new session");
+      return null;
+    }
+  };
+
+  const handleSelectSession = async (id: string) => {
+    if (isRunning) {
+      // Optional: Confirm stop? For now just stop if switching
+      // Actually, better to block switching while running or stop automatically
+      // Let's stop automatically if they switch manually
+      if (confirm("Stop current capture to switch session?")) {
+        await toggleWatcher();
+      } else {
+        return;
+      }
+    }
+
+    try {
+      const session = await invoke<Session>("load_session_data", { id });
+      setActiveSessionId(session.id);
+      setActiveSessionName(session.name);
+      setCards(session.cards);
+      setPartialText("");
+    } catch (e) {
+      console.error("Failed to load session:", e);
+      addToast('error', "Failed to load session data");
+    }
+  };
+
+  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent selection
+    if (!confirm("Are you sure you want to delete this session?")) return;
+    
+    try {
+      await invoke("delete_session_data", { id });
+      await refreshSessionList();
+      if (activeSessionId === id) {
+        setActiveSessionId(null);
+        setActiveSessionName("");
+        setCards([]);
+      }
+      addToast('success', "Session deleted");
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+      addToast('error', "Failed to delete session");
+    }
+  };
+
+  const handleRenameSession = async (newName: string) => {
+      if (!activeSessionId || !newName.trim() || newName === activeSessionName) return;
+      try {
+          const meta = sessions.find(s => s.id === activeSessionId);
+          if (!meta) return;
+          
+          const updatedSession: Session = {
+              id: activeSessionId,
+              name: newName,
+              created_at: meta.created_at,
+              cards: cards
+          };
+          
+          await invoke("save_session_data", { session: updatedSession });
+          await refreshSessionList();
+          setActiveSessionName(newName);
+          addToast('success', "Session renamed");
+      } catch (e) {
+          console.error("Rename failed", e);
+          addToast('error', "Failed to rename session");
+      }
+  };
+
+  // Auto-save logic
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    saveTimeoutRef.current = setTimeout(() => {
+        const sessionToSave: Session = {
+            id: activeSessionId,
+            name: activeSessionName,
+            created_at: 0, // Backend handles this logic or we preserve it. 
+            // WAIT, saving requires full object. 
+            // If we only have partial data here, we might overwrite 'created_at' if not careful.
+            // But we don't have 'created_at' in state efficiently.
+            // Solution: We should probably just send cards update, or keep full session object in state.
+            // For now, let's look up the session metadata to get created_at, or just send 0 and backend ignores/updates?
+            // Backend `save_session` overwrites. 
+            // Let's store `sessionCreatedAt` in state.
+            // Or better: `save_session_data` takes a `Session`.
+            // I need to fetch the original `created_at` from `sessions` list.
+            cards: cards
+        };
+        
+        // Find created_at from session list
+        const meta = sessions.find(s => s.id === activeSessionId);
+        if (meta) {
+            sessionToSave.created_at = meta.created_at;
+            invoke("save_session_data", { session: sessionToSave }).catch(e => console.error("Auto-save failed", e));
+        }
+    }, 2000); // 2 seconds debounce
+
+    return () => {
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [cards, activeSessionId, activeSessionName, sessions]); // cards dependency triggers save
+
+  // --- Effects ---
+
   useEffect(() => {
     historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
     cardsRef.current = cards;
@@ -318,7 +316,6 @@ function App() {
         setAppVersion(v);
         const savedConfig = await invoke<AppConfig>("get_config");
         if (savedConfig) {
-          // Ensure backwards compatibility
           setConfig({
             ...DEFAULT_CONFIG,
             ...savedConfig,
@@ -330,6 +327,8 @@ function App() {
         const running = await invoke<boolean>("is_watcher_running");
         setIsRunning(running);
         if (running) setStatus("Running");
+        
+        await refreshSessionList();
       } catch (e) {
         console.error("Failed to init:", e);
       }
@@ -345,10 +344,11 @@ function App() {
     document.documentElement.style.setProperty('--app-opacity', (config.opacity ?? 1.0).toString());
   }, [config.opacity]);
 
+  // --- Logic ---
+
   const retryTranslation = async (cardId: string, originalText: string) => {
     setCards(prev => prev.map(c => c.id === cardId ? { ...c, retrying: true } : c));
     try {
-      // Get context for OpenAI translation
       const currentCards = cardsRef.current;
       const currentConfig = configRef.current;
       const cardIndex = currentCards.findIndex(c => c.id === cardId);
@@ -360,7 +360,7 @@ function App() {
       }
       
       const translated = await invoke<string>("translate_text", { text: originalText, context });
-      setCards(prev => prev.map(c => c.id === cardId ? { ...c, translated, retrying: false } : c));
+      setCards(prev => prev.map(c => c.id === cardId ? { ...c, translated, retrying: false, status: 'success' as const } : c));
     } catch (e) {
       console.error("Retry failed:", e);
       setCards(prev => prev.map(c => c.id === cardId ? { ...c, retrying: false } : c));
@@ -371,23 +371,28 @@ function App() {
     if (!originalText.trim() || isTranslatingRef.current) return;
     isTranslatingRef.current = true;
     const newId = generateId();
+    const timestamp = Date.now() / 1000;
 
-    // Optimistic update: Add card immediately
     setCards(prev => {
-      const newCard: SentenceCard = { id: newId, original: originalText, translated: null, status: 'translating' };
+      const newCard: SentenceCard = { 
+          id: newId, 
+          original: originalText, 
+          translated: null, 
+          status: 'translating',
+          timestamp 
+      };
       if (prev.length === 0) return [newCard];
 
       const lastCard = prev[prev.length - 1];
       if (shouldOverwrite(lastCard.original, originalText)) {
         const newCards = [...prev];
-        newCards[newCards.length - 1] = newCard;
+        newCards[newCards.length - 1] = { ...newCard, id: lastCard.id }; // Keep ID if overwriting
         return newCards;
       }
-      return [...prev, newCard].slice(-200);
+      return [...prev, newCard].slice(-200); // Keep buffer size reasonable
     });
 
     try {
-      // Get context for OpenAI translation (previous N cards' original text)
       let context: string[] | null = null;
       const currentCards = cardsRef.current;
       const currentConfig = configRef.current;
@@ -400,13 +405,17 @@ function App() {
       const translated = await invoke<string>("translate_text", { text: originalText, context });
       
       setCards(prev => prev.map(c => 
-        c.id === newId ? { ...c, translated, status: 'success' } : c
+        (c.id === newId || (prev[prev.length-1].id === c.id && c.original === originalText)) 
+            ? { ...c, translated, status: 'success' as const } 
+            : c
       ));
       lastOriginalTextRef.current = originalText;
     } catch (e) {
       console.error("Translation error:", e);
       setCards(prev => prev.map(c => 
-        c.id === newId ? { ...c, translated: null, status: 'error' } : c
+        (c.id === newId || (prev[prev.length-1].id === c.id && c.original === originalText))
+            ? { ...c, translated: null, status: 'error' as const } 
+            : c
       ));
       lastOriginalTextRef.current = originalText;
     } finally {
@@ -472,6 +481,10 @@ function App() {
       setStatus("Stopped");
       setPartialText("");
     } else {
+      // Starting: Create new session
+      const sessionId = await handleCreateSession();
+      if (!sessionId) return; // Failed to create
+
       isFirstCaptionRef.current = true;
       setStatus("Starting...");
       try {
@@ -526,22 +539,60 @@ function App() {
 
   return (
     <div className="app-container" onContextMenu={(e) => e.preventDefault()}>
+      <Sidebar 
+        sessions={sessions}
+        currentId={activeSessionId}
+        onSelect={handleSelectSession}
+        onCreate={handleCreateSession}
+        onDelete={handleDeleteSession}
+        isOpen={true} // Always open for now, could be collapsible
+      />
+
       <div className="history-area">
         <div className="history-header">
           <div className="history-header-left">
             <span className="history-label">
               <span className={`label-icon ${isRunning ? 'active' : ''}`}>●</span>
-              Captions ({cards.length})
+              {isRenaming ? (
+                  <input 
+                    autoFocus
+                    className="session-name-input"
+                    value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onBlur={() => { handleRenameSession(renameValue); setIsRenaming(false); }}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') { handleRenameSession(renameValue); setIsRenaming(false); }
+                        if (e.key === 'Escape') setIsRenaming(false);
+                    }}
+                    onClick={e => e.stopPropagation()}
+                  />
+              ) : (
+                  <span 
+                    onClick={() => { 
+                        if (activeSessionId) {
+                            setRenameValue(activeSessionName);
+                            setIsRenaming(true);
+                        }
+                    }}
+                    title={activeSessionId ? "Click to rename" : ""}
+                    style={{ cursor: activeSessionId ? 'text' : 'default', borderBottom: activeSessionId ? '1px dashed var(--text-muted)' : 'none' }}
+                  >
+                    {activeSessionName || "No Session"} 
+                  </span>
+              )}
+              <span style={{opacity: 0.5, marginLeft: 8}}>({cards.length})</span>
             </span>
           </div>
-          <button className="btn-clear" onClick={clearHistory} title="Clear">
+          <button className="btn-clear" onClick={clearHistory} title="Clear View (Does not delete session)">
             <IconTrash />
           </button>
         </div>
 
         <div className="history-scroll">
           {cards.length === 0 && !partialText ? (
-            <div className="history-empty">Waiting for speech...</div>
+            <div className="history-empty">
+                {activeSessionId ? "Waiting for speech..." : "Select or Start a Session"}
+            </div>
           ) : (
             <>
               {cards.map((item) => (
@@ -566,6 +617,18 @@ function App() {
                       </button>
                     </div>
                   )}
+                  {item.timestamp && (
+                      <div style={{
+                          position: 'absolute',
+                          bottom: '4px',
+                          right: '8px',
+                          fontSize: '10px',
+                          color: 'var(--text-muted)',
+                          opacity: 0.7
+                      }}>
+                          {new Date(item.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                      </div>
+                  )}
                 </div>
               ))}
               {partialText && (
@@ -578,48 +641,48 @@ function App() {
           )}
           <div ref={historyEndRef} />
         </div>
-      </div>
 
-      <footer className="control-bar">
-        <div className="status-indicator">
-          <div className={`status-dot ${isRunning ? 'active' : 'inactive'}`} />
-          <span className={`status-text ${status.startsWith('Error') ? 'error' : ''}`} title={status}>{status}</span>
-        </div>
-        <div className="controls-center">
-          <button className={`fab-main ${isRunning ? 'stop' : 'start'}`} onClick={toggleWatcher}>
-            {isRunning ? <IconSquare /> : <IconPlay />}
-            <span>{isRunning ? "STOP" : "START"}</span>
-          </button>
-          <button 
-            className="btn-summary"
-            onClick={handleSummarize}
-            disabled={cards.length === 0}
-            title="Summarize Captions"
-            style={{ 
-              marginLeft: '12px',
-              height: '48px',
-              width: '48px',
-              borderRadius: '24px',
-              border: 'none',
-              background: 'var(--bg-secondary)',
-              color: cards.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
-              cursor: cards.length > 0 ? 'pointer' : 'not-allowed',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s'
-            }}
-          >
-            <IconFileText />
-          </button>
-        </div>
-        <div className="controls-right">
-          {appVersion && <span className="app-version">v{appVersion}</span>}
-          <button className="btn-icon settings-btn" onClick={() => setIsSettingsOpen(true)} title="Settings">
-            <IconSettings />
-          </button>
-        </div>
-      </footer>
+        <footer className="control-bar">
+            <div className="status-indicator">
+            <div className={`status-dot ${isRunning ? 'active' : 'inactive'}`} />
+            <span className={`status-text ${status.startsWith('Error') ? 'error' : ''}`} title={status}>{status}</span>
+            </div>
+            <div className="controls-center">
+            <button className={`fab-main ${isRunning ? 'stop' : 'start'}`} onClick={toggleWatcher}>
+                {isRunning ? <IconSquare /> : <IconPlay />}
+                <span>{isRunning ? "STOP" : "START"}</span>
+            </button>
+            <button 
+                className="btn-summary"
+                onClick={handleSummarize}
+                disabled={cards.length === 0}
+                title="Summarize Captions"
+                style={{ 
+                marginLeft: '12px',
+                height: '48px',
+                width: '48px',
+                borderRadius: '24px',
+                border: 'none',
+                background: 'var(--bg-secondary)',
+                color: cards.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
+                cursor: cards.length > 0 ? 'pointer' : 'not-allowed',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s'
+                }}
+            >
+                <IconFileText />
+            </button>
+            </div>
+            <div className="controls-right">
+            {appVersion && <span className="app-version">v{appVersion}</span>}
+            <button className="btn-icon settings-btn" onClick={() => setIsSettingsOpen(true)} title="Settings">
+                <IconSettings />
+            </button>
+            </div>
+        </footer>
+      </div>
 
       <div 
         className={`settings-overlay ${isSettingsOpen ? 'open' : ''}`} 

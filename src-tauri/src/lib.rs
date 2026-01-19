@@ -4,7 +4,9 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 mod livecaptions;
+mod storage;
 mod translation;
+mod db;
 
 use translation::{OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationProvider, TranslationService};
 
@@ -395,8 +397,52 @@ fn is_watcher_running() -> bool {
     *running
 }
 
+
+// --- Session Management Commands ---
+
+#[tauri::command]
+fn create_session(name: String) -> Result<storage::Session, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let id = format!("{}", now.as_nanos()); // Use nanos for unique ID
+    let created_at = now.as_secs();
+    
+    let session = storage::Session {
+        id,
+        name,
+        created_at,
+        cards: Vec::new(),
+    };
+    
+    storage::save_session(&session).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
+#[tauri::command]
+fn save_session_data(session: storage::Session) -> Result<(), String> {
+    storage::save_session(&session).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_session_data(id: String) -> Result<storage::Session, String> {
+    storage::load_session(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_sessions() -> Result<Vec<storage::SessionMetadata>, String> {
+    storage::list_sessions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_session_data(id: String) -> Result<(), String> {
+    storage::delete_session(&id).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize database
+    db::init().expect("Failed to initialize database");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -407,7 +453,12 @@ pub fn run() {
             is_watcher_running,
             translate_text,
             summarize_text,
-            set_always_on_top
+            set_always_on_top,
+            create_session,
+            save_session_data,
+            load_session_data,
+            get_sessions,
+            delete_session_data
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
