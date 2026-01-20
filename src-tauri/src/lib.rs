@@ -57,6 +57,8 @@ pub struct AppConfig {
     pub theme: String,
     pub hide_system_window: bool,
     pub always_on_top: bool,
+    #[serde(default)]
+    pub include_microphone: bool,
     /// Provider for summarization: "openai:{endpoint_id}"
     pub summary_provider: String,
     // Google proxy
@@ -92,6 +94,7 @@ impl Default for AppConfig {
             theme: "dark".to_string(),
             hide_system_window: true,
             always_on_top: false,
+            include_microphone: false,
             summary_provider: "openai:default".to_string(),
             google_proxy: ProxyConfigDTO::default(),
             microsoft_api_key: None,
@@ -302,12 +305,13 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
     }
 
     // Launch LiveCaptions automatically
-    if let Err(e) = livecaptions::launch_livecaptions() {
+    if let Err(e) = livecaptions::launch_livecaptions(config.hide_system_window) {
         eprintln!("Warning: Failed to launch LiveCaptions: {}", e);
     }
 
     let app_clone = app.clone();
     let hide_system_window = config.hide_system_window;
+    let include_microphone = config.include_microphone;
 
     std::thread::spawn(move || {
         let mut stream = match livecaptions::CaptionStream::new() {
@@ -323,6 +327,9 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
         match stream.connect(hide_system_window) {
             Ok(msg) => {
                 let _ = app_clone.emit("caption-status", msg);
+                if let Err(e) = stream.configure_microphone(include_microphone) {
+                    let _ = app_clone.emit("caption-error", format!("Mic config failed: {}", e));
+                }
             }
             Err(e) => {
                 let _ = app_clone.emit("caption-error", e.to_string());

@@ -462,7 +462,9 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 120px;
+  /* flex: 1; Remove flex: 1 to prevent taking too much space if not needed, or keep it but limit width */
+  max-width: calc(50% - 80px); /* Prevent overlap with centered button */
+  padding-right: 16px;
 }
 
 .status-dot {
@@ -470,6 +472,7 @@ body {
   height: 8px;
   border-radius: 50%;
   background: var(--text-muted);
+  flex-shrink: 0;
 }
 .status-dot.active {
   background: var(--success);
@@ -477,11 +480,24 @@ body {
 }
 
 .status-text {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
-  white-space: nowrap;
+  word-break: break-word;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+}
+.status-text:hover {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+  background: var(--bg-panel);
+  position: relative;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  padding: 4px;
+  border-radius: 4px;
 }
 .status-text.error {
   color: var(--error);
@@ -491,7 +507,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex: 1;
+  /* flex: 1; Removed flex: 1 */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none; /* Let clicks pass through container if needed, but buttons need events */
+}
+.controls-center > * {
+  pointer-events: auto; /* Re-enable events for buttons */
 }
 
 .fab-main {
@@ -999,8 +1022,11 @@ input:checked + .slider:before {
   font-size: 14px;
   font-weight: 500;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  animation: toastSlideIn 0.3s ease-out, toastFadeOut 0.3s ease-in 2.7s forwards;
+  animation: toastSlideIn 0.3s ease-out, toastFadeOut 0.3s ease-in 4.7s forwards;
   pointer-events: auto;
+  max-width: 450px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .toast svg {

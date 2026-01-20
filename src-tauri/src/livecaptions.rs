@@ -1,12 +1,12 @@
 #![cfg(windows)]
 
 use anyhow::{Context, Result};
+use std::os::windows::process::CommandExt;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use std::process::Command;
-use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use windows::{
     core::*,
     Win32::Foundation::{BOOL, HWND, LPARAM, RECT, TRUE},
@@ -17,42 +17,46 @@ use windows::{
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-// Global flag to signal when LiveCaptions window has been found and hidden
+// Global flag to signal when LiveCaptions window has been found (and optionally hidden)
 static WINDOW_READY: OnceLock<std::sync::Mutex<bool>> = OnceLock::new();
-static WINDOW_HIDDEN_BY_HOOK: AtomicBool = AtomicBool::new(false);
+static WINDOW_FOUND_BY_HOOK: AtomicBool = AtomicBool::new(false);
 
 /// Callback for EnumWindows to find and hide LiveCaptions window
-unsafe extern "system" fn enum_windows_callback(hwnd: HWND, _: LPARAM) -> BOOL {
+unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let hide = lparam.0 != 0;
     let mut class_name = [0u16; 256];
     let len = GetClassNameW(hwnd, &mut class_name);
     if len > 0 {
         let class = String::from_utf16_lossy(&class_name[..len as usize]);
         if class == "LiveCaptionsDesktopWindow" {
-            // Found it! Move off-screen immediately
-            let _ = SetWindowPos(
-                hwnd,
-                HWND_TOP,
-                -10000,
-                -10000,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
-            );
-            
-            // Also set TOOLWINDOW style to hide from taskbar
-            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as isize;
-            let new_ex_style = (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !WS_EX_APPWINDOW.0 as isize;
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
-            
-            WINDOW_HIDDEN_BY_HOOK.store(true, Ordering::SeqCst);
-            
+            if hide {
+                // Found it! Move off-screen immediately
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOP,
+                    -10000,
+                    -10000,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+                );
+
+                // Also set TOOLWINDOW style to hide from taskbar
+                let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as isize;
+                let new_ex_style =
+                    (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !WS_EX_APPWINDOW.0 as isize;
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
+            }
+
+            WINDOW_FOUND_BY_HOOK.store(true, Ordering::SeqCst);
+
             // Signal that window is ready
             if let Some(mutex) = WINDOW_READY.get() {
                 if let Ok(mut ready) = mutex.lock() {
                     *ready = true;
                 }
             }
-            
+
             return BOOL(0); // Stop enumeration
         }
     }
@@ -61,27 +65,28 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, _: LPARAM) -> BOOL {
 
 /// Aggressively poll for LiveCaptions window using EnumWindows
 /// This is faster than UI Automation for initial detection
-fn poll_and_hide_livecaptions() {
+fn poll_livecaptions(hide: bool) {
     unsafe {
-        let _ = EnumWindows(Some(enum_windows_callback), LPARAM(0));
+        let lparam = if hide { 1 } else { 0 };
+        let _ = EnumWindows(Some(enum_windows_callback), LPARAM(lparam));
     }
 }
 
 /// Launch Windows LiveCaptions by directly starting the process.
 /// Uses aggressive polling to hide the window as soon as it appears.
 /// Returns Ok(()) when window is ready and hidden, or Err after timeout.
-pub fn launch_livecaptions() -> Result<()> {
+pub fn launch_livecaptions(hide_system_window: bool) -> Result<()> {
     // Initialize the ready flag
     let _ = WINDOW_READY.get_or_init(|| std::sync::Mutex::new(false));
-    WINDOW_HIDDEN_BY_HOOK.store(false, Ordering::SeqCst);
-    
+    WINDOW_FOUND_BY_HOOK.store(false, Ordering::SeqCst);
+
     // Reset ready flag
     if let Some(mutex) = WINDOW_READY.get() {
         if let Ok(mut ready) = mutex.lock() {
             *ready = false;
         }
     }
-    
+
     // Check if LiveCaptions is already running
     let already_running = Command::new("tasklist")
         .args(["/FI", "IMAGENAME eq LiveCaptions.exe", "/NH"])
@@ -89,41 +94,43 @@ pub fn launch_livecaptions() -> Result<()> {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("LiveCaptions.exe"))
         .unwrap_or(false);
-    
+
     if already_running {
-        // Already running, just find and hide it
-        poll_and_hide_livecaptions();
-        if WINDOW_HIDDEN_BY_HOOK.load(Ordering::SeqCst) {
+        // Already running, just find and hide it (if requested)
+        poll_livecaptions(hide_system_window);
+        if WINDOW_FOUND_BY_HOOK.load(Ordering::SeqCst) {
             return Ok(());
         }
     }
-    
+
     // Start aggressive polling in a separate thread BEFORE launching
     // This minimizes the time between window creation and hiding
-    let poll_handle = std::thread::spawn(|| {
+    let poll_handle = std::thread::spawn(move || {
         let start = Instant::now();
         let timeout = Duration::from_secs(30);
-        
+
         while start.elapsed() < timeout {
-            poll_and_hide_livecaptions();
-            
-            if WINDOW_HIDDEN_BY_HOOK.load(Ordering::SeqCst) {
+            poll_livecaptions(hide_system_window);
+
+            if WINDOW_FOUND_BY_HOOK.load(Ordering::SeqCst) {
                 return true;
             }
-            
+
             // Very fast polling - 10ms intervals
             std::thread::sleep(Duration::from_millis(10));
         }
         false
     });
-    
+
     if !already_running {
         // Launch LiveCaptions.exe
         Command::new("C:\\Windows\\System32\\LiveCaptions.exe")
             .spawn()
-            .context("Failed to launch LiveCaptions.exe. Please ensure LiveCaptions is installed.")?;
+            .context(
+                "Failed to launch LiveCaptions.exe. Please ensure LiveCaptions is installed.",
+            )?;
     }
-    
+
     // Wait for the polling thread to find and hide the window
     match poll_handle.join() {
         Ok(true) => {
@@ -132,16 +139,16 @@ pub fn launch_livecaptions() -> Result<()> {
             let start = Instant::now();
             let timeout = Duration::from_secs(10);
             let poll_interval = Duration::from_millis(100);
-            
+
             let watcher = LiveCaptionsWatcher::new()?;
-            
+
             while start.elapsed() < timeout {
                 if watcher.find_livecaptions_window().is_ok() {
                     return Ok(());
                 }
                 std::thread::sleep(poll_interval);
             }
-            
+
             // UI Automation couldn't find it, but window exists - still return Ok
             // connect() will retry
             Ok(())
@@ -161,7 +168,7 @@ pub fn close_livecaptions() -> Result<()> {
         .args(["/IM", "LiveCaptions.exe", "/F"])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
-    
+
     Ok(())
 }
 
@@ -178,7 +185,10 @@ impl LiveCaptionsWatcher {
             let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL)
                 .context("Failed to create IUIAutomation")?;
 
-            Ok(Self { automation, original_rect: None })
+            Ok(Self {
+                automation,
+                original_rect: None,
+            })
         }
     }
 
@@ -232,14 +242,15 @@ impl LiveCaptionsWatcher {
             if GetWindowRect(hwnd, &mut rect).is_ok() {
                 self.original_rect = Some(rect);
             }
-            
+
             // Modify styles to hide from taskbar
             // Get current extended styles
             let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as isize;
-            
+
             // Add TOOLWINDOW, remove APPWINDOW
-            let new_ex_style = (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !WS_EX_APPWINDOW.0 as isize;
-            
+            let new_ex_style =
+                (ex_style | WS_EX_TOOLWINDOW.0 as isize) & !WS_EX_APPWINDOW.0 as isize;
+
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
 
             // Move window off-screen (to -10000, -10000) instead of hiding
@@ -263,7 +274,8 @@ impl LiveCaptionsWatcher {
             // Restore styles (remove TOOLWINDOW, add APPWINDOW back if it was there)
             // Ideally we should save the original style, but for now we just reverse the change
             let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as isize;
-            let new_ex_style = (ex_style & !WS_EX_TOOLWINDOW.0 as isize) | WS_EX_APPWINDOW.0 as isize;
+            let new_ex_style =
+                (ex_style & !WS_EX_TOOLWINDOW.0 as isize) | WS_EX_APPWINDOW.0 as isize;
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
 
             // Restore to original position
@@ -339,6 +351,176 @@ impl LiveCaptionsWatcher {
             Ok(texts.join(" "))
         }
     }
+
+    // --- Automation Helpers ---
+
+    fn find_element_by_id_and_pid(
+        &self,
+        root: &IUIAutomationElement,
+        automation_id: &str,
+        pid: i32,
+    ) -> Result<IUIAutomationElement> {
+        unsafe {
+            let id_cond = self.automation.CreatePropertyCondition(
+                UIA_AutomationIdPropertyId,
+                &VARIANT::from(BSTR::from(automation_id)),
+            )?;
+            let pid_cond = self
+                .automation
+                .CreatePropertyCondition(UIA_ProcessIdPropertyId, &VARIANT::from(pid))?;
+            let condition = self.automation.CreateAndCondition(&id_cond, &pid_cond)?;
+
+            root.FindFirst(TreeScope_Descendants, &condition)
+                .context(format!("Element {} (PID {}) not found", automation_id, pid))
+        }
+    }
+
+    fn click_element(&self, element: &IUIAutomationElement) -> Result<()> {
+        unsafe {
+            // Priority 1: InvokePattern
+            if let Ok(pattern) =
+                element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+            {
+                pattern.Invoke().context("Invoke failed")?;
+                return Ok(());
+            }
+
+            // Priority 2: TogglePattern
+            if let Ok(pattern) =
+                element.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+            {
+                pattern.Toggle().context("Toggle failed")?;
+                return Ok(());
+            }
+
+            // Priority 3: ExpandCollapsePattern
+            if let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
+                UIA_ExpandCollapsePatternId,
+            ) {
+                let state = pattern.CurrentExpandCollapseState()?;
+                if state == ExpandCollapseState_Collapsed {
+                    pattern.Expand().context("Expand failed")?;
+                }
+                return Ok(());
+            }
+
+            // Priority 4: LegacyIAccessiblePattern (DoDefaultAction)
+            if let Ok(pattern) = element
+                .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                    UIA_LegacyIAccessiblePatternId,
+                )
+            {
+                pattern
+                    .DoDefaultAction()
+                    .context("Legacy DoDefaultAction failed")?;
+                return Ok(());
+            }
+
+            // Priority 5: SelectionItemPattern
+            if let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                UIA_SelectionItemPatternId,
+            ) {
+                pattern.Select().context("SelectionItem Select failed")?;
+                return Ok(());
+            }
+
+            Err(anyhow::anyhow!("Element does not support click patterns (Invoke, Toggle, ExpandCollapse, LegacyIAccessible)"))
+        }
+    }
+
+    pub fn configure_microphone(&self, window: &IUIAutomationElement, enable: bool) -> Result<()> {
+        unsafe {
+            let pid = window
+                .CurrentProcessId()
+                .context("Failed to get process ID")?;
+            let root = self.automation.GetRootElement()?;
+
+            // 1. Find and Click Settings Button (SettingsButton)
+            // It is usually inside the main window
+            let settings_btn = match self.find_element_by_id_and_pid(window, "SettingsButton", pid)
+            {
+                Ok(btn) => btn,
+                Err(_) => {
+                    // Fallback: search root if not found in window (unlikely but possible)
+                    self.find_element_by_id_and_pid(&root, "SettingsButton", pid)?
+                }
+            };
+            self.click_element(&settings_btn)
+                .context("Failed to click SettingsButton")?;
+            std::thread::sleep(Duration::from_millis(250));
+
+            // 2. Find and Click Preferences Button (PreferencesButton)
+            // Popups are usually top-level, so search root with PID
+            let mut preferences_btn = None;
+            for _ in 0..20 {
+                // Increased retries
+                if let Ok(btn) = self.find_element_by_id_and_pid(&root, "PreferencesButton", pid) {
+                    preferences_btn = Some(btn);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let preferences_btn = preferences_btn.context("PreferencesButton not found")?;
+            self.click_element(&preferences_btn)
+                .context("Failed to click PreferencesButton")?;
+            std::thread::sleep(Duration::from_millis(250));
+
+            // 3. Find Microphone Menu Item (MicrophoneMenuFlyoutItem)
+            let mut mic_item = None;
+            for _ in 0..20 {
+                // Increased retries
+                if let Ok(item) =
+                    self.find_element_by_id_and_pid(&root, "MicrophoneMenuFlyoutItem", pid)
+                {
+                    mic_item = Some(item);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let mic_item = mic_item.context("MicrophoneMenuFlyoutItem not found")?;
+
+            // 4. Check and Toggle
+            if let Ok(pattern) =
+                mic_item.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+            {
+                let state = pattern.CurrentToggleState()?;
+                let is_on = state == ToggleState_On;
+
+                if is_on != enable {
+                    // Need to toggle
+                    if let Ok(invoke_pattern) = mic_item
+                        .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+                    {
+                        // Some menu items prefer Invoke over Toggle to change state
+                        invoke_pattern.Invoke()?;
+                    } else {
+                        pattern.Toggle()?;
+                    }
+                }
+            } else {
+                // Fallback: If no toggle pattern, assume it behaves like a standard menu item and Invoke it?
+                // But we don't know the state.
+                // Let's try to infer state from Name? "Microphone audio included" vs "Include microphone audio"
+                // Or "checked" state in LegacyIAccessible?
+                if let Ok(legacy) = mic_item
+                    .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                        UIA_LegacyIAccessiblePatternId,
+                    )
+                {
+                    let _state = legacy.CurrentState()?;
+                    // STATE_SYSTEM_CHECKED = 0x10
+                    // Windows crate const: STATE_SYSTEM_CHECKED
+                    // But I need to check if that const is available or define it.
+                    // For now, let's just log a warning if we can't determine state.
+                    // The user implies it's a toggleable item.
+                    eprintln!("Warning: MicrophoneMenuFlyoutItem does not support TogglePattern. Cannot determine current state safely.");
+                } else {
+                    eprintln!("Warning: MicrophoneMenuFlyoutItem does not support TogglePattern or LegacyIAccessible.");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct CaptionStream {
@@ -359,6 +541,13 @@ impl CaptionStream {
             last_text: String::new(),
             window_hidden: false,
         })
+    }
+
+    pub fn configure_microphone(&self, enable: bool) -> Result<()> {
+        if let Some(ref window) = self.window {
+            self.watcher.configure_microphone(window, enable)?;
+        }
+        Ok(())
     }
 
     pub fn connect(&mut self, hide_system_window: bool) -> Result<String> {

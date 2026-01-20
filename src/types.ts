@@ -57,6 +57,7 @@ export interface AppConfig {
   theme: string;
   hide_system_window: boolean;
   always_on_top: boolean;
+  include_microphone: boolean;
   summary_provider: string;
   google_proxy: ProxyConfig;
   microsoft_api_key: string | null;
@@ -85,6 +86,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   theme: "dark",
   hide_system_window: true,
   always_on_top: false,
+  include_microphone: false,
   summary_provider: "openai:default",
   google_proxy: DEFAULT_PROXY,
   microsoft_api_key: "",

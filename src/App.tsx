@@ -956,6 +956,15 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
         <span>Hide System LiveCaptions Window</span>
       </div>
 
+      {/* Include Microphone */}
+      <div className="form-group checkbox-group">
+        <label className="switch">
+          <input type="checkbox" checked={formData.include_microphone} onChange={e => setFormData(prev => ({ ...prev, include_microphone: e.target.checked }))} />
+          <span className="slider round"></span>
+        </label>
+        <span>Include Microphone Audio</span>
+      </div>
+
       {/* Always On Top */}
       <div className="form-group checkbox-group">
         <label className="switch">
