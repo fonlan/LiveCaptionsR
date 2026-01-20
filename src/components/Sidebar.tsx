@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { SessionMetadata } from '../types';
 import { IconTrash } from './Icons';
 
@@ -11,10 +12,11 @@ interface SidebarProps {
 }
 
 export function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: SidebarProps) {
+  const { t } = useTranslation();
   return (
     <div className={`sidebar ${isOpen ? 'open' : 'closed'}`}>
       <div className="sidebar-header">
-        <h3>Sessions</h3>
+        <h3>{t("sidebar.title")}</h3>
       </div>
       <div className="session-list">
         {sessions.map(session => (
@@ -37,13 +39,13 @@ export function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: Sid
                 {session.preview && session.preview.length > 30 ? "..." : ""}
               </span>
             </div>
-            <button 
-              className="btn-delete-session" 
+            <button
+              className="btn-delete-session"
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete(session.id, e);
               }}
-              title="Delete Session"
+              title={t("sidebar.deleteTooltip")}
             >
               <IconTrash />
             </button>
@@ -51,7 +53,7 @@ export function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: Sid
         ))}
         {sessions.length === 0 && (
           <div className="empty-sessions">
-            <span>No saved sessions</span>
+            <span>{t("sidebar.emptyState")}</span>
           </div>
         )}
       </div>

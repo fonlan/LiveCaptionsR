@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useTranslation } from "react-i18next";
 import Markdown from 'react-markdown';
 import "./App.css";
 import { 
@@ -127,8 +128,9 @@ function generateId(): string {
 // --- Main App Component ---
 
 function App() {
+  const { t, i18n } = useTranslation();
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
-  const [status, setStatus] = useState<string>("Ready");
+  const [status, setStatus] = useState<string>(t("status.ready"));
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
@@ -295,6 +297,13 @@ function App() {
     historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
     cardsRef.current = cards;
   }, [cards, partialText]);
+
+  // Handle language change from config
+  useEffect(() => {
+    if (config.language && i18n.language !== config.language) {
+      i18n.changeLanguage(config.language);
+    }
+  }, [config.language]);
 
   useEffect(() => {
     configRef.current = config;
@@ -521,10 +530,10 @@ function App() {
     try {
       await invoke("save_config", { config: newConfig });
       setConfig(newConfig);
-      addToast('success', 'Configuration saved successfully');
+      addToast('success', t("toast.configSaved"));
     } catch (err) {
       console.error("Failed to save config:", err);
-      addToast('error', `Failed to save configuration: ${err}`);
+      addToast('error', t("toast.configSaveFailed", { error: String(err) }));
     }
   };
 
@@ -560,16 +569,16 @@ function App() {
       {/* Custom Titlebar */}
       <div className="custom-titlebar">
         <div className="titlebar-drag" data-tauri-drag-region>
-          <span className="titlebar-title" data-tauri-drag-region>LiveCaptionsR</span>
+          <span className="titlebar-title" data-tauri-drag-region>{t("app.title")}</span>
         </div>
         <div className="titlebar-controls">
-          <button className="titlebar-btn" onClick={handleWindowMinimize} title="Minimize">
+          <button className="titlebar-btn" onClick={handleWindowMinimize} title={t("titlebar.minimize")}>
             <IconWindowMinimize />
           </button>
-          <button className="titlebar-btn" onClick={handleWindowMaximize} title="Maximize">
+          <button className="titlebar-btn" onClick={handleWindowMaximize} title={t("titlebar.maximize")}>
             <IconWindowMaximize />
           </button>
-          <button className="titlebar-btn titlebar-btn-close" onClick={handleWindowClose} title="Close">
+          <button className="titlebar-btn titlebar-btn-close" onClick={handleWindowClose} title={t("titlebar.close")}>
             <IconWindowClose />
           </button>
         </div>
@@ -587,10 +596,10 @@ function App() {
       <div className="history-area">
         <div className="history-header">
           <div className="history-header-left">
-            <button 
-              className="btn-icon" 
-              onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-              title={isSidebarOpen ? "Close Sidebar" : "Open Sessions"}
+            <button
+              className="btn-icon"
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              title={isSidebarOpen ? t("sidebar.closeTooltip") : t("sidebar.openTooltip")}
               style={{ marginRight: '8px' }}
             >
               <IconList />
@@ -610,18 +619,18 @@ function App() {
                     }}
                     onClick={e => e.stopPropagation()}
                   />
-              ) : (
-                  <span 
-                    onClick={() => { 
+                  ) : (
+                  <span
+                    onClick={() => {
                         if (activeSessionId) {
                             setRenameValue(activeSessionName);
                             setIsRenaming(true);
                         }
                     }}
-                    title={activeSessionId ? "Click to rename" : ""}
+                    title={activeSessionId ? t("sidebar.renameTooltip") : ""}
                     style={{ cursor: activeSessionId ? 'text' : 'default', borderBottom: activeSessionId ? '1px dashed var(--text-muted)' : 'none' }}
                   >
-                    {activeSessionName || "No Session"} 
+                    {activeSessionName || t("session.noSession")}
                   </span>
               )}
               <span style={{opacity: 0.5, marginLeft: 8}}>({cards.length})</span>
@@ -633,7 +642,7 @@ function App() {
         <div className="history-scroll">
           {cards.length === 0 && !partialText ? (
             <div className="history-empty">
-                {activeSessionId ? "Waiting for speech..." : "Select or Start a Session"}
+                {activeSessionId ? t("session.waitingForSpeech") : t("session.selectOrStart")}
             </div>
           ) : (
             <>
@@ -648,12 +657,12 @@ function App() {
                     <div className="card-translated">{item.translated}</div>
                   ) : (
                     <div className="card-failed">
-                      <span className="failed-text">Translation failed</span>
+                      <span className="failed-text">{t("translation.failed")}</span>
                       <button
                         className="btn-retry"
                         onClick={() => retryTranslation(item.id, item.original)}
                         disabled={item.retrying}
-                        title="Retry translation"
+                        title={t("translation.retry")}
                       >
                         {item.retrying ? <span className="spinner" /> : <IconRetry />}
                       </button>
@@ -692,13 +701,13 @@ function App() {
             <div className="controls-center">
             <button className={`fab-main ${isRunning ? 'stop' : 'start'}`} onClick={toggleWatcher}>
                 {isRunning ? <IconSquare /> : <IconPlay />}
-                <span>{isRunning ? "STOP" : "START"}</span>
+                <span>{isRunning ? t("controls.stop") : t("controls.start")}</span>
             </button>
-            <button 
+            <button
                 className="btn-summary"
                 onClick={handleSummarize}
                 disabled={cards.length === 0}
-                title="Summarize Captions"
+                title={t("controls.summarize")}
                 style={{ 
                 marginLeft: '12px',
                 height: '40px',
@@ -719,7 +728,7 @@ function App() {
             </div>
             <div className="controls-right">
             {appVersion && <span className="app-version">v{appVersion}</span>}
-            <button className="btn-icon settings-btn" onClick={() => setIsSettingsOpen(true)} title="Settings">
+            <button className="btn-icon settings-btn" onClick={() => setIsSettingsOpen(true)} title={t("controls.settings")}>
                 <IconSettings />
             </button>
             </div>
@@ -739,7 +748,7 @@ function App() {
       >
         <div className="settings-drawer" onMouseDown={e => e.stopPropagation()} onMouseUp={e => e.stopPropagation()}>
           <header className="settings-header">
-            <h2>Configuration</h2>
+            <h2>{t("settings.title")}</h2>
             <button className="btn-icon" onClick={() => setIsSettingsOpen(false)}>
               <IconX />
             </button>
@@ -772,6 +781,7 @@ function App() {
 
 // --- Proxy Config Component ---
 function ProxyConfigForm({ proxy, onChange, label }: { proxy: ProxyConfig; onChange: (p: ProxyConfig) => void; label: string }) {
+  const { t } = useTranslation();
   return (
     <div className="proxy-config">
       <div className="form-group checkbox-group">
@@ -783,12 +793,12 @@ function ProxyConfigForm({ proxy, onChange, label }: { proxy: ProxyConfig; onCha
       </div>
       {proxy.enabled && (
         <div className="form-group">
-          <label>Proxy URL</label>
+          <label>{t("settings.translation.proxyUrl")}</label>
           <input
             type="text"
             value={proxy.url || ''}
             onChange={e => onChange({ ...proxy, url: e.target.value })}
-            placeholder="http://127.0.0.1:7890 or socks5://127.0.0.1:1080"
+            placeholder={t("settings.translation.proxyUrlPlaceholder")}
           />
         </div>
       )}
@@ -798,6 +808,7 @@ function ProxyConfigForm({ proxy, onChange, label }: { proxy: ProxyConfig; onCha
 
 // --- Summary Modal Component ---
 function SummaryModal({ isOpen, onClose, text, isLoading }: { isOpen: boolean; onClose: () => void; text: string; isLoading: boolean }) {
+  const { t } = useTranslation();
   const [isCopied, setIsCopied] = useState(false);
 
   useEffect(() => {
@@ -820,13 +831,13 @@ function SummaryModal({ isOpen, onClose, text, isLoading }: { isOpen: boolean; o
     <div className="settings-overlay open" onClick={onClose}>
       <div className="settings-drawer summary-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '800px', width: '90%' }}>
         <header className="settings-header">
-          <h2>AI Summary</h2>
+          <h2>{t("summary.title")}</h2>
           <div style={{ display: 'flex', gap: '8px' }}>
             {!isLoading && text && (
-              <button 
-                className="btn-icon" 
-                onClick={handleCopy} 
-                title="Copy to Clipboard"
+              <button
+                className="btn-icon"
+                onClick={handleCopy}
+                title={t("summary.copyToClipboard")}
                 style={{ color: isCopied ? '#4ade80' : 'currentColor' }}
               >
                 {isCopied ? <IconCheck /> : <IconCopy />}
@@ -841,7 +852,7 @@ function SummaryModal({ isOpen, onClose, text, isLoading }: { isOpen: boolean; o
           {isLoading ? (
             <div className="summary-loading" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
               <span className="spinner" style={{ display: 'inline-block', marginBottom: '10px' }}></span>
-              <div>Generating summary...</div>
+              <div>{t("summary.generating")}</div>
             </div>
           ) : (
              <div className="summary-text markdown-body" style={{ lineHeight: '1.6', fontSize: '15px', color: 'var(--text-primary)', padding: '0 5px' }}>
@@ -856,12 +867,20 @@ function SummaryModal({ isOpen, onClose, text, isLoading }: { isOpen: boolean; o
 
 // --- Settings Form ---
 function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppConfig) => void }) {
+  const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'ai' | 'summary'>('general');
 
   useEffect(() => {
     setFormData(config);
   }, [config]);
+
+  // Handle immediate language change
+  useEffect(() => {
+    if (formData.language && i18n.language !== formData.language) {
+      i18n.changeLanguage(formData.language);
+    }
+  }, [formData.language, i18n]);
 
   const getSelectedProvider = (): { type: string; endpointId?: string } => {
     if (formData.provider.startsWith('openai:')) {
@@ -918,22 +937,34 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
 
   const renderGeneralTab = () => (
     <div className="tab-panel">
+       {/* Language Settings */}
+       <div className="form-group">
+        <label>{t("settings.general.language")}</label>
+        <select
+          value={formData.language || 'en'}
+          onChange={e => setFormData(prev => ({ ...prev, language: e.target.value }))}
+        >
+          <option value="en">English</option>
+          <option value="zh-CN">简体中文</option>
+        </select>
+      </div>
+
        {/* Theme Settings */}
        <div className="form-group">
-        <label>Theme</label>
+        <label>{t("settings.general.theme")}</label>
         <select
           value={formData.theme || 'dark'}
           onChange={e => setFormData(prev => ({ ...prev, theme: e.target.value }))}
         >
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
+          <option value="dark">{t("settings.general.themeDark")}</option>
+          <option value="light">{t("settings.general.themeLight")}</option>
         </select>
       </div>
 
       {/* Opacity Settings */}
       <div className="form-group">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-          <label>Background Opacity</label>
+          <label>{t("settings.general.backgroundOpacity")}</label>
           <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{Math.round((formData.opacity ?? 1.0) * 100)}%</span>
         </div>
         <input
@@ -953,7 +984,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           <input type="checkbox" checked={formData.hide_system_window} onChange={e => setFormData(prev => ({ ...prev, hide_system_window: e.target.checked }))} />
           <span className="slider round"></span>
         </label>
-        <span>Hide System LiveCaptions Window</span>
+        <span>{t("settings.general.hideSystemWindow")}</span>
       </div>
 
       {/* Include Microphone */}
@@ -962,15 +993,15 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           <input type="checkbox" checked={formData.include_microphone} onChange={e => setFormData(prev => ({ ...prev, include_microphone: e.target.checked }))} />
           <span className="slider round"></span>
         </label>
-        <span>Include Microphone Audio</span>
+        <span>{t("settings.general.includeMicrophone")}</span>
       </div>
 
       {/* Always On Top */}
       <div className="form-group checkbox-group">
         <label className="switch">
-          <input 
-            type="checkbox" 
-            checked={formData.always_on_top} 
+          <input
+            type="checkbox"
+            checked={formData.always_on_top}
             onChange={async e => {
               const checked = e.target.checked;
               setFormData(prev => ({ ...prev, always_on_top: checked }));
@@ -980,11 +1011,11 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
               } catch (err) {
                 console.error("Failed to set always on top:", err);
               }
-            }} 
+            }}
           />
           <span className="slider round"></span>
         </label>
-        <span>Always on Top</span>
+        <span>{t("settings.general.alwaysOnTop")}</span>
       </div>
     </div>
   );
@@ -994,7 +1025,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
       {/* Language Settings */}
       <div className="form-row">
         <div className="form-group">
-          <label>Source Language</label>
+          <label>{t("settings.translation.sourceLanguage")}</label>
           <select
             value={formData.source_lang}
             onChange={e => setFormData(prev => ({ ...prev, source_lang: e.target.value }))}
@@ -1007,7 +1038,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           </select>
         </div>
         <div className="form-group">
-          <label>Target Language</label>
+          <label>{t("settings.translation.targetLanguage")}</label>
           <select
             value={formData.target_lang}
             onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))}
@@ -1023,7 +1054,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
 
       {/* Provider Selection */}
       <div className="form-group">
-        <label>Translation Provider</label>
+        <label>{t("settings.translation.provider")}</label>
         <select
           value={selectedProvider.type === 'openai' ? 'openai' : formData.provider}
           onChange={e => {
@@ -1035,16 +1066,16 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
             }
           }}
         >
-          <option value="google">Google Translate (Free)</option>
-          <option value="microsoft">Microsoft Azure</option>
-          <option value="openai">OpenAI Compatible</option>
+          <option value="google">{t("settings.translation.google")}</option>
+          <option value="microsoft">{t("settings.translation.microsoft")}</option>
+          <option value="openai">{t("settings.translation.openai")}</option>
         </select>
       </div>
 
       {/* OpenAI Endpoint Selection */}
       {selectedProvider.type === 'openai' && formData.openai_endpoints.length > 1 && (
         <div className="form-group">
-          <label>Select Endpoint</label>
+          <label>{t("settings.translation.selectEndpoint")}</label>
           <select
             value={selectedProvider.endpointId}
             onChange={e => setProvider('openai', e.target.value)}
@@ -1061,9 +1092,9 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
         <div className="endpoint-card" style={{ marginTop: '0px' }}>
           <div className="form-group">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-              <label style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Context Memory</label>
-              <span style={{ 
-                color: 'var(--primary)', 
+              <label style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{t("settings.translation.contextMemory")}</label>
+              <span style={{
+                color: 'var(--primary)',
                 background: 'var(--bg-input)',
                 border: '1px solid var(--border-color)',
                 padding: '2px 8px',
@@ -1073,7 +1104,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
                 minWidth: '100px',
                 textAlign: 'center'
               }}>
-                {formData.openai_context_count ?? 2} previous cards
+                {formData.openai_context_count ?? 2} {t("settings.translation.contextMemoryUnit")}
               </span>
             </div>
             <input
@@ -1092,10 +1123,10 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
               }}
             />
             <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.4' }}>
-              Includes previous captions in the translation prompt. 
-              { (formData.openai_context_count ?? 2) > 4 && 
+              {t("settings.translation.contextMemoryNote")}
+              { (formData.openai_context_count ?? 2) > 4 &&
                 <span style={{ color: 'var(--warning)', marginLeft: '6px' }}>
-                  High context may increase latency.
+                  {t("settings.translation.contextMemoryWarning")}
                 </span>
               }
             </div>
@@ -1106,11 +1137,11 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
       {/* Google Settings */}
       {formData.provider === 'google' && (
         <>
-          <div className="divider">Google Translate Settings</div>
+          <div className="divider">{t("settings.translation.googleSettings")}</div>
           <ProxyConfigForm
             proxy={formData.google_proxy}
             onChange={p => setFormData(prev => ({ ...prev, google_proxy: p }))}
-            label="Use Proxy"
+            label={t("settings.translation.useProxy")}
           />
         </>
       )}
@@ -1118,19 +1149,19 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
       {/* Microsoft Settings */}
       {formData.provider === 'microsoft' && (
         <>
-          <div className="divider">Microsoft Azure Settings</div>
+          <div className="divider">{t("settings.translation.microsoftSettings")}</div>
           <div className="form-group">
-            <label>API Key</label>
+            <label>{t("settings.translation.apiKey")}</label>
             <input type="password" value={formData.microsoft_api_key || ''} onChange={e => setFormData(prev => ({ ...prev, microsoft_api_key: e.target.value }))} />
           </div>
           <div className="form-group">
-            <label>Region</label>
-            <input type="text" value={formData.microsoft_region || ''} onChange={e => setFormData(prev => ({ ...prev, microsoft_region: e.target.value }))} placeholder="eastus" />
+            <label>{t("settings.translation.region")}</label>
+            <input type="text" value={formData.microsoft_region || ''} onChange={e => setFormData(prev => ({ ...prev, microsoft_region: e.target.value }))} placeholder={t("settings.translation.regionPlaceholder")} />
           </div>
           <ProxyConfigForm
             proxy={formData.microsoft_proxy}
             onChange={p => setFormData(prev => ({ ...prev, microsoft_proxy: p }))}
-            label="Use Proxy"
+            label={t("settings.translation.useProxy")}
           />
         </>
       )}
@@ -1140,8 +1171,8 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
   const renderAIConfigTab = () => (
     <div className="tab-panel">
       <div className="divider">
-        AI Providers Configuration
-        <button className="btn-add-endpoint" onClick={addEndpoint} title="Add Endpoint">
+        {t("settings.ai.title")}
+        <button className="btn-add-endpoint" onClick={addEndpoint} title={t("settings.ai.addEndpoint")}>
           <IconPlus />
         </button>
       </div>
@@ -1153,30 +1184,30 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
               value={ep.name}
               onChange={e => updateEndpoint(idx, { name: e.target.value })}
               className="endpoint-name-input"
-              placeholder="Endpoint Name"
+              placeholder={t("settings.ai.endpointNamePlaceholder")}
             />
             {formData.openai_endpoints.length > 1 && (
-              <button className="btn-remove-endpoint" onClick={() => removeEndpoint(idx)} title="Remove">
+              <button className="btn-remove-endpoint" onClick={() => removeEndpoint(idx)} title={t("settings.ai.removeEndpoint")}>
                 <IconMinus />
               </button>
             )}
           </div>
           <div className="form-group">
-            <label>API Key</label>
+            <label>{t("settings.ai.endpointName")}</label>
             <input type="password" value={ep.api_key} onChange={e => updateEndpoint(idx, { api_key: e.target.value })} />
           </div>
           <div className="form-group">
-            <label>Base URL</label>
-            <input type="text" value={ep.base_url} onChange={e => updateEndpoint(idx, { base_url: e.target.value })} placeholder="https://api.openai.com/v1" />
+            <label>{t("settings.ai.baseUrl")}</label>
+            <input type="text" value={ep.base_url} onChange={e => updateEndpoint(idx, { base_url: e.target.value })} placeholder={t("settings.ai.baseUrlPlaceholder")} />
           </div>
           <div className="form-group">
-            <label>Model</label>
-            <input type="text" value={ep.model} onChange={e => updateEndpoint(idx, { model: e.target.value })} placeholder="gpt-4o-mini" />
+            <label>{t("settings.ai.model")}</label>
+            <input type="text" value={ep.model} onChange={e => updateEndpoint(idx, { model: e.target.value })} placeholder={t("settings.ai.modelPlaceholder")} />
           </div>
           <ProxyConfigForm
             proxy={ep.proxy}
             onChange={p => updateEndpoint(idx, { proxy: p })}
-            label="Use Proxy"
+            label={t("settings.translation.useProxy")}
           />
         </div>
       ))}
@@ -1186,7 +1217,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
   const renderSummaryTab = () => (
     <div className="tab-panel">
       <div className="form-group">
-        <label>Summary Provider (OpenAI Only)</label>
+        <label>{t("settings.summary.provider")}</label>
         <select
           value={formData.summary_provider || (formData.openai_endpoints[0] ? `openai:${formData.openai_endpoints[0].id}` : '')}
           onChange={e => setFormData(prev => ({ ...prev, summary_provider: e.target.value }))}
@@ -1198,7 +1229,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           ))}
         </select>
         <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
-          Configures which AI model generates summaries of your captions. Ensure the selected provider is configured in the "AI Config" tab.
+          {t("settings.summary.description")}
         </div>
       </div>
     </div>
@@ -1208,29 +1239,29 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
     <div className="form-stack">
       {/* Tabs */}
       <div className="settings-tabs">
-        <button 
+        <button
           className={`tab-btn ${activeTab === 'general' ? 'active' : ''}`}
           onClick={() => setActiveTab('general')}
         >
-          General
+          {t("settings.tabs.general")}
         </button>
-        <button 
+        <button
           className={`tab-btn ${activeTab === 'translation' ? 'active' : ''}`}
           onClick={() => setActiveTab('translation')}
         >
-          Translation
+          {t("settings.tabs.translation")}
         </button>
-        <button 
+        <button
           className={`tab-btn ${activeTab === 'ai' ? 'active' : ''}`}
           onClick={() => setActiveTab('ai')}
         >
-          AI Config
+          {t("settings.tabs.ai")}
         </button>
-        <button 
+        <button
           className={`tab-btn ${activeTab === 'summary' ? 'active' : ''}`}
           onClick={() => setActiveTab('summary')}
         >
-          Summary
+          {t("settings.tabs.summary")}
         </button>
       </div>
 
@@ -1245,7 +1276,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
       {/* Save Button */}
       <div className="form-actions" style={{ marginTop: 'auto', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
         <button className="btn-save" onClick={() => onSave(formData)}>
-          <IconCheck /> Save Configuration
+          <IconCheck /> {t("settings.save")}
         </button>
       </div>
     </div>

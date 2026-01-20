@@ -1,0 +1,116 @@
+{
+  "app": {
+    "title": "LiveCaptionsR"
+  },
+  "status": {
+    "ready": "Ready",
+    "running": "Running",
+    "stopped": "Stopped",
+    "starting": "Starting...",
+    "failedToStart": "Failed to start: {{error}}"
+  },
+  "session": {
+    "defaultName": "Session {{date}}",
+    "switchConfirm": "Stop current capture to switch session?",
+    "deleteConfirm": "Are you sure you want to delete this session?",
+    "failedToCreate": "Failed to create new session",
+    "failedToLoad": "Failed to load session data",
+    "deleted": "Session deleted",
+    "failedToDelete": "Failed to delete session",
+    "renamed": "Session renamed",
+    "failedToRename": "Failed to rename session",
+    "noSession": "No Session",
+    "waitingForSpeech": "Waiting for speech...",
+    "selectOrStart": "Select or Start a Session"
+  },
+  "translation": {
+    "failed": "Translation failed",
+    "retry": "Retry translation",
+    "retrying": "Retrying..."
+  },
+  "titlebar": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "close": "Close"
+  },
+  "sidebar": {
+    "title": "Sessions",
+    "openTooltip": "Open Sessions",
+    "closeTooltip": "Close Sidebar",
+    "renameTooltip": "Click to rename",
+    "deleteTooltip": "Delete Session",
+    "emptyState": "No saved sessions"
+  },
+  "controls": {
+    "settings": "Settings",
+    "summarize": "Summarize Captions",
+    "start": "START",
+    "stop": "STOP"
+  },
+  "settings": {
+    "title": "Configuration",
+    "save": "Save Configuration",
+    "tabs": {
+      "general": "General",
+      "translation": "Translation",
+      "ai": "AI Config",
+      "summary": "Summary"
+    },
+    "general": {
+      "language": "Language",
+      "theme": "Theme",
+      "themeDark": "Dark",
+      "themeLight": "Light",
+      "backgroundOpacity": "Background Opacity",
+      "hideSystemWindow": "Hide System LiveCaptions Window",
+      "includeMicrophone": "Include Microphone Audio",
+      "alwaysOnTop": "Always on Top"
+    },
+    "translation": {
+      "sourceLanguage": "Source Language",
+      "targetLanguage": "Target Language",
+      "provider": "Translation Provider",
+      "google": "Google Translate (Free)",
+      "microsoft": "Microsoft Azure",
+      "openai": "OpenAI Compatible",
+      "selectEndpoint": "Select Endpoint",
+      "contextMemory": "Context Memory",
+      "contextMemoryUnit": "previous cards",
+      "contextMemoryNote": "Includes previous captions in the translation prompt.",
+      "contextMemoryWarning": "High context may increase latency.",
+      "googleSettings": "Google Translate Settings",
+      "microsoftSettings": "Microsoft Azure Settings",
+      "apiKey": "API Key",
+      "region": "Region",
+      "regionPlaceholder": "eastus",
+      "useProxy": "Use Proxy",
+      "proxyUrl": "Proxy URL",
+      "proxyUrlPlaceholder": "http://127.0.0.1:7890 or socks5://127.0.0.1:1080"
+    },
+    "ai": {
+      "title": "AI Providers Configuration",
+      "addEndpoint": "Add Endpoint",
+      "removeEndpoint": "Remove",
+      "endpointName": "Endpoint Name",
+      "endpointNamePlaceholder": "Endpoint Name",
+      "baseUrl": "Base URL",
+      "baseUrlPlaceholder": "https://api.openai.com/v1",
+      "model": "Model",
+      "modelPlaceholder": "gpt-4o-mini"
+    },
+    "summary": {
+      "provider": "Summary Provider (OpenAI Only)",
+      "description": "Configures which AI model generates summaries of your captions. Ensure that selected provider is configured in the \"AI Config\" tab."
+    }
+  },
+  "summary": {
+    "title": "AI Summary",
+    "copyToClipboard": "Copy to Clipboard",
+    "generating": "Generating summary...",
+    "error": "Error generating summary: {{error}}"
+  },
+  "toast": {
+    "configSaved": "Configuration saved successfully",
+    "configSaveFailed": "Failed to save configuration: {{error}}"
+  }
+}

@@ -66,6 +66,7 @@ export interface AppConfig {
   openai_endpoints: OpenAIEndpoint[];
   openai_context_count: number;
   opacity: number;
+  language: string;
 }
 
 export const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
@@ -95,6 +96,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   openai_endpoints: [DEFAULT_OPENAI_ENDPOINT],
   openai_context_count: 2,
   opacity: 1.0,
+  language: "en",
 };
 
 export const LANGUAGES = [

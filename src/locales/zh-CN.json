@@ -1,0 +1,116 @@
+{
+  "app": {
+    "title": "LiveCaptionsR"
+  },
+  "status": {
+    "ready": "就绪",
+    "running": "运行中",
+    "stopped": "已停止",
+    "starting": "启动中...",
+    "failedToStart": "启动失败: {{error}}"
+  },
+  "session": {
+    "defaultName": "会话 {{date}}",
+    "switchConfirm": "停止当前捕获以切换会话?",
+    "deleteConfirm": "确定要删除此会话吗?",
+    "failedToCreate": "创建新会话失败",
+    "failedToLoad": "加载会话数据失败",
+    "deleted": "会话已删除",
+    "failedToDelete": "删除会话失败",
+    "renamed": "会话已重命名",
+    "failedToRename": "重命名会话失败",
+    "noSession": "无会话",
+    "waitingForSpeech": "等待语音...",
+    "selectOrStart": "选择或开始会话"
+  },
+  "translation": {
+    "failed": "翻译失败",
+    "retry": "重试翻译",
+    "retrying": "重试中..."
+  },
+  "titlebar": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "close": "关闭"
+  },
+  "sidebar": {
+    "title": "会话",
+    "openTooltip": "打开会话列表",
+    "closeTooltip": "关闭侧边栏",
+    "renameTooltip": "点击重命名",
+    "deleteTooltip": "删除会话",
+    "emptyState": "无保存的会话"
+  },
+  "controls": {
+    "settings": "设置",
+    "summarize": "生成摘要",
+    "start": "开始",
+    "stop": "停止"
+  },
+  "settings": {
+    "title": "配置",
+    "save": "保存配置",
+    "tabs": {
+      "general": "常规",
+      "translation": "翻译",
+      "ai": "AI 配置",
+      "summary": "摘要"
+    },
+    "general": {
+      "language": "语言",
+      "theme": "主题",
+      "themeDark": "深色",
+      "themeLight": "浅色",
+      "backgroundOpacity": "背景透明度",
+      "hideSystemWindow": "隐藏系统实时字幕窗口",
+      "includeMicrophone": "包含麦克风音频",
+      "alwaysOnTop": "始终置顶"
+    },
+    "translation": {
+      "sourceLanguage": "源语言",
+      "targetLanguage": "目标语言",
+      "provider": "翻译服务商",
+      "google": "Google 翻译 (免费)",
+      "microsoft": "Microsoft Azure",
+      "openai": "OpenAI 兼容",
+      "selectEndpoint": "选择端点",
+      "contextMemory": "上下文记忆",
+      "contextMemoryUnit": "个历史卡片",
+      "contextMemoryNote": "在翻译提示中包含之前的字幕。",
+      "contextMemoryWarning": "高上下文可能会增加延迟。",
+      "googleSettings": "Google 翻译设置",
+      "microsoftSettings": "Microsoft Azure 设置",
+      "apiKey": "API 密钥",
+      "region": "区域",
+      "regionPlaceholder": "eastus",
+      "useProxy": "使用代理",
+      "proxyUrl": "代理地址",
+      "proxyUrlPlaceholder": "http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+    },
+    "ai": {
+      "title": "AI 服务商配置",
+      "addEndpoint": "添加端点",
+      "removeEndpoint": "移除",
+      "endpointName": "端点名称",
+      "endpointNamePlaceholder": "端点名称",
+      "baseUrl": "基础地址",
+      "baseUrlPlaceholder": "https://api.openai.com/v1",
+      "model": "模型",
+      "modelPlaceholder": "gpt-4o-mini"
+    },
+    "summary": {
+      "provider": "摘要服务商 (仅 OpenAI)",
+      "description": "配置生成字幕摘要的 AI 模型。确保所选服务商已在\"AI 配置\"选项卡中配置。"
+    }
+  },
+  "summary": {
+    "title": "AI 摘要",
+    "copyToClipboard": "复制到剪贴板",
+    "generating": "生成摘要中...",
+    "error": "生成摘要错误: {{error}}"
+  },
+  "toast": {
+    "configSaved": "配置保存成功",
+    "configSaveFailed": "保存配置失败: {{error}}"
+  }
+}
