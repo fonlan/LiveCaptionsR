@@ -443,7 +443,7 @@ function App() {
       if (fullText === lastFullTextRef.current) {
         idleCountRef.current++;
         if (idleCountRef.current === MAX_IDLE_INTERVAL && latestCaption.trim()) {
-          await translateAndDisplay(latestCaption);
+          translateAndDisplay(latestCaption);
           idleCountRef.current = 0;
         }
       } else {
@@ -457,9 +457,9 @@ function App() {
             if (isEOSPunctuation(fullText, i)) { prevEOS = i; break; }
           }
           const completeSentence = fullText.slice(prevEOS + 1, lastEOS + 1).trim();
-          if (completeSentence) await translateAndDisplay(completeSentence);
+          if (completeSentence) translateAndDisplay(completeSentence);
         } else if (syncCountRef.current >= MAX_SYNC_INTERVAL && latestCaption.trim()) {
-          await translateAndDisplay(latestCaption);
+          translateAndDisplay(latestCaption);
         }
         lastFullTextRef.current = fullText;
       }
