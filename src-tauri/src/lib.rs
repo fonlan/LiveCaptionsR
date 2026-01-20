@@ -327,8 +327,10 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
         match stream.connect(hide_system_window) {
             Ok(msg) => {
                 let _ = app_clone.emit("caption-status", msg);
-                if let Err(e) = stream.configure_microphone(include_microphone) {
-                    let _ = app_clone.emit("caption-error", format!("Mic config failed: {}", e));
+                if include_microphone {
+                    if let Err(e) = stream.configure_microphone(include_microphone) {
+                        let _ = app_clone.emit("caption-error", format!("Mic config failed: {}", e));
+                    }
                 }
             }
             Err(e) => {
