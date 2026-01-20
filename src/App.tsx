@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -209,7 +210,7 @@ function App() {
       // Optional: Confirm stop? For now just stop if switching
       // Actually, better to block switching while running or stop automatically
       // Let's stop automatically if they switch manually
-      if (confirm("Stop current capture to switch session?")) {
+      if (await tauriConfirm("Stop current capture to switch session?", { title: "Switch Session", kind: 'warning' })) {
         await toggleWatcher();
       } else {
         return;
@@ -231,7 +232,7 @@ function App() {
 
   const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent selection
-    if (!confirm("Are you sure you want to delete this session?")) return;
+    if (!await tauriConfirm("Are you sure you want to delete this session?", { title: "Delete Session", kind: 'warning' })) return;
     
     try {
       await invoke("delete_session_data", { id });
