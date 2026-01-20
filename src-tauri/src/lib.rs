@@ -237,20 +237,49 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     }
 }
 
+fn get_or_init_translation_service() -> Result<TranslationService, String> {
+    // 1. Try to get existing service (fast path)
+    {
+        let guard = TRANSLATION_SERVICE.lock().unwrap();
+        if let Some(service) = &*guard {
+            return Ok(service.clone());
+        }
+    }
+
+    // 2. Initialize if missing (slow path)
+    let config = {
+        let mut cfg = APP_CONFIG.lock().unwrap();
+        // Try to load from file to ensure we have latest persistence
+        if let Some(loaded) = load_config_from_file() {
+            *cfg = loaded;
+        }
+        cfg.clone()
+    };
+
+    let translation_config = config_to_translation_config(&config);
+    let mut guard = TRANSLATION_SERVICE.lock().unwrap();
+    
+    // Double-check in case another thread initialized it while we were getting config
+    if let Some(service) = &*guard {
+        return Ok(service.clone());
+    }
+
+    match TranslationService::new(translation_config) {
+        Ok(service) => {
+            *guard = Some(service.clone());
+            Ok(service)
+        }
+        Err(e) => Err(format!("Failed to initialize translation service: {}", e)),
+    }
+}
+
 /// Translate a single piece of text - called from frontend
 /// context: Optional list of previous caption texts for OpenAI context-aware translation
 #[tauri::command]
 async fn translate_text(text: String, context: Option<Vec<String>>) -> Result<String, String> {
-    // Clone service inside a block to release lock immediately
-    let svc_clone = {
-        let service = TRANSLATION_SERVICE.lock().unwrap();
-        match &*service {
-            Some(svc) => svc.clone(),
-            None => return Err("Translation service not initialized".to_string()),
-        }
-    };
+    let svc = get_or_init_translation_service()?;
     
-    match svc_clone.translate(&text, context.as_deref()).await {
+    match svc.translate(&text, context.as_deref()).await {
         Ok(translated) => Ok(translated),
         Err(e) => Err(format!("Translation error: {}", e)),
     }
@@ -263,17 +292,11 @@ async fn summarize_text(segments: Vec<String>, provider_id: String) -> Result<St
         return Ok(String::new());
     }
 
-    let svc_clone = {
-        let service = TRANSLATION_SERVICE.lock().unwrap();
-        match &*service {
-            Some(svc) => svc.clone(),
-            None => return Err("Translation service not initialized".to_string()),
-        }
-    };
+    let svc = get_or_init_translation_service()?;
 
     let full_text = segments.join("\n");
     
-    match svc_clone.summarize(&full_text, &provider_id).await {
+    match svc.summarize(&full_text, &provider_id).await {
         Ok(summary) => Ok(summary),
         Err(e) => Err(format!("Summarization error: {}", e)),
     }
