@@ -75,6 +75,13 @@ pub struct AppConfig {
     /// Number of previous captions to include as context for OpenAI translation (default: 2)
     #[serde(default = "default_openai_context_count")]
     pub openai_context_count: u32,
+    /// UI Language (en, zh-CN)
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }
 
 fn default_opacity() -> f64 {
@@ -103,6 +110,7 @@ impl Default for AppConfig {
             openai_endpoints: vec![OpenAIEndpointDTO::default()],
             opacity: 1.0,
             openai_context_count: 2,
+            language: "en".to_string(),
         }
     }
 }
