@@ -343,9 +343,14 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
     }
 
     // Launch LiveCaptions automatically
-    if let Err(e) = livecaptions::launch_livecaptions(config.hide_system_window) {
-        eprintln!("Warning: Failed to launch LiveCaptions: {}", e);
-    }
+    let launch_result = livecaptions::launch_livecaptions(config.hide_system_window);
+    let hwnd_override = match launch_result {
+        Ok(hwnd) => Some(hwnd),
+        Err(e) => {
+            eprintln!("Warning: Failed to launch LiveCaptions: {}", e);
+            None
+        }
+    };
 
     let app_clone = app.clone();
     let hide_system_window = config.hide_system_window;
@@ -369,7 +374,7 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
             }
         };
 
-        match stream.connect(hide_system_window) {
+        match stream.connect(hide_system_window, hwnd_override) {
             Ok(msg) => {
                 let _ = app_clone.emit("caption-status", msg);
                 if include_microphone {

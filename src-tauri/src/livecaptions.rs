@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -20,6 +20,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 // Global flag to signal when LiveCaptions window has been found (and optionally hidden)
 static WINDOW_READY: OnceLock<std::sync::Mutex<bool>> = OnceLock::new();
 static WINDOW_FOUND_BY_HOOK: AtomicBool = AtomicBool::new(false);
+static FOUND_HWND: AtomicIsize = AtomicIsize::new(0);
 
 /// Callback for EnumWindows to find and hide LiveCaptions window
 unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -49,6 +50,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
             }
 
             WINDOW_FOUND_BY_HOOK.store(true, Ordering::SeqCst);
+            FOUND_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
             // Signal that window is ready
             if let Some(mutex) = WINDOW_READY.get() {
@@ -74,11 +76,12 @@ fn poll_livecaptions(hide: bool) {
 
 /// Launch Windows LiveCaptions by directly starting the process.
 /// Uses aggressive polling to hide the window as soon as it appears.
-/// Returns Ok(()) when window is ready and hidden, or Err after timeout.
-pub fn launch_livecaptions(hide_system_window: bool) -> Result<()> {
+/// Returns Ok(hwnd) when window is ready and hidden, or Err after timeout.
+pub fn launch_livecaptions(hide_system_window: bool) -> Result<isize> {
     // Initialize the ready flag
     let _ = WINDOW_READY.get_or_init(|| std::sync::Mutex::new(false));
     WINDOW_FOUND_BY_HOOK.store(false, Ordering::SeqCst);
+    FOUND_HWND.store(0, Ordering::SeqCst);
 
     // Reset ready flag
     if let Some(mutex) = WINDOW_READY.get() {
@@ -98,8 +101,9 @@ pub fn launch_livecaptions(hide_system_window: bool) -> Result<()> {
     if already_running {
         // Already running, just find and hide it (if requested)
         poll_livecaptions(hide_system_window);
-        if WINDOW_FOUND_BY_HOOK.load(Ordering::SeqCst) {
-            return Ok(());
+        let hwnd = FOUND_HWND.load(Ordering::SeqCst);
+        if hwnd != 0 {
+            return Ok(hwnd);
         }
     }
 
@@ -134,8 +138,14 @@ pub fn launch_livecaptions(hide_system_window: bool) -> Result<()> {
     // Wait for the polling thread to find and hide the window
     match poll_handle.join() {
         Ok(true) => {
-            // Window found by EnumWindows, but UI Automation may not be ready yet.
-            // Wait for UI Automation to also find the window before returning.
+            // Window found by EnumWindows.
+            // Verify with UI Automation using ElementFromHandle (fast)
+            let hwnd_val = FOUND_HWND.load(Ordering::SeqCst);
+            if hwnd_val == 0 {
+                return Err(anyhow::anyhow!("Window found but handle is 0"));
+            }
+            let hwnd = HWND(hwnd_val as *mut _);
+
             let start = Instant::now();
             let timeout = Duration::from_secs(10);
             let poll_interval = Duration::from_millis(100);
@@ -143,15 +153,15 @@ pub fn launch_livecaptions(hide_system_window: bool) -> Result<()> {
             let watcher = LiveCaptionsWatcher::new()?;
 
             while start.elapsed() < timeout {
-                if watcher.find_livecaptions_window().is_ok() {
-                    return Ok(());
+                if watcher.get_element_from_handle(hwnd).is_ok() {
+                    return Ok(hwnd_val);
                 }
                 std::thread::sleep(poll_interval);
             }
 
-            // UI Automation couldn't find it, but window exists - still return Ok
+            // If we timed out on UIA but have HWND, return it anyway.
             // connect() will retry
-            Ok(())
+            Ok(hwnd_val)
         }
         Ok(false) => Err(anyhow::anyhow!(
             "Timeout waiting for LiveCaptions to start (30s). \
@@ -189,6 +199,16 @@ impl LiveCaptionsWatcher {
                 automation,
                 original_rect: None,
             })
+        }
+    }
+
+    pub fn get_element_from_handle(&self, hwnd: HWND) -> Result<IUIAutomationElement> {
+        unsafe {
+            let element = self
+                .automation
+                .ElementFromHandle(hwnd)
+                .context("Failed to get element from handle")?;
+            Ok(element)
         }
     }
 
@@ -554,8 +574,25 @@ impl CaptionStream {
         Ok(())
     }
 
-    pub fn connect(&mut self, hide_system_window: bool) -> Result<String> {
-        match self.watcher.find_livecaptions_window() {
+    pub fn connect(
+        &mut self,
+        hide_system_window: bool,
+        hwnd_override: Option<isize>,
+    ) -> Result<String> {
+        let found_window = if let Some(hwnd_val) = hwnd_override {
+            let hwnd = HWND(hwnd_val as *mut _);
+            match self.watcher.get_element_from_handle(hwnd) {
+                Ok(elem) => Ok(elem),
+                Err(e) => {
+                    eprintln!("Failed to get element from override HWND: {}", e);
+                    self.watcher.find_livecaptions_window()
+                }
+            }
+        } else {
+            self.watcher.find_livecaptions_window()
+        };
+
+        match found_window {
             Ok(window) => {
                 if hide_system_window {
                     // Window may already be hidden by launch_livecaptions(),
