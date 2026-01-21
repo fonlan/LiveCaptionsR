@@ -151,11 +151,13 @@ function App() {
   const [renameValue, setRenameValue] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
-  const [cards, setCards] = useState<SentenceCard[]>([]);
-  const [partialText, setPartialText] = useState<string>("");
-  const [toasts, setToasts] = useState<Toast[]>([]);
+   const [cards, setCards] = useState<SentenceCard[]>([]);
+   const [partialText, setPartialText] = useState<string>("");
+   const [toasts, setToasts] = useState<Toast[]>([]);
+   const [autoFollow, setAutoFollow] = useState<boolean>(true);
   
   const historyEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
   const saveTimeoutRef = useRef<number | null>(null);
@@ -300,9 +302,11 @@ function App() {
   // --- Effects ---
 
   useEffect(() => {
-    historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
     cardsRef.current = cards;
-  }, [cards, partialText]);
+    if (autoFollow) {
+      historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [cards, partialText, autoFollow]);
 
   // Handle language change from config
   useEffect(() => {
@@ -349,6 +353,31 @@ function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--app-opacity', (config.opacity ?? 1.0).toString());
   }, [config.opacity]);
+
+  // Handle scroll detection for auto-follow
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const distanceToBottom = scrollHeight - scrollTop - clientHeight;
+      const threshold = 100; // pixels from bottom to consider "at bottom"
+
+      if (distanceToBottom <= threshold) {
+        // User is near/at bottom, enable auto-follow
+        setAutoFollow(true);
+      } else {
+        // User is away from bottom, disable auto-follow
+        setAutoFollow(false);
+      }
+    };
+
+    container.addEventListener('scroll', handleScroll);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
 
   // --- Logic ---
 
@@ -675,7 +704,7 @@ function App() {
 
         </div>
 
-        <div className="history-scroll">
+        <div className="history-scroll" ref={scrollContainerRef}>
           {cards.length === 0 && !partialText ? (
             <div className="history-empty">
                 {activeSessionId ? t("session.waitingForSpeech") : t("session.selectOrStart")}
