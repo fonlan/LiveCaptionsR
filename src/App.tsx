@@ -12,6 +12,7 @@ import {
   DEFAULT_CONFIG, 
   DEFAULT_OPENAI_ENDPOINT, 
   DEFAULT_PROXY,
+  DEFAULT_SUMMARY_PROMPT,
   LANGUAGES, 
   OpenAIEndpoint, 
   ProxyConfig, 
@@ -331,6 +332,7 @@ function App() {
           setConfig({
             ...DEFAULT_CONFIG,
             ...savedConfig,
+            summary_prompt: savedConfig.summary_prompt || DEFAULT_SUMMARY_PROMPT, // Ensure default prompt if empty
             google_proxy: savedConfig.google_proxy || DEFAULT_PROXY,
             microsoft_proxy: savedConfig.microsoft_proxy || DEFAULT_PROXY,
             openai_endpoints: savedConfig.openai_endpoints?.length ? savedConfig.openai_endpoints : [DEFAULT_OPENAI_ENDPOINT],
@@ -1133,7 +1135,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
             value={formData.target_lang}
             onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))}
           >
-            {LANGUAGES.map(lang => (
+            {LANGUAGES.filter(l => l.code !== 'auto').map(lang => (
               <option key={lang.code} value={lang.code}>
                 {lang.name}
               </option>
@@ -1321,6 +1323,32 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
         <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
           {t("settings.summary.description")}
         </div>
+      </div>
+
+      <div className="form-group">
+        <label>{t("settings.summary.prompt")}</label>
+        <textarea
+          value={formData.summary_prompt || ''}
+          onChange={e => setFormData(prev => ({ ...prev, summary_prompt: e.target.value }))}
+          placeholder={t("settings.summary.promptPlaceholder")}
+          rows={10}
+          style={{ 
+            width: '100%', 
+            resize: 'vertical', 
+            fontFamily: 'inherit',
+            background: 'var(--bg-input)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '6px',
+            padding: '10px 12px',
+            fontSize: '14px',
+            outline: 'none',
+            transition: 'border-color 0.2s',
+            lineHeight: '1.5'
+          }}
+          onFocus={e => e.target.style.borderColor = 'var(--primary)'}
+          onBlur={e => e.target.style.borderColor = 'var(--border-color)'}
+        />
       </div>
     </div>
   );

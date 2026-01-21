@@ -62,6 +62,8 @@ pub struct AppConfig {
     pub include_microphone: bool,
     /// Provider for summarization: "openai:{endpoint_id}"
     pub summary_provider: String,
+    /// Custom system prompt for summarization
+    pub summary_prompt: Option<String>,
     // Google proxy
     pub google_proxy: ProxyConfigDTO,
     // Microsoft settings
@@ -104,6 +106,7 @@ impl Default for AppConfig {
             always_on_top: false,
             include_microphone: false,
             summary_provider: "openai:default".to_string(),
+            summary_prompt: None,
             google_proxy: ProxyConfigDTO::default(),
             microsoft_api_key: None,
             microsoft_region: None,
@@ -220,6 +223,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         provider,
         source_lang: config.source_lang.clone(),
         target_lang: config.target_lang.clone(),
+        summary_prompt: config.summary_prompt.clone(),
         google_proxy: ProxyConfig {
             url: config.google_proxy.url.clone(),
             enabled: config.google_proxy.enabled,

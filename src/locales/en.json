@@ -102,6 +102,8 @@
     },
     "summary": {
       "provider": "Summary Provider (OpenAI Only)",
+      "prompt": "Custom Summary Prompt",
+      "promptPlaceholder": "Leave empty to use built-in prompt",
       "description": "Configures which AI model generates summaries of your captions. Ensure that selected provider is configured in the \"AI Config\" tab."
     }
   },

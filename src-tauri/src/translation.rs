@@ -61,6 +61,7 @@ pub struct TranslationConfig {
     pub provider: TranslationProvider,
     pub source_lang: String,
     pub target_lang: String,
+    pub summary_prompt: Option<String>,
     // Google Translate proxy
     pub google_proxy: ProxyConfig,
     // Microsoft Translator
@@ -77,6 +78,7 @@ impl Default for TranslationConfig {
             provider: TranslationProvider::Google,
             source_lang: "en".to_string(),
             target_lang: "zh-CN".to_string(),
+            summary_prompt: None,
             google_proxy: ProxyConfig::default(),
             microsoft_api_key: None,
             microsoft_region: None,
@@ -184,10 +186,17 @@ impl TranslationService {
             .map(|s| s.as_str())
             .unwrap_or("global");
 
-        let url = format!(
-            "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from={}&to={}",
-            self.config.source_lang, self.config.target_lang
-        );
+        let url = if self.config.source_lang == "auto" {
+            format!(
+                "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to={}",
+                self.config.target_lang
+            )
+        } else {
+            format!(
+                "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from={}&to={}",
+                self.config.source_lang, self.config.target_lang
+            )
+        };
 
         #[derive(Serialize)]
         struct RequestBody {
@@ -260,17 +269,23 @@ impl TranslationService {
             text.to_string()
         };
 
+        let source_lang_desc = if self.config.source_lang == "auto" {
+            "any language".to_string()
+        } else {
+            self.config.source_lang.clone()
+        };
+
         let system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
             format!(
                 "You are a translator. Translate the current sentence from {} to {}. \
                  Use the previous sentences only as context to ensure consistency. \
                  Output ONLY the translation of the current sentence, no labels or explanations.",
-                self.config.source_lang, self.config.target_lang
+                source_lang_desc, self.config.target_lang
             )
         } else {
             format!(
                 "You are a translator. Translate from {} to {}. Output ONLY the translation.",
-                self.config.source_lang, self.config.target_lang
+                source_lang_desc, self.config.target_lang
             )
         };
 
@@ -345,16 +360,35 @@ impl TranslationService {
             .find(|e| e.id == endpoint_id)
             .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
 
-        let system_prompt = format!(
-            "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
-             \n\n\
-             Please follow these steps:\n\
-             1. Analyze the context to infer and correct any errors or missing information in the transcript.\n\
-             2. Generate a clear and concise summary of the corrected content in {}.\n\
-             \n\
-             Output using Markdown formatting.",
-            self.config.target_lang
-        );
+        let system_prompt = if let Some(prompt) = &self.config.summary_prompt {
+            if prompt.trim().is_empty() {
+                // Fallback if empty string provided
+                format!(
+                    "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
+                     \n\n\
+                     Please follow these steps:\n\
+                     1. Analyze the context to infer and correct any errors or missing information in the transcript.\n\
+                     2. Generate a clear and concise summary of the corrected content in {}.\n\
+                     \n\
+                     Output using Markdown formatting.",
+                    self.config.target_lang
+                )
+            } else {
+                // Replace {target_lang} placeholder if present
+                prompt.replace("{target_lang}", &self.config.target_lang)
+            }
+        } else {
+             format!(
+                "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
+                 \n\n\
+                 Please follow these steps:\n\
+                 1. Analyze the context to infer and correct any errors or missing information in the transcript.\n\
+                 2. Generate a clear and concise summary of the corrected content in {}.\n\
+                 \n\
+                 Output using Markdown formatting.",
+                self.config.target_lang
+            )
+        };
 
         self.send_openai_request(endpoint, &system_prompt, text).await
     }

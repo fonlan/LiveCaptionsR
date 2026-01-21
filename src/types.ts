@@ -59,6 +59,7 @@ export interface AppConfig {
   always_on_top: boolean;
   include_microphone: boolean;
   summary_provider: string;
+  summary_prompt: string | null;
   google_proxy: ProxyConfig;
   microsoft_api_key: string | null;
   microsoft_region: string | null;
@@ -80,6 +81,8 @@ export const DEFAULT_OPENAI_ENDPOINT: OpenAIEndpoint = {
   proxy: { url: "", enabled: false },
 };
 
+export const DEFAULT_SUMMARY_PROMPT = "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \n\n Please follow these steps:\n 1. Analyze the context to infer and correct any errors or missing information in the transcript.\n 2. Generate a clear and concise summary of the corrected content in {target_lang}.\n \n Output using Markdown formatting.";
+
 export const DEFAULT_CONFIG: AppConfig = {
   provider: "google",
   source_lang: "en",
@@ -89,6 +92,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   always_on_top: false,
   include_microphone: false,
   summary_provider: "openai:default",
+  summary_prompt: DEFAULT_SUMMARY_PROMPT,
   google_proxy: DEFAULT_PROXY,
   microsoft_api_key: "",
   microsoft_region: "",
@@ -100,6 +104,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 };
 
 export const LANGUAGES = [
+  { code: "auto", name: "Auto Detect" },
   { code: "en", name: "English" },
   { code: "zh-CN", name: "Chinese (Simplified)" },
   { code: "zh-TW", name: "Chinese (Traditional)" },

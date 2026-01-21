@@ -102,6 +102,8 @@
     },
     "summary": {
       "provider": "摘要服务商 (仅 OpenAI)",
+      "prompt": "自定义摘要提示词",
+      "promptPlaceholder": "留空使用内置提示词",
       "description": "配置生成字幕摘要的 AI 模型。确保所选服务商已在\"AI 配置\"选项卡中配置。"
     }
   },
