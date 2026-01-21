@@ -199,6 +199,7 @@ function App() {
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
       setCards([]); // Clear cards for new session
+      setAutoFollow(true);
       lastProcessedCardRef.current = null;
       setPartialText("");
       lastFullTextRef.current = "";
@@ -228,6 +229,7 @@ function App() {
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
       setCards(session.cards);
+      setAutoFollow(false); // Don't auto-scroll when loading history
       lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
       setPartialText("");
     } catch (e) {
