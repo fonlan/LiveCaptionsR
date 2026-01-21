@@ -162,11 +162,10 @@ function App() {
 
   const lastFullTextRef = useRef<string>("");
   const lastOriginalTextRef = useRef<string>("");
+  const lastProcessedCardRef = useRef<SentenceCard | null>(null);
   const idleCountRef = useRef<number>(0);
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
-  const isTranslatingRef = useRef<boolean>(false);
-  const translationQueueRef = useRef<string[]>([]);
   const overlayMouseDownRef = useRef<boolean>(false);
 
   const addToast = (type: 'success' | 'error', message: string) => {
@@ -198,6 +197,7 @@ function App() {
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
       setCards([]); // Clear cards for new session
+      lastProcessedCardRef.current = null;
       setPartialText("");
       lastFullTextRef.current = "";
       return session.id;
@@ -226,6 +226,7 @@ function App() {
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
       setCards(session.cards);
+      lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
       setPartialText("");
     } catch (e) {
       console.error("Failed to load session:", e);
@@ -244,6 +245,7 @@ function App() {
         setActiveSessionId(null);
         setActiveSessionName("");
         setCards([]);
+        lastProcessedCardRef.current = null;
       }
       addToast('success', "Session deleted");
     } catch (err) {
@@ -371,74 +373,82 @@ function App() {
     }
   };
 
-  const translateAndDisplay = async (originalText: string) => {
-    if (!originalText.trim()) return;
-    
-    // If already translating, queue this text and return
-    if (isTranslatingRef.current) {
-      translationQueueRef.current.push(originalText);
-      return;
-    }
-    
-    isTranslatingRef.current = true;
-    const newId = generateId();
-    const timestamp = Math.floor(Date.now() / 1000);
-
-    setCards(prev => {
-      const newCard: SentenceCard = { 
-          id: newId, 
-          original: originalText, 
-          translated: null, 
-          status: 'translating',
-          timestamp 
-      };
-      if (prev.length === 0) return [newCard];
-
-      const lastCard = prev[prev.length - 1];
-      if (shouldOverwrite(lastCard.original, originalText)) {
-        const newCards = [...prev];
-        newCards[newCards.length - 1] = { ...newCard, id: lastCard.id }; // Keep ID if overwriting
-        return newCards;
-      }
-      return [...prev, newCard].slice(-200); // Keep buffer size reasonable
-    });
-
+  const performTranslation = async (cardId: string, text: string) => {
     try {
-      let context: string[] | null = null;
       const currentCards = cardsRef.current;
       const currentConfig = configRef.current;
       
-      if (currentConfig.provider.startsWith('openai:') && currentConfig.openai_context_count > 0 && currentCards.length > 0) {
-        const startIdx = Math.max(0, currentCards.length - currentConfig.openai_context_count);
-        context = currentCards.slice(startIdx).map(c => c.original);
+      let context: string[] | null = null;
+      if (currentConfig.provider.startsWith('openai:') && currentConfig.openai_context_count > 0) {
+        const cardIndex = currentCards.findIndex(c => c.id === cardId);
+        if (cardIndex >= 0) {
+          const startIdx = Math.max(0, cardIndex - currentConfig.openai_context_count);
+          context = currentCards.slice(startIdx, cardIndex).map(c => c.original);
+        } else {
+          const startIdx = Math.max(0, currentCards.length - currentConfig.openai_context_count);
+          context = currentCards.slice(startIdx).map(c => c.original);
+        }
       }
-      
-      const translated = await invoke<string>("translate_text", { text: originalText, context });
-      
-      setCards(prev => prev.map(c => 
-        (c.id === newId || (prev[prev.length-1].id === c.id && c.original === originalText)) 
-            ? { ...c, translated, status: 'success' as const } 
-            : c
-      ));
-      lastOriginalTextRef.current = originalText;
+
+      const translated = await invoke<string>("translate_text", { text, context });
+
+      setCards(prev => prev.map(c => {
+        if (c.id === cardId) {
+          if (c.original !== text) return c;
+          return { ...c, translated, status: 'success' as const };
+        }
+        return c;
+      }));
     } catch (e) {
       console.error("Translation error:", e);
-      setCards(prev => prev.map(c => 
-        (c.id === newId || (prev[prev.length-1].id === c.id && c.original === originalText))
-            ? { ...c, translated: null, status: 'error' as const } 
-            : c
-      ));
-      lastOriginalTextRef.current = originalText;
-    } finally {
-      isTranslatingRef.current = false;
-      syncCountRef.current = 0;
-      
-      // Process next item in queue if any
-      if (translationQueueRef.current.length > 0) {
-        const nextText = translationQueueRef.current.shift()!;
-        translateAndDisplay(nextText);
-      }
+      setCards(prev => prev.map(c => {
+        if (c.id === cardId) {
+          if (c.original !== text) return c;
+          return { ...c, translated: null, status: 'error' as const };
+        }
+        return c;
+      }));
     }
+  };
+
+  const translateAndDisplay = async (originalText: string) => {
+    if (!originalText.trim()) return;
+
+    const lastCard = lastProcessedCardRef.current;
+    // Always generate a new ID to ensure clean replacement (effectively "deleting" the old one)
+    const newId = generateId();
+    let isOverwrite = false;
+
+    if (lastCard && shouldOverwrite(lastCard.original, originalText)) {
+      isOverwrite = true;
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const newCard: SentenceCard = {
+      id: newId,
+      original: originalText,
+      translated: null,
+      status: 'translating',
+      timestamp
+    };
+
+    lastProcessedCardRef.current = newCard;
+    lastOriginalTextRef.current = originalText;
+    syncCountRef.current = 0;
+
+    setCards(prev => {
+      if (isOverwrite && prev.length > 0) {
+        // Replace the last card with the NEW card (new ID)
+        // This effectively removes the old card and its pending translation UI state
+        return [...prev.slice(0, -1), newCard];
+      } else {
+        return [...prev, newCard].slice(-200);
+      }
+    });
+
+    // Start translation for the NEW card
+    // The old card's translation (if running) will fail to find the old ID in state and do nothing
+    performTranslation(newId, originalText);
   };
 
   useEffect(() => {

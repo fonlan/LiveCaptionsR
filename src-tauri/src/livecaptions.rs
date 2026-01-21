@@ -553,6 +553,7 @@ pub struct CaptionStream {
     running: Arc<AtomicBool>,
     last_text: String,
     window_hidden: bool,
+    error_count: u32,
 }
 
 impl CaptionStream {
@@ -564,6 +565,7 @@ impl CaptionStream {
             running: Arc::new(AtomicBool::new(false)),
             last_text: String::new(),
             window_hidden: false,
+            error_count: 0,
         })
     }
 
@@ -579,6 +581,7 @@ impl CaptionStream {
         hide_system_window: bool,
         hwnd_override: Option<isize>,
     ) -> Result<String> {
+        self.error_count = 0;
         let found_window = if let Some(hwnd_val) = hwnd_override {
             let hwnd = HWND(hwnd_val as *mut _);
             match self.watcher.get_element_from_handle(hwnd) {
@@ -621,19 +624,44 @@ impl CaptionStream {
             return None;
         }
 
-        if let Some(ref window) = self.window {
-            match self.watcher.get_caption_text(window) {
-                Ok(text) => {
-                    if !text.is_empty() && text != self.last_text {
-                        self.last_text = text.clone();
-                        return Some(text);
-                    }
+        // Use a separate scope to query text so we don't hold the borrow
+        let result = if let Some(ref window) = self.window {
+            self.watcher.get_caption_text(window)
+        } else {
+            // Should not happen if running is true
+            Err(anyhow::anyhow!("No window handle"))
+        };
+
+        match result {
+            Ok(text) => {
+                self.error_count = 0;
+                if !text.is_empty() && text != self.last_text {
+                    self.last_text = text.clone();
+                    return Some(text);
                 }
-                Err(_) => {
+            }
+            Err(e) => {
+                self.error_count += 1;
+                eprintln!(
+                    "Warning: Failed to get caption text (attempt {}/5): {}",
+                    self.error_count, e
+                );
+
+                if self.error_count > 5 {
                     self.restore_window();
                     self.window = None;
                     self.running.store(false, Ordering::SeqCst);
-                    return Some("[ERROR] Lost connection to LiveCaptions".to_string());
+                    return Some(format!("[ERROR] Lost connection to LiveCaptions: {}", e));
+                }
+
+                // Try to recover by re-finding the window
+                // This handles cases where the window handle became invalid (e.g. window moved/recreated)
+                if let Ok(new_window) = self.watcher.find_livecaptions_window() {
+                    // If we were hiding the window, make sure the new one is hidden too
+                    if self.window_hidden {
+                        let _ = self.watcher.hide_window(&new_window);
+                    }
+                    self.window = Some(new_window);
                 }
             }
         }
