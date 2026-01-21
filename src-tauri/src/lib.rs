@@ -1,6 +1,7 @@
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::sync::mpsc::{channel, Sender};
 use tauri::{AppHandle, Emitter, Manager};
 
 mod livecaptions;
@@ -120,6 +121,12 @@ static CAPTION_RUNNING: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
 static APP_CONFIG: Lazy<Mutex<AppConfig>> = Lazy::new(|| Mutex::new(AppConfig::default()));
 
 static TRANSLATION_SERVICE: Lazy<Mutex<Option<TranslationService>>> = Lazy::new(|| Mutex::new(None));
+
+enum CaptionThreadCommand {
+    ToggleVisibility,
+}
+
+static CAPTION_COMMAND_SENDER: Lazy<Mutex<Option<Sender<CaptionThreadCommand>>>> = Lazy::new(|| Mutex::new(None));
 
 #[tauri::command]
 fn get_config() -> AppConfig {
@@ -344,6 +351,13 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
     let hide_system_window = config.hide_system_window;
     let include_microphone = config.include_microphone;
 
+    // Create channel for commands
+    let (tx, rx) = channel();
+    {
+        let mut sender = CAPTION_COMMAND_SENDER.lock().unwrap();
+        *sender = Some(tx);
+    }
+
     std::thread::spawn(move || {
         let mut stream = match livecaptions::CaptionStream::new() {
             Ok(s) => s,
@@ -380,6 +394,17 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
                 if !*running {
                     stream.stop();
                     break;
+                }
+            }
+
+            // Check for commands
+            if let Ok(cmd) = rx.try_recv() {
+                match cmd {
+                    CaptionThreadCommand::ToggleVisibility => {
+                        let visible = stream.toggle_visibility();
+                        // Emit event so frontend knows the state (optional, but good practice)
+                        let _ = app_clone.emit("caption-visibility", visible);
+                    }
                 }
             }
 
@@ -478,6 +503,17 @@ fn delete_session_data(id: String) -> Result<(), String> {
     storage::delete_session(&id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn toggle_livecaptions_visibility() -> Result<(), String> {
+    let sender = CAPTION_COMMAND_SENDER.lock().unwrap();
+    if let Some(tx) = &*sender {
+        tx.send(CaptionThreadCommand::ToggleVisibility).map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Caption watcher not running".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize database
@@ -492,6 +528,7 @@ pub fn run() {
             start_caption_watcher,
             stop_caption_watcher,
             is_watcher_running,
+            toggle_livecaptions_visibility,
             translate_text,
             summarize_text,
             set_always_on_top,

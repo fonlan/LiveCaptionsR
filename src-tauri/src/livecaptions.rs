@@ -240,7 +240,11 @@ impl LiveCaptionsWatcher {
             // Save original position first
             let mut rect = RECT::default();
             if GetWindowRect(hwnd, &mut rect).is_ok() {
-                self.original_rect = Some(rect);
+                // Only save if it looks like a valid on-screen position (not already hidden)
+                // We use -10000 for hiding, so checks against -5000 are safe
+                if rect.left > -5000 && rect.top > -5000 {
+                    self.original_rect = Some(rect);
+                }
             }
 
             // Modify styles to hide from taskbar
@@ -601,6 +605,25 @@ impl CaptionStream {
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn toggle_visibility(&mut self) -> bool {
+        if let Some(ref window) = self.window {
+            if self.window_hidden {
+                if let Err(e) = self.watcher.show_window(window) {
+                    eprintln!("Failed to show window: {}", e);
+                } else {
+                    self.window_hidden = false;
+                }
+            } else {
+                if let Err(e) = self.watcher.hide_window(window) {
+                    eprintln!("Failed to hide window: {}", e);
+                } else {
+                    self.window_hidden = true;
+                }
+            }
+        }
+        !self.window_hidden
     }
 
     pub fn stop(&mut self) {

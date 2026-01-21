@@ -45,7 +45,9 @@
     "settings": "Settings",
     "summarize": "Summarize Captions",
     "start": "START",
-    "stop": "STOP"
+    "stop": "STOP",
+    "showWindow": "Show LiveCaptions Window",
+    "hideWindow": "Hide LiveCaptions Window"
   },
   "settings": {
     "title": "Configuration",

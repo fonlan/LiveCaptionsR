@@ -35,7 +35,9 @@ import {
   IconX,
   IconWindowMinimize,
   IconWindowMaximize,
-  IconWindowClose
+  IconWindowClose,
+  IconEye,
+  IconEyeOff
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 
@@ -133,6 +135,7 @@ function App() {
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [status, setStatus] = useState<string>(t("status.ready"));
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [isWindowVisible, setIsWindowVisible] = useState<boolean>(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
   const [summaryText, setSummaryText] = useState<string>("");
@@ -488,6 +491,28 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const unlistenVisibility = listen<boolean>("caption-visibility", (event) => {
+      setIsWindowVisible(event.payload);
+    });
+    return () => {
+        unlistenVisibility.then(f => f());
+    }
+  }, []);
+
+  useEffect(() => {
+      setIsWindowVisible(!config.hide_system_window);
+  }, [config.hide_system_window]);
+
+  const toggleVisibility = async () => {
+    if (!isRunning) return;
+    try {
+        await invoke("toggle_livecaptions_visibility");
+    } catch (e) {
+        console.error("Failed to toggle visibility", e);
+    }
+  };
+
   const toggleWatcher = async () => {
     if (isRunning) {
       await invoke("stop_caption_watcher");
@@ -700,6 +725,29 @@ function App() {
             <span className={`status-text ${status.startsWith('Error') ? 'error' : ''}`} title={status}>{status}</span>
             </div>
             <div className="controls-center">
+            <button
+                className="btn-visibility"
+                onClick={toggleVisibility}
+                disabled={!isRunning}
+                title={isWindowVisible ? t("controls.hideWindow") : t("controls.showWindow")}
+                style={{ 
+                    marginRight: '12px',
+                    height: '40px',
+                    width: '40px',
+                    borderRadius: '20px',
+                    border: 'none',
+                    background: 'var(--bg-secondary)',
+                    color: !isRunning ? 'var(--text-muted)' : (isWindowVisible ? 'var(--text-primary)' : 'var(--text-muted)'),
+                    cursor: isRunning ? 'pointer' : 'not-allowed',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.2s',
+                    opacity: isRunning ? 1 : 0.5
+                }}
+            >
+                {isWindowVisible ? <IconEye /> : <IconEyeOff />}
+            </button>
             <button className={`fab-main ${isRunning ? 'stop' : 'start'}`} onClick={toggleWatcher}>
                 {isRunning ? <IconSquare /> : <IconPlay />}
                 <span>{isRunning ? t("controls.stop") : t("controls.start")}</span>
