@@ -346,8 +346,13 @@ impl TranslationService {
             .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
 
         let system_prompt = format!(
-            "You are a professional summarizer. Summarize the following text in {}. \
-             Capture the key points clearly and concisely. formatting with markdown.",
+            "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
+             \n\n\
+             Please follow these steps:\n\
+             1. Analyze the context to infer and correct any errors or missing information in the transcript.\n\
+             2. Generate a clear and concise summary of the corrected content in {}.\n\
+             \n\
+             Output using Markdown formatting.",
             self.config.target_lang
         );
 
