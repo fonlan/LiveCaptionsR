@@ -76,6 +76,7 @@
       "google": "Google Translate (Free)",
       "microsoft": "Microsoft Azure",
       "openai": "OpenAI Compatible",
+      "endpoint": "Endpoint",
       "selectEndpoint": "Select Endpoint",
       "contextMemory": "Context Memory",
       "contextMemoryUnit": "previous cards",
@@ -125,5 +126,12 @@
     "configSaveFailed": "Failed to save configuration: {{error}}",
     "copySuccess": "Copied to clipboard",
     "copyFailed": "Failed to copy"
+  },
+  "translateSession": {
+    "title": "Translate Session",
+    "targetLanguage": "Target Language",
+    "translate": "Translate",
+    "cancel": "Cancel",
+    "tooltip": "Translate Session"
   }
 }

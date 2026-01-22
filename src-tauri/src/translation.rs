@@ -119,14 +119,33 @@ impl TranslationService {
         self.config = config;
     }
 
-    pub async fn translate(&self, text: &str, context: Option<&[String]>, target_lang_override: Option<&str>) -> Result<String> {
+    pub fn parse_provider(provider_str: &str) -> TranslationProvider {
+        if provider_str == "google" {
+            TranslationProvider::Google
+        } else if provider_str == "microsoft" {
+            TranslationProvider::Microsoft
+        } else if provider_str.starts_with("openai:") {
+            let endpoint_id = provider_str.strip_prefix("openai:").unwrap_or("default");
+            TranslationProvider::OpenAI(endpoint_id.to_string())
+        } else {
+            TranslationProvider::Google
+        }
+    }
+
+    pub async fn translate(&self, text: &str, context: Option<&[String]>, target_lang_override: Option<&str>, provider_override: Option<&str>) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
 
         let target_lang = target_lang_override.unwrap_or(&self.config.target_lang);
 
-        match &self.config.provider {
+        let provider = if let Some(p_str) = provider_override {
+            Self::parse_provider(p_str)
+        } else {
+            self.config.provider.clone()
+        };
+
+        match &provider {
             TranslationProvider::Google => self.translate_google(text, target_lang).await,
             TranslationProvider::Microsoft => self.translate_microsoft(text, target_lang).await,
             TranslationProvider::OpenAI(endpoint_id) => {

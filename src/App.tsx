@@ -129,6 +129,7 @@ function App() {
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
       setCards([]); // Clear cards for new session
+      setTempTranslations({}); // Clear temp translations
       setAutoFollow(true);
       lastProcessedCardRef.current = null;
       setPartialText("");
@@ -159,6 +160,7 @@ function App() {
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
       setCards(session.cards);
+      setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
       lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
       setPartialText("");
@@ -179,6 +181,7 @@ function App() {
         setActiveSessionId(null);
         setActiveSessionName("");
         setCards([]);
+        setTempTranslations({}); // Clear temp translations
         lastProcessedCardRef.current = null;
       }
       addToast('success', "Session deleted");
@@ -410,9 +413,12 @@ function App() {
 
     // Check if translation is enabled
     if (configRef.current.translation_enabled === false) {
+      // Just leave it as null/translating until finalized? 
+      // Actually if translation is disabled, we should just mark it as success but with null translation
+      // to indicate "processing done, no translation needed"
       setCards(prev => prev.map(c => {
         if (c.id === newId) {
-          return { ...c, translated: originalText, status: 'success' as const };
+          return { ...c, translated: null, status: 'success' as const };
         }
         return c;
       }));
@@ -567,7 +573,7 @@ function App() {
     }
   };
 
-  const handleTranslateSession = async (targetLang: string) => {
+  const handleTranslateSession = async (targetLang: string, providerOverride?: string) => {
     if (cards.length === 0) return;
 
     // Clear previous temp translations
@@ -586,7 +592,10 @@ function App() {
         let context: string[] | null = null;
         const cardIndex = cards.findIndex(c => c.id === card.id);
 
-        if (config.provider.startsWith('openai:') && config.openai_context_count > 0 && cardIndex > 0) {
+        // Use override provider or config provider for context logic checks
+        const effectiveProvider = providerOverride || config.provider;
+
+        if (effectiveProvider.startsWith('openai:') && config.openai_context_count > 0 && cardIndex > 0) {
           const startIdx = Math.max(0, cardIndex - config.openai_context_count);
           context = cards.slice(startIdx, cardIndex).map(c => c.original);
         }
@@ -594,7 +603,8 @@ function App() {
         const translated = await invoke<string>("translate_text", {
           text: card.original,
           context,
-          targetLangOverride: targetLang
+          targetLangOverride: targetLang,
+          providerOverride
         });
 
         setTempTranslations(prev => ({
@@ -719,10 +729,23 @@ function App() {
                 const displayTranslated = tempTrans?.translated ?? item.translated;
                 const displayStatus = tempTrans?.status ?? item.status;
 
+                // Determine if we should show the translation block
+                // 1. If temp translation exists (user actively translated this) -> SHOW
+                // 2. If historical translation exists (item.translated is not null AND not empty) -> SHOW
+                // 3. If running (live capture), respect config.translation_enabled -> SHOW/HIDE
+                let shouldShowTranslation = false;
+                if (!!tempTrans) {
+                  shouldShowTranslation = true;
+                } else if (item.translated && item.translated.trim().length > 0) {
+                  shouldShowTranslation = true;
+                } else if (isRunning && config.translation_enabled) {
+                   shouldShowTranslation = true;
+                }
+
                 return (
                   <div key={item.id} className={`history-card ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'failed' : ''}`}>
                     <div className="card-original">{item.original}</div>
-                    {config.translation_enabled && (
+                    {shouldShowTranslation && (
                       <>
                         {displayStatus === 'translating' ? (
                           <div className="typing-dots">
@@ -872,6 +895,7 @@ function App() {
         onClose={() => setIsTranslateModalOpen(false)}
         onTranslate={handleTranslateSession}
         currentTargetLang={config.target_lang}
+        config={config}
       />
 
       {/* Toast Container */}
@@ -1058,21 +1082,39 @@ function TranslateModal({
   isOpen,
   onClose,
   onTranslate,
-  currentTargetLang
+  currentTargetLang,
+  config
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onTranslate: (targetLang: string) => void;
+  onTranslate: (targetLang: string, providerOverride?: string) => void;
   currentTargetLang: string;
+  config: AppConfig;
 }) {
+  const { t } = useTranslation();
   const [selectedLang, setSelectedLang] = useState<string>(currentTargetLang);
+  const [selectedProvider, setSelectedProvider] = useState<string>('google');
+  const [selectedEndpointId, setSelectedEndpointId] = useState<string>('default');
 
   useEffect(() => {
-    if (isOpen) setSelectedLang(currentTargetLang);
-  }, [isOpen, currentTargetLang]);
+    if (isOpen) {
+      setSelectedLang(currentTargetLang);
+      // Initialize from current config
+      if (config.provider.startsWith('openai:')) {
+          setSelectedProvider('openai');
+          setSelectedEndpointId(config.provider.slice(7) || 'default');
+      } else {
+          setSelectedProvider(config.provider);
+      }
+    }
+  }, [isOpen, currentTargetLang, config]);
 
   const handleTranslate = () => {
-    onTranslate(selectedLang);
+    let providerString = selectedProvider;
+    if (selectedProvider === 'openai') {
+        providerString = `openai:${selectedEndpointId}`;
+    }
+    onTranslate(selectedLang, providerString);
     onClose();
   };
 
@@ -1081,15 +1123,72 @@ function TranslateModal({
     <div className="settings-overlay open" onClick={onClose}>
       <div className="settings-drawer" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px', width: '90%' }}>
         <header className="settings-header">
-          <h2>Translate Session</h2>
+          <h2>{t("translateSession.title")}</h2>
           <button className="btn-icon" onClick={onClose}>
             <IconX />
           </button>
         </header>
         <div className="settings-content" style={{ padding: '20px' }}>
+          
+          {/* Provider Selection */}
+          <div className="form-group" style={{ marginBottom: '16px' }}>
+            <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-primary)', fontWeight: 500 }}>
+              {t("settings.translation.provider")}
+            </label>
+            <select
+              value={selectedProvider}
+              onChange={e => setSelectedProvider(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                background: 'var(--bg-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                fontSize: '14px',
+                outline: 'none',
+                cursor: 'pointer'
+              }}
+            >
+              <option value="google">{t("settings.translation.google")}</option>
+              <option value="microsoft">{t("settings.translation.microsoft")}</option>
+              <option value="openai">{t("settings.translation.openai")}</option>
+            </select>
+          </div>
+
+          {/* OpenAI Endpoint Selection */}
+          {selectedProvider === 'openai' && config.openai_endpoints.length > 1 && (
+            <div className="form-group" style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-primary)', fontWeight: 500 }}>
+                {t("settings.translation.endpoint")}
+              </label>
+              <select
+                value={selectedEndpointId}
+                onChange={e => setSelectedEndpointId(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  background: 'var(--bg-input)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  outline: 'none',
+                  cursor: 'pointer'
+                }}
+              >
+                {config.openai_endpoints.map(ep => (
+                  <option key={ep.id} value={ep.id}>
+                    {ep.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="form-group" style={{ marginBottom: '20px' }}>
             <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-primary)', fontWeight: 500 }}>
-              Target Language
+              {t("translateSession.targetLanguage")}
             </label>
             <select
               value={selectedLang}
@@ -1113,6 +1212,7 @@ function TranslateModal({
               ))}
             </select>
           </div>
+
           <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
             <button
               className="btn-save"
@@ -1132,7 +1232,7 @@ function TranslateModal({
               onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
               onMouseLeave={e => e.currentTarget.style.opacity = '1'}
             >
-              Translate
+              {t("translateSession.translate")}
             </button>
             <button
               onClick={onClose}
@@ -1151,7 +1251,7 @@ function TranslateModal({
               onMouseEnter={e => e.currentTarget.style.opacity = '0.8'}
               onMouseLeave={e => e.currentTarget.style.opacity = '1'}
             >
-              Cancel
+              {t("translateSession.cancel")}
             </button>
           </div>
         </div>

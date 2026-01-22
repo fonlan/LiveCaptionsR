@@ -76,6 +76,7 @@
       "google": "Google 翻译 (免费)",
       "microsoft": "Microsoft Azure",
       "openai": "OpenAI 兼容",
+      "endpoint": "端点",
       "selectEndpoint": "选择端点",
       "contextMemory": "上下文记忆",
       "contextMemoryUnit": "个历史卡片",
@@ -125,5 +126,12 @@
     "configSaveFailed": "保存配置失败: {{error}}",
     "copySuccess": "已复制到剪贴板",
     "copyFailed": "复制失败"
+  },
+  "translateSession": {
+    "title": "翻译会话",
+    "targetLanguage": "目标语言",
+    "translate": "翻译",
+    "cancel": "取消",
+    "tooltip": "翻译会话"
   }
 }
