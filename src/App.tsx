@@ -380,6 +380,11 @@ function App() {
     if (!originalText.trim()) return;
 
     const lastCard = lastProcessedCardRef.current;
+    // Prevent infinite re-translation loop on idle if text hasn't changed
+    if (lastCard && lastCard.original === originalText) {
+      return;
+    }
+
     // Always generate a new ID to ensure clean replacement (effectively "deleting" the old one)
     const newId = generateId();
     let isOverwrite = false;
