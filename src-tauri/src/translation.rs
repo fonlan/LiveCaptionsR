@@ -3,6 +3,8 @@
 use anyhow::{Context, Result};
 use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -70,6 +72,8 @@ pub struct TranslationConfig {
     pub microsoft_proxy: ProxyConfig,
     // Multiple OpenAI-compatible endpoints
     pub openai_endpoints: Vec<OpenAIEndpoint>,
+    /// Maximum concurrent translation requests
+    pub max_concurrent_translations: u32,
 }
 
 impl Default for TranslationConfig {
@@ -84,6 +88,7 @@ impl Default for TranslationConfig {
             microsoft_region: None,
             microsoft_proxy: ProxyConfig::default(),
             openai_endpoints: vec![OpenAIEndpoint::default()],
+            max_concurrent_translations: 2,
         }
     }
 }
@@ -107,11 +112,20 @@ fn build_client(proxy_config: &ProxyConfig) -> Result<Client> {
 #[derive(Clone)]
 pub struct TranslationService {
     config: TranslationConfig,
+    semaphore: Arc<Semaphore>,
 }
 
 impl TranslationService {
     pub fn new(config: TranslationConfig) -> Result<Self> {
-        Ok(Self { config })
+        let max_permits = if config.max_concurrent_translations > 0 {
+            config.max_concurrent_translations as usize
+        } else {
+            2 // Safety fallback
+        };
+        Ok(Self {
+            config,
+            semaphore: Arc::new(Semaphore::new(max_permits)),
+        })
     }
 
     #[allow(dead_code)]
@@ -136,6 +150,9 @@ impl TranslationService {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
+
+        // Acquire permit to limit concurrency
+        let _permit = self.semaphore.acquire().await.context("Failed to acquire translation permit")?;
 
         let target_lang = target_lang_override.unwrap_or(&self.config.target_lang);
 

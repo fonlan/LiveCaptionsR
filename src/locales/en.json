@@ -70,6 +70,7 @@
     },
     "translation": {
       "enableTranslation": "Enable Translation",
+      "maxConcurrent": "Max Parallel Translations",
       "sourceLanguage": "Source Language",
       "targetLanguage": "Target Language",
       "provider": "Translation Provider",

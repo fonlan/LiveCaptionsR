@@ -69,6 +69,7 @@ export interface AppConfig {
   opacity: number;
   language: string;
   translation_enabled: boolean;
+  max_concurrent_translations: number;
 }
 
 export const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
@@ -103,6 +104,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   opacity: 1.0,
   language: "en",
   translation_enabled: true,
+  max_concurrent_translations: 2,
 };
 
 export const LANGUAGES = [

@@ -83,6 +83,9 @@ pub struct AppConfig {
     pub language: String,
     #[serde(default = "default_translation_enabled")]
     pub translation_enabled: bool,
+    /// Maximum concurrent translation requests (default: 2)
+    #[serde(default = "default_max_concurrent_translations")]
+    pub max_concurrent_translations: u32,
 }
 
 fn default_language() -> String {
@@ -91,6 +94,10 @@ fn default_language() -> String {
 
 fn default_translation_enabled() -> bool {
     true
+}
+
+fn default_max_concurrent_translations() -> u32 {
+    2
 }
 
 fn default_opacity() -> f64 {
@@ -122,6 +129,7 @@ impl Default for AppConfig {
             openai_context_count: 2,
             language: "en".to_string(),
             translation_enabled: true,
+            max_concurrent_translations: 2,
         }
     }
 }
@@ -252,6 +260,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
                 enabled: e.proxy.enabled,
             },
         }).collect(),
+        max_concurrent_translations: config.max_concurrent_translations,
     }
 }
 

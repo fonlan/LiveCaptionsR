@@ -586,11 +586,10 @@ function App() {
     });
     setTempTranslations(initialTranslations);
 
-    // Translate each card
-    for (const card of cards) {
+    // Translate each card in parallel (backend handles concurrency limit)
+    const promises = cards.map(async (card, cardIndex) => {
       try {
         let context: string[] | null = null;
-        const cardIndex = cards.findIndex(c => c.id === card.id);
 
         // Use override provider or config provider for context logic checks
         const effectiveProvider = providerOverride || config.provider;
@@ -618,7 +617,9 @@ function App() {
           [card.id]: { translated: '', status: 'error' }
         }));
       }
-    }
+    });
+
+    await Promise.all(promises);
   };
 
   const appWindow = getCurrentWindow();
@@ -1428,6 +1429,23 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           <span className="slider round"></span>
         </label>
         <span>{t("settings.translation.enableTranslation")}</span>
+      </div>
+
+      {/* Max Concurrent Translations */}
+      <div className="form-group">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+          <label>{t("settings.translation.maxConcurrent")}</label>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{formData.max_concurrent_translations ?? 2}</span>
+        </div>
+        <input
+          type="range"
+          min="1"
+          max="10"
+          step="1"
+          value={formData.max_concurrent_translations ?? 2}
+          onChange={e => setFormData(prev => ({ ...prev, max_concurrent_translations: parseInt(e.target.value) }))}
+          style={{ width: '100%', accentColor: 'var(--primary)', cursor: 'pointer' }}
+        />
       </div>
 
       {/* Language Settings */}
