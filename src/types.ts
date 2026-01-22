@@ -68,6 +68,7 @@ export interface AppConfig {
   openai_context_count: number;
   opacity: number;
   language: string;
+  translation_enabled: boolean;
 }
 
 export const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
@@ -101,6 +102,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   openai_context_count: 2,
   opacity: 1.0,
   language: "en",
+  translation_enabled: true,
 };
 
 export const LANGUAGES = [

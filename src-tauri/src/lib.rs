@@ -81,10 +81,16 @@ pub struct AppConfig {
     /// UI Language (en, zh-CN)
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default = "default_translation_enabled")]
+    pub translation_enabled: bool,
 }
 
 fn default_language() -> String {
     "en".to_string()
+}
+
+fn default_translation_enabled() -> bool {
+    true
 }
 
 fn default_opacity() -> f64 {
@@ -115,6 +121,7 @@ impl Default for AppConfig {
             opacity: 1.0,
             openai_context_count: 2,
             language: "en".to_string(),
+            translation_enabled: true,
         }
     }
 }

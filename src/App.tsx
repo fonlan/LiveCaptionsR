@@ -404,6 +404,17 @@ function App() {
       }
     });
 
+    // Check if translation is enabled
+    if (configRef.current.translation_enabled === false) {
+      setCards(prev => prev.map(c => {
+        if (c.id === newId) {
+          return { ...c, translated: originalText, status: 'success' as const };
+        }
+        return c;
+      }));
+      return;
+    }
+
     // Start translation for the NEW card
     // The old card's translation (if running) will fail to find the old ID in state and do nothing
     performTranslation(newId, originalText);
@@ -1039,6 +1050,19 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
 
   const renderTranslationTab = () => (
     <div className="tab-panel">
+      {/* Enable Translation Toggle */}
+      <div className="form-group checkbox-group" style={{ marginBottom: '16px' }}>
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={formData.translation_enabled !== false} // Default to true if undefined
+            onChange={e => setFormData(prev => ({ ...prev, translation_enabled: e.target.checked }))}
+          />
+          <span className="slider round"></span>
+        </label>
+        <span>{t("settings.translation.enableTranslation")}</span>
+      </div>
+
       {/* Language Settings */}
       <div className="form-row">
         <div className="form-group">

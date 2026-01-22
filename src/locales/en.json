@@ -69,6 +69,7 @@
       "alwaysOnTop": "Always on Top"
     },
     "translation": {
+      "enableTranslation": "Enable Translation",
       "sourceLanguage": "Source Language",
       "targetLanguage": "Target Language",
       "provider": "Translation Provider",
