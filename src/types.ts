@@ -28,6 +28,12 @@ export interface SessionMetadata {
   preview: string;
 }
 
+export interface TeamsWindowInfo {
+  hwnd: number;
+  pid: number;
+  title: string;
+}
+
 export interface Toast {
   id: string;
   type: 'success' | 'error';
@@ -51,6 +57,8 @@ export interface OpenAIEndpoint {
 }
 
 export interface AppConfig {
+  caption_source: string;
+  selected_teams_hwnd: number | null;
   provider: string;
   source_lang: string;
   target_lang: string;
@@ -86,6 +94,8 @@ export const DEFAULT_OPENAI_ENDPOINT: OpenAIEndpoint = {
 export const DEFAULT_SUMMARY_PROMPT = "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \n\n Please follow these steps:\n 1. Analyze the context to infer and correct any errors or missing information in the transcript.\n 2. Generate a clear and concise summary of the corrected content in {target_lang}.\n \n Output using Markdown formatting.";
 
 export const DEFAULT_CONFIG: AppConfig = {
+  caption_source: "livecaptions",
+  selected_teams_hwnd: null,
   provider: "google",
   source_lang: "en",
   target_lang: "zh-CN",

@@ -20,6 +20,7 @@ import {
   SentenceCard, 
   Session, 
   SessionMetadata, 
+  TeamsWindowInfo,
   Toast 
 } from "./types";
 import { 
@@ -1271,6 +1272,8 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'ai' | 'summary'>('general');
+  const [teamsWindows, setTeamsWindows] = useState<TeamsWindowInfo[]>([]);
+  const [fetchingTeams, setFetchingTeams] = useState(false);
 
   useEffect(() => {
     setFormData(config);
@@ -1317,6 +1320,30 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
     setFormData(prev => ({ ...prev, openai_endpoints: [...prev.openai_endpoints, newEndpoint] }));
   };
 
+  const fetchTeamsWindows = async () => {
+    setFetchingTeams(true);
+    try {
+      const windows = await invoke<TeamsWindowInfo[]>('get_teams_windows');
+      setTeamsWindows(windows);
+      // Auto-select first window if none selected
+      if (windows.length > 0 && !formData.selected_teams_hwnd) {
+        setFormData(prev => ({ ...prev, selected_teams_hwnd: windows[0].hwnd }));
+      }
+    } catch (e) {
+      console.error('Failed to get Teams windows:', e);
+      setTeamsWindows([]);
+    } finally {
+      setFetchingTeams(false);
+    }
+  };
+
+  // Auto-fetch Teams windows when source changes to teams
+  useEffect(() => {
+    if (formData.caption_source === 'teams') {
+      fetchTeamsWindows();
+    }
+  }, [formData.caption_source]);
+
   const removeEndpoint = (index: number) => {
     if (formData.openai_endpoints.length <= 1) return;
     const newEndpoints = formData.openai_endpoints.filter((_, i) => i !== index);
@@ -1338,6 +1365,57 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
 
   const renderGeneralTab = () => (
     <div className="tab-panel">
+       {/* Caption Source */}
+       <div className="form-group">
+        <label>{t("settings.general.captionSource")}</label>
+        <select
+          value={formData.caption_source || 'livecaptions'}
+          onChange={e => setFormData(prev => ({ ...prev, caption_source: e.target.value }))}
+        >
+          <option value="livecaptions">{t("settings.general.captionSourceLiveCaptions")}</option>
+          <option value="teams">{t("settings.general.captionSourceTeams")}</option>
+        </select>
+        
+        {formData.caption_source === 'teams' && (
+          <div style={{ marginTop: '8px', paddingLeft: '8px', borderLeft: '2px solid var(--accent-color)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+              <label style={{ fontSize: '13px' }}>Target Window</label>
+              <button 
+                type="button" 
+                onClick={fetchTeamsWindows} 
+                disabled={fetchingTeams}
+                style={{ padding: '2px 8px', fontSize: '11px', background: 'transparent', border: '1px solid var(--border-color)' }}
+              >
+                {fetchingTeams ? <IconRetry className="spin" size={12} /> : <IconRetry size={12} />}
+                <span style={{ marginLeft: '4px' }}>Refresh</span>
+              </button>
+            </div>
+            
+            {teamsWindows.length === 0 ? (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                {fetchingTeams ? 'Scanning for Teams windows...' : 'No Teams meeting windows found. Please join a meeting first.'}
+              </div>
+            ) : (
+              <select
+                value={formData.selected_teams_hwnd || ''}
+                onChange={e => setFormData(prev => ({ ...prev, selected_teams_hwnd: Number(e.target.value) }))}
+                style={{ fontSize: '13px', padding: '4px' }}
+              >
+                {teamsWindows.map(win => (
+                  <option key={win.hwnd} value={win.hwnd}>
+                    {win.title} (PID: {win.pid})
+                  </option>
+                ))}
+              </select>
+            )}
+            
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              {t("settings.general.teamsNote")}
+            </p>
+          </div>
+        )}
+       </div>
+
        {/* Language Settings */}
        <div className="form-group">
         <label>{t("settings.general.language")}</label>

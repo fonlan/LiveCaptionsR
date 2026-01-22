@@ -5,9 +5,12 @@ use std::sync::mpsc::{channel, Sender};
 use tauri::{AppHandle, Emitter, Manager};
 
 mod livecaptions;
+mod teams;
 mod storage;
 mod translation;
 mod db;
+
+use teams::TeamsWindowInfo;
 
 use translation::{OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationProvider, TranslationService};
 
@@ -51,6 +54,12 @@ impl Default for OpenAIEndpointDTO {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
+    /// Caption source: "livecaptions" or "teams"
+    #[serde(default = "default_caption_source")]
+    pub caption_source: String,
+    /// Selected Teams window handle (when using teams caption source)
+    #[serde(default)]
+    pub selected_teams_hwnd: Option<isize>,
     /// Provider: "google", "microsoft", or "openai:{endpoint_id}"
     pub provider: String,
     pub source_lang: String,
@@ -92,6 +101,10 @@ fn default_language() -> String {
     "en".to_string()
 }
 
+fn default_caption_source() -> String {
+    "livecaptions".to_string()
+}
+
 fn default_translation_enabled() -> bool {
     true
 }
@@ -111,6 +124,8 @@ fn default_openai_context_count() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            caption_source: "livecaptions".to_string(),
+            selected_teams_hwnd: None,
             provider: "google".to_string(),
             source_lang: "en".to_string(),
             target_lang: "zh-CN".to_string(),
@@ -332,8 +347,6 @@ async fn summarize_text(segments: Vec<String>, provider_id: String) -> Result<St
 /// Start caption watcher - simplified to only emit raw text
 #[tauri::command]
 async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
-    use std::time::SystemTime;
-
     // Load config
     let config = {
         let mut cfg = APP_CONFIG.lock().unwrap();
@@ -362,20 +375,6 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
         *running = true;
     }
 
-    // Launch LiveCaptions automatically
-    let launch_result = livecaptions::launch_livecaptions(config.hide_system_window);
-    let hwnd_override = match launch_result {
-        Ok(hwnd) => Some(hwnd),
-        Err(e) => {
-            eprintln!("Warning: Failed to launch LiveCaptions: {}", e);
-            None
-        }
-    };
-
-    let app_clone = app.clone();
-    let hide_system_window = config.hide_system_window;
-    let include_microphone = config.include_microphone;
-
     // Create channel for commands
     let (tx, rx) = channel();
     {
@@ -383,99 +382,227 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
         *sender = Some(tx);
     }
 
-    std::thread::spawn(move || {
-        let mut stream = match livecaptions::CaptionStream::new() {
-            Ok(s) => s,
+    let caption_source = config.caption_source.clone();
+    let app_clone = app.clone();
+    let hide_system_window = config.hide_system_window;
+    let include_microphone = config.include_microphone;
+    let selected_teams_hwnd = config.selected_teams_hwnd;
+
+    // Branch based on caption source
+    if caption_source == "teams" {
+        // Teams caption source
+        std::thread::spawn(move || {
+            start_teams_caption_loop(app_clone, rx, selected_teams_hwnd);
+        });
+        Ok("Teams caption watcher started".to_string())
+    } else {
+        // LiveCaptions source (default)
+        // Launch LiveCaptions automatically
+        let launch_result = livecaptions::launch_livecaptions(hide_system_window);
+        let hwnd_override = match launch_result {
+            Ok(hwnd) => Some(hwnd),
             Err(e) => {
-                let _ = app_clone.emit("caption-error", format!("Init failed: {}", e));
-                let mut running = CAPTION_RUNNING.lock().unwrap();
-                *running = false;
-                return;
+                eprintln!("Warning: Failed to launch LiveCaptions: {}", e);
+                None
             }
         };
 
-        match stream.connect(hide_system_window, hwnd_override) {
-            Ok(msg) => {
-                let _ = app_clone.emit("caption-status", msg);
-                if include_microphone {
-                    if let Err(e) = stream.configure_microphone(include_microphone) {
-                        let _ = app_clone.emit("caption-error", format!("Mic config failed: {}", e));
-                    }
+        std::thread::spawn(move || {
+            start_livecaptions_loop(app_clone, rx, hide_system_window, include_microphone, hwnd_override);
+        });
+        Ok("LiveCaptions watcher started".to_string())
+    }
+}
+
+/// LiveCaptions caption polling loop
+fn start_livecaptions_loop(
+    app: AppHandle,
+    rx: std::sync::mpsc::Receiver<CaptionThreadCommand>,
+    hide_system_window: bool,
+    include_microphone: bool,
+    hwnd_override: Option<isize>,
+) {
+    use std::time::SystemTime;
+
+    let mut stream = match livecaptions::CaptionStream::new() {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = app.emit("caption-error", format!("Init failed: {}", e));
+            let mut running = CAPTION_RUNNING.lock().unwrap();
+            *running = false;
+            return;
+        }
+    };
+
+    match stream.connect(hide_system_window, hwnd_override) {
+        Ok(msg) => {
+            let _ = app.emit("caption-status", msg);
+            if include_microphone {
+                if let Err(e) = stream.configure_microphone(include_microphone) {
+                    let _ = app.emit("caption-error", format!("Mic config failed: {}", e));
                 }
             }
-            Err(e) => {
-                let _ = app_clone.emit("caption-error", e.to_string());
-                let mut running = CAPTION_RUNNING.lock().unwrap();
-                *running = false;
-                return;
+        }
+        Err(e) => {
+            let _ = app.emit("caption-error", e.to_string());
+            let mut running = CAPTION_RUNNING.lock().unwrap();
+            *running = false;
+            return;
+        }
+    }
+
+    let mut last_text = String::new();
+
+    while stream.is_running() {
+        {
+            let running = CAPTION_RUNNING.lock().unwrap();
+            if !*running {
+                stream.stop();
+                break;
             }
         }
 
-        let mut last_text = String::new();
-
-        while stream.is_running() {
-            {
-                let running = CAPTION_RUNNING.lock().unwrap();
-                if !*running {
-                    stream.stop();
-                    break;
+        // Check for commands
+        if let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                CaptionThreadCommand::ToggleVisibility => {
+                    let visible = stream.toggle_visibility();
+                    let _ = app.emit("caption-visibility", visible);
                 }
             }
-
-            // Check for commands
-            if let Ok(cmd) = rx.try_recv() {
-                match cmd {
-                    CaptionThreadCommand::ToggleVisibility => {
-                        let visible = stream.toggle_visibility();
-                        // Emit event so frontend knows the state (optional, but good practice)
-                        let _ = app_clone.emit("caption-visibility", visible);
-                    }
-                }
-            }
-
-            if let Some(text) = stream.get_next_caption() {
-                // Skip if text hasn't changed
-                if text == last_text {
-                    std::thread::sleep(stream.poll_interval());
-                    continue;
-                }
-                last_text = text.clone();
-
-                // Skip error messages
-                if text.starts_with("[ERROR]") {
-                    let _ = app_clone.emit("caption-error", text);
-                    continue;
-                }
-
-                let timestamp = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-
-                // Just emit the raw text - frontend handles segmentation
-                let caption = RawCaption { text, timestamp };
-                let _ = app_clone.emit("caption-raw", caption);
-            }
-
-            std::thread::sleep(stream.poll_interval());
         }
 
-        let mut running = CAPTION_RUNNING.lock().unwrap();
-        *running = false;
-        let _ = app_clone.emit("caption-status", "Stopped");
-    });
+        if let Some(text) = stream.get_next_caption() {
+            if text == last_text {
+                std::thread::sleep(stream.poll_interval());
+                continue;
+            }
+            last_text = text.clone();
 
-    Ok("Caption watcher started".to_string())
+            if text.starts_with("[ERROR]") {
+                let _ = app.emit("caption-error", text);
+                continue;
+            }
+
+            let timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let caption = RawCaption { text, timestamp };
+            let _ = app.emit("caption-raw", caption);
+        }
+
+        std::thread::sleep(stream.poll_interval());
+    }
+
+    let mut running = CAPTION_RUNNING.lock().unwrap();
+    *running = false;
+    let _ = app.emit("caption-status", "Stopped");
+}
+
+/// Teams caption polling loop
+fn start_teams_caption_loop(
+    app: AppHandle,
+    rx: std::sync::mpsc::Receiver<CaptionThreadCommand>,
+    selected_hwnd: Option<isize>,
+) {
+    use std::time::SystemTime;
+
+    let mut stream = match teams::TeamsCaptionStream::new() {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = app.emit("caption-error", format!("Teams init failed: {}", e));
+            let mut running = CAPTION_RUNNING.lock().unwrap();
+            *running = false;
+            return;
+        }
+    };
+
+    // Set specific window if provided
+    if let Some(hwnd) = selected_hwnd {
+        stream.set_window(hwnd);
+    }
+
+    match stream.connect() {
+        Ok(msg) => {
+            let _ = app.emit("caption-status", msg);
+        }
+        Err(e) => {
+            let _ = app.emit("caption-error", e.to_string());
+            let mut running = CAPTION_RUNNING.lock().unwrap();
+            *running = false;
+            return;
+        }
+    }
+
+    let mut last_text = String::new();
+
+    while stream.is_running() {
+        {
+            let running = CAPTION_RUNNING.lock().unwrap();
+            if !*running {
+                stream.stop();
+                break;
+            }
+        }
+
+        // Check for commands (Teams doesn't support toggle visibility)
+        if let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                CaptionThreadCommand::ToggleVisibility => {
+                    // Teams window visibility is not controlled by us
+                    // Just ignore this command
+                    eprintln!("Toggle visibility not supported for Teams");
+                }
+            }
+        }
+
+        if let Some(text) = stream.get_next_caption() {
+            if text == last_text {
+                std::thread::sleep(stream.poll_interval());
+                continue;
+            }
+            last_text = text.clone();
+
+            if text.starts_with("[ERROR]") {
+                let _ = app.emit("caption-error", text);
+                continue;
+            }
+
+            let timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let caption = RawCaption { text, timestamp };
+            let _ = app.emit("caption-raw", caption);
+        }
+
+        std::thread::sleep(stream.poll_interval());
+    }
+
+    let mut running = CAPTION_RUNNING.lock().unwrap();
+    *running = false;
+    let _ = app.emit("caption-status", "Stopped");
 }
 
 #[tauri::command]
 fn stop_caption_watcher() -> Result<String, String> {
+    // Get current caption source before stopping
+    let caption_source = {
+        let config = APP_CONFIG.lock().unwrap();
+        config.caption_source.clone()
+    };
+    
     let mut running = CAPTION_RUNNING.lock().unwrap();
     *running = false;
     
-    // Close LiveCaptions
-    if let Err(e) = livecaptions::close_livecaptions() {
-        eprintln!("Warning: Failed to close LiveCaptions: {}", e);
+    // Only close LiveCaptions if that was the source
+    if caption_source != "teams" {
+        if let Err(e) = livecaptions::close_livecaptions() {
+            eprintln!("Warning: Failed to close LiveCaptions: {}", e);
+        }
     }
     
     Ok("Stopping caption watcher...".to_string())
@@ -539,6 +666,12 @@ fn toggle_livecaptions_visibility() -> Result<(), String> {
     }
 }
 
+/// Get available Teams windows for user selection
+#[tauri::command]
+fn get_teams_windows() -> Vec<TeamsWindowInfo> {
+    teams::find_all_teams_windows()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize database
@@ -554,6 +687,7 @@ pub fn run() {
             stop_caption_watcher,
             is_watcher_running,
             toggle_livecaptions_visibility,
+            get_teams_windows,
             translate_text,
             summarize_text,
             set_always_on_top,

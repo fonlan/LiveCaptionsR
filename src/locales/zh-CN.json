@@ -59,6 +59,14 @@
       "summary": "摘要"
     },
     "general": {
+      "captionSource": "字幕来源",
+      "captionSourceLiveCaptions": "Windows 实时字幕",
+      "captionSourceTeams": "Microsoft Teams",
+      "targetWindow": "目标窗口",
+      "noTeamsWindows": "未找到 Teams 会议窗口，请先加入会议。",
+      "scanningTeams": "正在扫描 Teams 窗口...",
+      "refresh": "刷新",
+      "teamsNote": "开始捕获前，请确保 Teams 正在运行并已开启字幕。",
       "language": "语言",
       "theme": "主题",
       "themeDark": "深色",

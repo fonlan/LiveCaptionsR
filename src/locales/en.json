@@ -59,6 +59,14 @@
       "summary": "Summary"
     },
     "general": {
+      "captionSource": "Caption Source",
+      "captionSourceLiveCaptions": "Windows LiveCaptions",
+      "captionSourceTeams": "Microsoft Teams",
+      "targetWindow": "Target Window",
+      "noTeamsWindows": "No Teams meeting windows found. Please join a meeting first.",
+      "scanningTeams": "Scanning for Teams windows...",
+      "refresh": "Refresh",
+      "teamsNote": "Make sure Teams is running with captions enabled before starting capture.",
       "language": "Language",
       "theme": "Theme",
       "themeDark": "Dark",
