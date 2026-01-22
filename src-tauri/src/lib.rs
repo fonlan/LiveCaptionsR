@@ -208,7 +208,7 @@ fn set_always_on_top(app: AppHandle, always_on_top: bool) -> Result<(), String> 
 fn save_config_to_file(config: &AppConfig) -> anyhow::Result<()> {
     let config_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
-        .join("livecaptions-r");
+        .join("LiveCaptionsR");
     std::fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("config.json");
     let json = serde_json::to_string_pretty(config)?;
@@ -217,7 +217,7 @@ fn save_config_to_file(config: &AppConfig) -> anyhow::Result<()> {
 }
 
 fn load_config_from_file() -> Option<AppConfig> {
-    let config_path = dirs::config_dir()?.join("livecaptions-r").join("config.json");
+    let config_path = dirs::config_dir()?.join("LiveCaptionsR").join("config.json");
     let json = std::fs::read_to_string(config_path).ok()?;
     serde_json::from_str(&json).ok()
 }

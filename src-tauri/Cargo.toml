@@ -1,6 +1,6 @@
 [package]
 name = "livecaptions-r"
-version = "0.7.0"
+version = "0.8.0"
 description = "LiveCaptions Real-time Translator"
 authors = ["you"]
 edition = "2021"
