@@ -654,24 +654,28 @@ function App() {
               {cards.map((item) => (
                 <div key={item.id} className={`history-card ${item.status === 'error' || (!item.status && item.translated === null) ? 'failed' : ''}`}>
                   <div className="card-original">{item.original}</div>
-                  {item.status === 'translating' ? (
-                    <div className="typing-dots">
-                      <span>.</span><span>.</span><span>.</span>
-                    </div>
-                  ) : item.translated ? (
-                    <div className="card-translated">{item.translated}</div>
-                  ) : (
-                    <div className="card-failed">
-                      <span className="failed-text">{t("translation.failed")}</span>
-                      <button
-                        className="btn-retry"
-                        onClick={() => retryTranslation(item.id, item.original)}
-                        disabled={item.retrying}
-                        title={t("translation.retry")}
-                      >
-                        {item.retrying ? <span className="spinner" /> : <IconRetry />}
-                      </button>
-                    </div>
+                  {config.translation_enabled && (
+                    <>
+                      {item.status === 'translating' ? (
+                        <div className="typing-dots">
+                          <span>.</span><span>.</span><span>.</span>
+                        </div>
+                      ) : item.translated ? (
+                        <div className="card-translated">{item.translated}</div>
+                      ) : (
+                        <div className="card-failed">
+                          <span className="failed-text">{t("translation.failed")}</span>
+                          <button
+                            className="btn-retry"
+                            onClick={() => retryTranslation(item.id, item.original)}
+                            disabled={item.retrying}
+                            title={t("translation.retry")}
+                          >
+                            {item.retrying ? <span className="spinner" /> : <IconRetry />}
+                          </button>
+                        </div>
+                      )}
+                    </>
                   )}
                   {item.timestamp && (
                       <div style={{
