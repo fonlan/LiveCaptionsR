@@ -107,9 +107,9 @@ fn get_all_processes() -> Vec<ProcessInfo> {
     processes
 }
 
-/// Find Teams renderer process PIDs using the correct hierarchy:
-/// ms-teams.exe → msedgewebview2.exe (direct child) → msedgewebview2.exe with --type=renderer
-fn get_teams_renderer_pids() -> Vec<u32> {
+/// Find all Teams-related PIDs (Main, WebView, Renderer) to ensure we find the window owner.
+/// Hierarchy: ms-teams.exe → msedgewebview2.exe (direct child) → msedgewebview2.exe with --type=renderer
+fn get_teams_related_pids() -> Vec<u32> {
     let processes = get_all_processes();
 
     // Build lookup maps
@@ -132,9 +132,48 @@ fn get_teams_renderer_pids() -> Vec<u32> {
         .collect();
 
     if teams_pids.is_empty() {
-        eprintln!("[Teams Debug] No ms-teams.exe process found");
         return Vec::new();
     }
+
+    // Step 2: Find direct msedgewebview2.exe children of ms-teams.exe
+    let mut first_level_webviews: Vec<u32> = Vec::new();
+    for &teams_pid in &teams_pids {
+        if let Some(children) = parent_to_children.get(&teams_pid) {
+            for &child_pid in children {
+                if let Some(info) = pid_to_info.get(&child_pid) {
+                    if info.name.to_lowercase() == "msedgewebview2.exe" {
+                        first_level_webviews.push(child_pid);
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: Find children of first-level webviews that have --type=renderer
+    let mut renderer_pids: Vec<u32> = Vec::new();
+    for &webview_pid in &first_level_webviews {
+        if let Some(children) = parent_to_children.get(&webview_pid) {
+            for &child_pid in children {
+                if let Some(info) = pid_to_info.get(&child_pid) {
+                    if info.name.to_lowercase() == "msedgewebview2.exe"
+                        && info.cmdline.contains("--type=renderer")
+                    {
+                        renderer_pids.push(child_pid);
+                    }
+                }
+            }
+        }
+    }
+
+    // Combine all PIDs (Main Teams, Middleware WebViews, Renderers)
+    // The meeting window might be owned by any of them in New Teams
+    let mut all_pids = Vec::new();
+    all_pids.extend(teams_pids);
+    all_pids.extend(first_level_webviews);
+    all_pids.extend(renderer_pids);
+    
+    all_pids
+}
     eprintln!("[Teams Debug] Found ms-teams.exe PIDs: {:?}", teams_pids);
 
     // Step 2: Find direct msedgewebview2.exe children of ms-teams.exe
@@ -180,17 +219,29 @@ fn get_teams_renderer_pids() -> Vec<u32> {
         "[Teams Debug] Found {} renderer processes",
         renderer_pids.len()
     );
-    renderer_pids
+
+    // Combine all PIDs (Main Teams, Middleware WebViews, Renderers)
+    // The meeting window might be owned by any of them in New Teams
+    let mut all_pids = Vec::new();
+    all_pids.extend(teams_pids);
+    all_pids.extend(first_level_webviews);
+    all_pids.extend(renderer_pids);
+
+    eprintln!(
+        "[Teams Debug] Total relevant PIDs to search: {}",
+        all_pids.len()
+    );
+    all_pids
 }
 
 /// Find all windows belonging to the renderer processes
 pub fn find_all_teams_windows() -> Vec<TeamsWindowInfo> {
-    let renderer_pids = get_teams_renderer_pids();
-    if renderer_pids.is_empty() {
+    let target_pids_vec = get_teams_related_pids();
+    if target_pids_vec.is_empty() {
         return Vec::new();
     }
 
-    let target_pids: HashSet<u32> = renderer_pids.into_iter().collect();
+    let target_pids: HashSet<u32> = target_pids_vec.into_iter().collect();
 
     struct EnumData {
         target_pids: HashSet<u32>,
@@ -203,25 +254,28 @@ pub fn find_all_teams_windows() -> Vec<TeamsWindowInfo> {
         let mut window_pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
 
-        if data.target_pids.contains(&window_pid) && IsWindowVisible(hwnd).as_bool() {
+        if data.target_pids.contains(&window_pid) {
+            let visible = IsWindowVisible(hwnd).as_bool();
             let mut title = [0u16; 512];
             let title_len = GetWindowTextW(hwnd, &mut title);
+            
+            let title_str = if title_len > 0 {
+                String::from_utf16_lossy(&title[..title_len as usize])
+            } else {
+                String::new()
+            };
 
-            // Only include windows with titles
-            if title_len > 0 {
-                let title_str = String::from_utf16_lossy(&title[..title_len as usize]);
-
-                // Skip very small or empty titles
-                if !title_str.trim().is_empty() {
-                    eprintln!(
-                        "[Teams Debug] Found renderer window (PID {}): '{}'",
-                        window_pid, title_str
-                    );
-                    data.windows.push(TeamsWindowInfo {
-                        hwnd: hwnd.0 as isize,
-                        pid: window_pid,
-                        title: title_str,
-                    });
+            if visible {
+                // Only include windows with titles
+                if title_len > 0 {
+                    // Skip very small or empty titles
+                    if !title_str.trim().is_empty() {
+                        data.windows.push(TeamsWindowInfo {
+                            hwnd: hwnd.0 as isize,
+                            pid: window_pid,
+                            title: title_str,
+                        });
+                    }
                 }
             }
         }
@@ -243,15 +297,38 @@ pub fn find_all_teams_windows() -> Vec<TeamsWindowInfo> {
     data.windows
 }
 
-/// Find a single Teams window, returning the first match or None
+/// Find a single Teams window, returning the best match for a meeting window
 pub fn find_teams_webview_window() -> Option<HWND> {
     let windows = find_all_teams_windows();
     if windows.is_empty() {
         return None;
     }
 
-    // Return the first window found
-    Some(HWND(windows[0].hwnd as *mut _))
+    // Priority 1: Windows that look like meeting windows (don't contain generic Teams branding)
+    if let Some(meeting_window) = windows.iter().find(|w| {
+        let title = w.title.to_lowercase();
+        !title.contains("microsoft teams") 
+        && !title.contains("microsoft teams") // Redundant but safe
+        && !title.starts_with("teams")
+    }) {
+        return Some(HWND(meeting_window.hwnd as *mut _));
+    }
+
+    // Priority 2: Fallback to any window found
+    if let Some(first) = windows.first() {
+        return Some(HWND(first.hwnd as *mut _));
+    }
+
+    // Priority 2: Fallback to any window found
+    if let Some(first) = windows.first() {
+        eprintln!(
+            "[Teams Debug] No distinct meeting window found, falling back to: '{}' (PID: {})",
+            first.title, first.pid
+        );
+        return Some(HWND(first.hwnd as *mut _));
+    }
+
+    None
 }
 
 pub struct TeamsWatcher {
