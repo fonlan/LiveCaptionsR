@@ -5,6 +5,10 @@ description = "LiveCaptions Real-time Translator"
 authors = ["you"]
 edition = "2021"
 
+[[bin]]
+name = "LiveCaptionsR"
+path = "src/main.rs"
+
 [lib]
 name = "livecaptions_r_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
