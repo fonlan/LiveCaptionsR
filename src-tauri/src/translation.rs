@@ -119,27 +119,50 @@ impl TranslationService {
         self.config = config;
     }
 
-    pub async fn translate(&self, text: &str, context: Option<&[String]>) -> Result<String> {
+    pub async fn translate(&self, text: &str, context: Option<&[String]>, target_lang_override: Option<&str>) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
 
+        let target_lang = target_lang_override.unwrap_or(&self.config.target_lang);
+
         match &self.config.provider {
-            TranslationProvider::Google => self.translate_google(text).await,
-            TranslationProvider::Microsoft => self.translate_microsoft(text).await,
+            TranslationProvider::Google => self.translate_google(text, target_lang).await,
+            TranslationProvider::Microsoft => self.translate_microsoft(text, target_lang).await,
             TranslationProvider::OpenAI(endpoint_id) => {
-                self.translate_openai(text, endpoint_id, context).await
+                self.translate_openai(text, endpoint_id, context, target_lang).await
             }
         }
     }
 
-    async fn translate_google(&self, text: &str) -> Result<String> {
+    fn get_lang_name(code: &str) -> String {
+        match code {
+            "en" => "English".to_string(),
+            "zh-CN" => "Simplified Chinese".to_string(),
+            "zh-TW" => "Traditional Chinese".to_string(),
+            "ja" => "Japanese".to_string(),
+            "ko" => "Korean".to_string(),
+            "es" => "Spanish".to_string(),
+            "fr" => "French".to_string(),
+            "de" => "German".to_string(),
+            "it" => "Italian".to_string(),
+            "pt" => "Portuguese".to_string(),
+            "ru" => "Russian".to_string(),
+            "vi" => "Vietnamese".to_string(),
+            "th" => "Thai".to_string(),
+            "id" => "Indonesian".to_string(),
+            "hi" => "Hindi".to_string(),
+            _ => code.to_string(),
+        }
+    }
+
+    async fn translate_google(&self, text: &str, target_lang: &str) -> Result<String> {
         let client = build_client(&self.config.google_proxy)?;
         
         let url = format!(
             "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl={}&dt=t&q={}",
             self.config.source_lang,
-            self.config.target_lang,
+            target_lang,
             urlencoding::encode(text)
         );
 
@@ -171,7 +194,7 @@ impl TranslationService {
         Ok(result)
     }
 
-    async fn translate_microsoft(&self, text: &str) -> Result<String> {
+    async fn translate_microsoft(&self, text: &str, target_lang: &str) -> Result<String> {
         let client = build_client(&self.config.microsoft_proxy)?;
         
         let api_key = self
@@ -189,12 +212,12 @@ impl TranslationService {
         let url = if self.config.source_lang == "auto" {
             format!(
                 "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to={}",
-                self.config.target_lang
+                target_lang
             )
         } else {
             format!(
                 "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from={}&to={}",
-                self.config.source_lang, self.config.target_lang
+                self.config.source_lang, target_lang
             )
         };
 
@@ -240,7 +263,7 @@ impl TranslationService {
             .context("Empty response from Microsoft Translator")
     }
 
-    async fn translate_openai(&self, text: &str, endpoint_id: &str, context: Option<&[String]>) -> Result<String> {
+    async fn translate_openai(&self, text: &str, endpoint_id: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
         let endpoint = self
             .config
             .openai_endpoints
@@ -275,17 +298,21 @@ impl TranslationService {
             self.config.source_lang.clone()
         };
 
+        let target_lang_name = Self::get_lang_name(target_lang);
+
         let system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
             format!(
                 "You are a translator. Translate the current sentence from {} to {}. \
-                 Use the previous sentences only as context to ensure consistency. \
+                 The previous sentences are provided ONLY for context/disambiguation. \
+                 IGNORE the language of the previous sentences. \
+                 Your output MUST be in {}. \
                  Output ONLY the translation of the current sentence, no labels or explanations.",
-                source_lang_desc, self.config.target_lang
+                source_lang_desc, target_lang_name, target_lang_name
             )
         } else {
             format!(
                 "You are a translator. Translate from {} to {}. Output ONLY the translation.",
-                source_lang_desc, self.config.target_lang
+                source_lang_desc, target_lang_name
             )
         };
 

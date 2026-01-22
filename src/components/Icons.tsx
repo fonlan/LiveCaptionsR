@@ -126,3 +126,14 @@ export const IconEyeOff = () => (
     <line x1="1" y1="1" x2="23" y2="23"></line>
   </svg>
 );
+
+export const IconLanguages = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 8l6 6"></path>
+    <path d="M4 14l6-6 2-3"></path>
+    <path d="M2 5h12"></path>
+    <path d="M7 2h1"></path>
+    <path d="M22 22l-5-10-5 10"></path>
+    <path d="M14 18h6"></path>
+  </svg>
+);

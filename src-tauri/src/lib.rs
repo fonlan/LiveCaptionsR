@@ -294,10 +294,10 @@ fn get_or_init_translation_service() -> Result<TranslationService, String> {
 /// Translate a single piece of text - called from frontend
 /// context: Optional list of previous caption texts for OpenAI context-aware translation
 #[tauri::command]
-async fn translate_text(text: String, context: Option<Vec<String>>) -> Result<String, String> {
+async fn translate_text(text: String, context: Option<Vec<String>>, target_lang_override: Option<String>) -> Result<String, String> {
     let svc = get_or_init_translation_service()?;
     
-    match svc.translate(&text, context.as_deref()).await {
+    match svc.translate(&text, context.as_deref(), target_lang_override.as_deref()).await {
         Ok(translated) => Ok(translated),
         Err(e) => Err(format!("Translation error: {}", e)),
     }

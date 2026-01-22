@@ -27,6 +27,7 @@ import {
   IconCopy, 
   IconFileText, 
   IconList,
+  IconLanguages,
   IconMinus, 
   IconPlay, 
   IconPlus, 
@@ -67,6 +68,8 @@ function App() {
   const [summaryText, setSummaryText] = useState<string>("");
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
+  const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
+  const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: 'translating' | 'success' | 'error' }>>({});
   
   // Session State
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
@@ -550,7 +553,7 @@ function App() {
 
     try {
       const segments = cards.map(c => c.original);
-      const result = await invoke<string>("summarize_text", { 
+      const result = await invoke<string>("summarize_text", {
         segments,
         providerId: config.summary_provider
       });
@@ -560,6 +563,50 @@ function App() {
       setSummaryText(`Error generating summary: ${err}`);
     } finally {
       setIsSummarizing(false);
+    }
+  };
+
+  const handleTranslateSession = async (targetLang: string) => {
+    if (cards.length === 0) return;
+
+    // Clear previous temp translations
+    setTempTranslations({});
+
+    // Initialize all cards as 'translating'
+    const initialTranslations: Record<string, { translated: string; status: 'translating' | 'success' | 'error' }> = {};
+    cards.forEach(card => {
+      initialTranslations[card.id] = { translated: '', status: 'translating' };
+    });
+    setTempTranslations(initialTranslations);
+
+    // Translate each card
+    for (const card of cards) {
+      try {
+        let context: string[] | null = null;
+        const cardIndex = cards.findIndex(c => c.id === card.id);
+
+        if (config.provider.startsWith('openai:') && config.openai_context_count > 0 && cardIndex > 0) {
+          const startIdx = Math.max(0, cardIndex - config.openai_context_count);
+          context = cards.slice(startIdx, cardIndex).map(c => c.original);
+        }
+
+        const translated = await invoke<string>("translate_text", {
+          text: card.original,
+          context,
+          targetLangOverride: targetLang
+        });
+
+        setTempTranslations(prev => ({
+          ...prev,
+          [card.id]: { translated, status: 'success' }
+        }));
+      } catch (e) {
+        console.error(`Translation failed for card ${card.id}:`, e);
+        setTempTranslations(prev => ({
+          ...prev,
+          [card.id]: { translated: '', status: 'error' }
+        }));
+      }
     }
   };
 
@@ -612,7 +659,7 @@ function App() {
             <span className="history-label">
               <span className={`label-icon ${isRunning ? 'active' : ''}`}>●</span>
               {isRenaming ? (
-                  <input 
+                  <input
                     autoFocus
                     className="session-name-input"
                     value={renameValue}
@@ -641,7 +688,20 @@ function App() {
               <span style={{opacity: 0.5, marginLeft: 8}}>({cards.length})</span>
             </span>
           </div>
-
+          <div className="history-header-right">
+            <button
+              className="btn-icon"
+              onClick={() => setIsTranslateModalOpen(true)}
+              title="Translate Session"
+              disabled={cards.length === 0}
+              style={{ 
+                color: cards.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
+                cursor: cards.length > 0 ? 'pointer' : 'not-allowed'
+              }}
+            >
+              <IconLanguages />
+            </button>
+          </div>
         </div>
 
         <div className="history-scroll" ref={scrollContainerRef}>
@@ -651,46 +711,53 @@ function App() {
             </div>
           ) : (
             <>
-              {cards.map((item) => (
-                <div key={item.id} className={`history-card ${item.status === 'error' || (!item.status && item.translated === null) ? 'failed' : ''}`}>
-                  <div className="card-original">{item.original}</div>
-                  {config.translation_enabled && (
-                    <>
-                      {item.status === 'translating' ? (
-                        <div className="typing-dots">
-                          <span>.</span><span>.</span><span>.</span>
+              {cards.map((item) => {
+                // Check tempTranslations first for historical session translations
+                const tempTrans = tempTranslations[item.id];
+                const displayTranslated = tempTrans?.translated ?? item.translated;
+                const displayStatus = tempTrans?.status ?? item.status;
+
+                return (
+                  <div key={item.id} className={`history-card ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'failed' : ''}`}>
+                    <div className="card-original">{item.original}</div>
+                    {config.translation_enabled && (
+                      <>
+                        {displayStatus === 'translating' ? (
+                          <div className="typing-dots">
+                            <span>.</span><span>.</span><span>.</span>
+                          </div>
+                        ) : displayTranslated ? (
+                          <div className="card-translated">{displayTranslated}</div>
+                        ) : (
+                          <div className="card-failed">
+                            <span className="failed-text">{t("translation.failed")}</span>
+                            <button
+                              className="btn-retry"
+                              onClick={() => retryTranslation(item.id, item.original)}
+                              disabled={item.retrying}
+                              title={t("translation.retry")}
+                            >
+                              {item.retrying ? <span className="spinner" /> : <IconRetry />}
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {item.timestamp && (
+                        <div style={{
+                            position: 'absolute',
+                            bottom: '4px',
+                            right: '8px',
+                            fontSize: '10px',
+                            color: 'var(--text-muted)',
+                            opacity: 0.7
+                        }}>
+                            {new Date(item.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
                         </div>
-                      ) : item.translated ? (
-                        <div className="card-translated">{item.translated}</div>
-                      ) : (
-                        <div className="card-failed">
-                          <span className="failed-text">{t("translation.failed")}</span>
-                          <button
-                            className="btn-retry"
-                            onClick={() => retryTranslation(item.id, item.original)}
-                            disabled={item.retrying}
-                            title={t("translation.retry")}
-                          >
-                            {item.retrying ? <span className="spinner" /> : <IconRetry />}
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                  {item.timestamp && (
-                      <div style={{
-                          position: 'absolute',
-                          bottom: '4px',
-                          right: '8px',
-                          fontSize: '10px',
-                          color: 'var(--text-muted)',
-                          opacity: 0.7
-                      }}>
-                          {new Date(item.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
-                      </div>
-                  )}
-                </div>
-              ))}
+                    )}
+                  </div>
+                );
+              })}
               {partialText && (
                 <div className="history-card partial">
                   <div className="card-original">{partialText}</div>
@@ -791,11 +858,18 @@ function App() {
         </div>
       </div>
       
-      <SummaryModal 
-        isOpen={isSummaryOpen} 
-        onClose={() => setIsSummaryOpen(false)} 
-        text={summaryText} 
-        isLoading={isSummarizing} 
+      <SummaryModal
+        isOpen={isSummaryOpen}
+        onClose={() => setIsSummaryOpen(false)}
+        text={summaryText}
+        isLoading={isSummarizing}
+      />
+
+      <TranslateModal
+        isOpen={isTranslateModalOpen}
+        onClose={() => setIsTranslateModalOpen(false)}
+        onTranslate={handleTranslateSession}
+        currentTargetLang={config.target_lang}
       />
 
       {/* Toast Container */}
@@ -891,6 +965,113 @@ function SummaryModal({ isOpen, onClose, text, isLoading }: { isOpen: boolean; o
                <Markdown>{text}</Markdown>
              </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- Translate Modal Component ---
+function TranslateModal({
+  isOpen,
+  onClose,
+  onTranslate,
+  currentTargetLang
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onTranslate: (targetLang: string) => void;
+  currentTargetLang: string;
+}) {
+  const [selectedLang, setSelectedLang] = useState<string>(currentTargetLang);
+
+  useEffect(() => {
+    if (isOpen) setSelectedLang(currentTargetLang);
+  }, [isOpen, currentTargetLang]);
+
+  const handleTranslate = () => {
+    onTranslate(selectedLang);
+    onClose();
+  };
+
+  if (!isOpen) return null;
+  return (
+    <div className="settings-overlay open" onClick={onClose}>
+      <div className="settings-drawer" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px', width: '90%' }}>
+        <header className="settings-header">
+          <h2>Translate Session</h2>
+          <button className="btn-icon" onClick={onClose}>
+            <IconX />
+          </button>
+        </header>
+        <div className="settings-content" style={{ padding: '20px' }}>
+          <div className="form-group" style={{ marginBottom: '20px' }}>
+            <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-primary)', fontWeight: 500 }}>
+              Target Language
+            </label>
+            <select
+              value={selectedLang}
+              onChange={e => setSelectedLang(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                background: 'var(--bg-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                fontSize: '14px',
+                outline: 'none',
+                cursor: 'pointer'
+              }}
+            >
+              {LANGUAGES.filter(l => l.code !== 'auto').map(lang => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+            <button
+              className="btn-save"
+              onClick={handleTranslate}
+              style={{
+                flex: 1,
+                padding: '10px 16px',
+                background: 'var(--primary)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                fontSize: '14px',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'opacity 0.2s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
+              onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+            >
+              Translate
+            </button>
+            <button
+              onClick={onClose}
+              style={{
+                flex: 1,
+                padding: '10px 16px',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                fontSize: '14px',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'opacity 0.2s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.opacity = '0.8'}
+              onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       </div>
     </div>
