@@ -114,8 +114,16 @@
     "generating": "生成摘要中...",
     "error": "生成摘要错误: {{error}}"
   },
+  "copy": {
+    "tooltip": "复制原文和译文 (Markdown)",
+    "moreOptions": "更多复制选项",
+    "originalOnly": "仅复制原文",
+    "translationOnly": "仅复制译文"
+  },
   "toast": {
     "configSaved": "配置保存成功",
-    "configSaveFailed": "保存配置失败: {{error}}"
+    "configSaveFailed": "保存配置失败: {{error}}",
+    "copySuccess": "已复制到剪贴板",
+    "copyFailed": "复制失败"
   }
 }

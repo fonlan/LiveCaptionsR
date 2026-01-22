@@ -114,8 +114,16 @@
     "generating": "Generating summary...",
     "error": "Error generating summary: {{error}}"
   },
+  "copy": {
+    "tooltip": "Copy Original & Translation (Markdown)",
+    "moreOptions": "More copy options",
+    "originalOnly": "Copy Original Only",
+    "translationOnly": "Copy Translation Only"
+  },
   "toast": {
     "configSaved": "Configuration saved successfully",
-    "configSaveFailed": "Failed to save configuration: {{error}}"
+    "configSaveFailed": "Failed to save configuration: {{error}}",
+    "copySuccess": "Copied to clipboard",
+    "copyFailed": "Failed to copy"
   }
 }
