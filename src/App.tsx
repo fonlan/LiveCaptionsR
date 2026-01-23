@@ -129,11 +129,10 @@ function App() {
     }
   };
 
-  const handleCreateSession = async () => {
+  const handleCreateSession = async (name?: string) => {
     try {
-      const date = new Date();
-      const name = `Session ${date.toLocaleString()}`;
-      const session = await invoke<Session>("create_session", { name });
+      const sessionName = name || `Session ${new Date().toLocaleString()}`;
+      const session = await invoke<Session>("create_session", { name: sessionName });
       await refreshSessionList();
       setActiveSessionId(session.id);
       setActiveSessionName(session.name);
@@ -538,9 +537,9 @@ function App() {
     }
   };
 
-  const startCapture = async () => {
+  const startCapture = async (sessionName?: string) => {
       // Starting: Create new session
-      const sessionId = await handleCreateSession();
+      const sessionId = await handleCreateSession(sessionName);
       if (!sessionId) return; // Failed to create
 
       isFirstCaptionRef.current = true;
@@ -555,6 +554,11 @@ function App() {
   };
 
   const handleSelectTeamsWindow = async (hwnd: number) => {
+      // Find the Teams window title from the scanned windows list
+      const selectedWindow = teamsWindows.find(w => w.hwnd === hwnd);
+      // Use Teams window title if available and not empty, otherwise use default datetime format
+      const windowTitle = selectedWindow?.title?.trim() ? selectedWindow.title : `Session ${new Date().toLocaleString()}`;
+
       // Update config first
       const newConfig = { ...config, selected_teams_hwnd: hwnd };
       // Save config to backend so start_caption_watcher picks it up
@@ -563,11 +567,11 @@ function App() {
           setConfig(newConfig); // Update local state
       } catch (e) {
           console.error("Failed to save config before start:", e);
-          setConfig(newConfig); 
+          setConfig(newConfig);
       }
-      
+
       setIsTeamsModalOpen(false);
-      await startCapture();
+      await startCapture(windowTitle);
   };
 
   const toggleWatcher = async () => {

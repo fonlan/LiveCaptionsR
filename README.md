@@ -4,25 +4,38 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
 
 ## ✨ Features
 
-- **Real-time Capture**: Seamlessly integrates with Windows LiveCaptions (Win+Ctrl+L) using UI Automation.
+- **Multiple Caption Sources**:
+  - **Windows LiveCaptions**: Seamlessly integrates with Windows LiveCaptions (Win+Ctrl+L) using UI Automation.
+  - **Microsoft Teams**: Captures live captions from Teams meetings via UI Automation.
+
 - **Instant Translation**: Supports multiple translation providers:
   - **Google Translate** (Free)
   - **Microsoft Azure Translator**
   - **OpenAI Compatible** (GPT-4o, Local LLMs, etc.)
+  - **GitHub Copilot** (Uses your GitHub Copilot subscription)
+
 - **Smart Segmentation**:
   - Automatically detects sentence boundaries based on punctuation.
   - Handles incomplete sentences and continuous streams.
+
 - **Intelligent Deduplication**:
   - Uses Levenshtein distance similarity (>66%) to merge similar segments.
   - Detects prefix overlaps to update existing captions instead of creating duplicates.
+
+- **Session Management**:
+  - Save and load caption sessions.
+  - Session summaries using AI (OpenAI or Copilot).
+
 - **Modern UI**:
   - Dark mode Cyber-noir aesthetic.
   - "Always on Top" mode for overlay usage.
   - Auto-scrolling history.
+
 - **System Integration**:
   - Auto-launches Windows LiveCaptions on start.
   - Can hide the native LiveCaptions window while capturing.
   - Auto-closes LiveCaptions on exit.
+
 - **Proxy Support**:
   - Independent HTTP/SOCKS5 proxy configuration for each provider.
 
@@ -63,6 +76,18 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
 
 Click the **Settings** icon in the bottom-right corner to configure:
 
+### Caption Sources
+
+1. **Windows LiveCaptions** (Default):
+   - Requires Windows 11 22H2+ or Windows 10 22H2+ with LiveCaptions installed.
+   - Press `Win+Ctrl+L` to toggle LiveCaptions.
+
+2. **Microsoft Teams**:
+   - Requires Teams desktop app running.
+   - Click "Scan Teams Windows" to detect active Teams meetings.
+   - Select the meeting window to capture captions from.
+   - Teams must have live captions enabled in the meeting settings.
+
 ### Translation Providers
 
 1. **Google Translate**: Free, no API key required.
@@ -76,6 +101,12 @@ Click the **Settings** icon in the bottom-right corner to configure:
    - Configure multiple endpoints (e.g., "GPT-4o" and "Local Llama 3").
    - Set custom `Base URL` and `Model`.
 
+4. **GitHub Copilot**:
+   - Requires a GitHub Copilot subscription.
+   - Click "Login with GitHub" to authenticate (OAuth Device Flow).
+   - Supports all available Copilot models (e.g., `gpt-4`, `gpt-4o`).
+   - Can also be used for session summarization.
+
 ### Proxy Settings
 
 Each provider has independent proxy settings:
@@ -86,15 +117,18 @@ Each provider has independent proxy settings:
 
 - **Hide System LiveCaptions Window**: Keeps the native caption bar hidden while capturing.
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
+- **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot.
 
 ## 🛠️ Architecture
 
 - **Frontend**: React + TypeScript + Vite
   - Handles UI, settings, caption segmentation, and display logic.
   - Calculates text similarity for deduplication.
+
 - **Backend**: Rust (Tauri)
-  - `livecaptions.rs`: Manages Windows UI Automation and process control.
-  - `translation.rs`: Handles HTTP requests to translation APIs.
+  - `livecaptions.rs`: Manages Windows UI Automation and LiveCaptions process control.
+  - `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation.
+  - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot).
   - `lib.rs`: Bridges frontend and backend events.
 
 ## 🤝 Contributing
