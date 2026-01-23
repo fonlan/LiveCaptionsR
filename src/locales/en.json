@@ -142,5 +142,14 @@
     "translate": "Translate",
     "cancel": "Cancel",
     "tooltip": "Translate Session"
+  },
+  "teams": {
+    "selectWindow": "Select Teams Window",
+    "description": "Please select the Microsoft Teams meeting window to capture subtitles from.",
+    "availableWindows": "Available Windows",
+    "scanning": "Scanning...",
+    "noWindows": "No Teams windows found. Please ensure you are in a Teams meeting.",
+    "cancel": "Cancel",
+    "refresh": "Refresh"
   }
 }

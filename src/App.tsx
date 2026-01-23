@@ -44,14 +44,12 @@ import {
   IconEyeOff
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
-import {
+import { 
   shouldOverwrite,
-  isEOSPunctuation,
-  findLastEOSIndex,
   getLatestCaption,
-  endsWithEOS,
   generateId
 } from "./utils/textUtils";
+import { getNewSentences } from "./utils/captionProcessing";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -86,6 +84,11 @@ function App() {
    const [partialText, setPartialText] = useState<string>("");
    const [toasts, setToasts] = useState<Toast[]>([]);
    const [autoFollow, setAutoFollow] = useState<boolean>(true);
+   
+   // Teams Modal State
+   const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
+   const [teamsWindows, setTeamsWindows] = useState<TeamsWindowInfo[]>([]);
+   const [isScanningTeams, setIsScanningTeams] = useState(false);
   
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -456,18 +459,15 @@ function App() {
         }
       } else {
         idleCountRef.current = 0;
-        syncCountRef.current++;
 
-        if (endsWithEOS(fullText)) {
-          const lastEOS = findLastEOSIndex(fullText);
-          let prevEOS = -1;
-          for (let i = lastEOS - 1; i >= 0; i--) {
-            if (isEOSPunctuation(fullText, i)) { prevEOS = i; break; }
+        const newSentences = getNewSentences(fullText, lastFullTextRef.current);
+        if (newSentences.length > 0) {
+          newSentences.forEach(sentence => translateAndDisplay(sentence));
+        } else {
+          syncCountRef.current++;
+          if (syncCountRef.current >= MAX_SYNC_INTERVAL && latestCaption.trim()) {
+            translateAndDisplay(latestCaption);
           }
-          const completeSentence = fullText.slice(prevEOS + 1, lastEOS + 1).trim();
-          if (completeSentence) translateAndDisplay(completeSentence);
-        } else if (syncCountRef.current >= MAX_SYNC_INTERVAL && latestCaption.trim()) {
-          translateAndDisplay(latestCaption);
         }
         lastFullTextRef.current = fullText;
       }
@@ -508,6 +508,52 @@ function App() {
     }
   };
 
+  const fetchTeamsWindows = async () => {
+    setIsScanningTeams(true);
+    try {
+      const windows = await invoke<TeamsWindowInfo[]>('get_teams_windows');
+      setTeamsWindows(windows);
+    } catch (e) {
+      console.error('Failed to get Teams windows:', e);
+      addToast('error', "Failed to scan Teams windows");
+      setTeamsWindows([]);
+    } finally {
+      setIsScanningTeams(false);
+    }
+  };
+
+  const startCapture = async () => {
+      // Starting: Create new session
+      const sessionId = await handleCreateSession();
+      if (!sessionId) return; // Failed to create
+
+      isFirstCaptionRef.current = true;
+      setStatus("Starting...");
+      try {
+        await invoke("start_caption_watcher");
+        setIsRunning(true);
+      } catch (err) {
+        setStatus(`Failed to start: ${err}`);
+        setIsRunning(false);
+      }
+  };
+
+  const handleSelectTeamsWindow = async (hwnd: number) => {
+      // Update config first
+      const newConfig = { ...config, selected_teams_hwnd: hwnd };
+      // Save config to backend so start_caption_watcher picks it up
+      try {
+          await invoke("save_config", { config: newConfig });
+          setConfig(newConfig); // Update local state
+      } catch (e) {
+          console.error("Failed to save config before start:", e);
+          setConfig(newConfig); 
+      }
+      
+      setIsTeamsModalOpen(false);
+      await startCapture();
+  };
+
   const toggleWatcher = async () => {
     if (isRunning) {
       await invoke("stop_caption_watcher");
@@ -531,18 +577,12 @@ function App() {
         }
       }
     } else {
-      // Starting: Create new session
-      const sessionId = await handleCreateSession();
-      if (!sessionId) return; // Failed to create
-
-      isFirstCaptionRef.current = true;
-      setStatus("Starting...");
-      try {
-        await invoke("start_caption_watcher");
-        setIsRunning(true);
-      } catch (err) {
-        setStatus(`Failed to start: ${err}`);
-      }
+       if (config.caption_source === 'teams') {
+           setIsTeamsModalOpen(true);
+           fetchTeamsWindows(); // Initial scan
+           return;
+       }
+       await startCapture();
     }
   };
 
@@ -890,6 +930,15 @@ function App() {
         </div>
       </div>
       
+      <TeamsSelectionModal
+        isOpen={isTeamsModalOpen}
+        onClose={() => setIsTeamsModalOpen(false)}
+        onSelect={handleSelectTeamsWindow}
+        windows={teamsWindows}
+        onRefresh={fetchTeamsWindows}
+        isScanning={isScanningTeams}
+      />
+
       <SummaryModal
         isOpen={isSummaryOpen}
         onClose={() => setIsSummaryOpen(false)}
@@ -1267,13 +1316,133 @@ function TranslateModal({
   );
 }
 
+// --- Teams Selection Modal ---
+function TeamsSelectionModal({
+  isOpen,
+  onClose,
+  onSelect,
+  windows,
+  onRefresh,
+  isScanning
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSelect: (hwnd: number) => void;
+  windows: TeamsWindowInfo[];
+  onRefresh: () => void;
+  isScanning: boolean;
+}) {
+  const { t } = useTranslation();
+  
+  if (!isOpen) return null;
+
+  return (
+    <div className="settings-overlay open" onClick={onClose}>
+      <div className="settings-drawer" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px', width: '90%' }}>
+        <header className="settings-header">
+          <h2>{t("teams.selectWindow")}</h2>
+          <button className="btn-icon" onClick={onClose}>
+            <IconX />
+          </button>
+        </header>
+        <div className="settings-content" style={{ padding: '20px' }}>
+          <p style={{ marginBottom: '16px', color: 'var(--text-primary)', fontSize: '14px' }}>
+            {t("teams.description")}
+          </p>
+
+          <div className="form-group">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <label style={{ display: 'block', color: 'var(--text-primary)', fontWeight: 500 }}>
+                {t("teams.availableWindows")}
+              </label>
+              <button 
+                type="button" 
+                onClick={onRefresh} 
+                disabled={isScanning}
+                style={{ 
+                  padding: '2px 8px', 
+                  fontSize: '11px', 
+                  background: 'transparent', 
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '4px',
+                  cursor: isScanning ? 'default' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  color: 'var(--text-primary)'
+                }}
+              >
+                {isScanning ? <IconRetry className="spin" size={12} /> : <IconRetry size={12} />}
+                <span style={{ marginLeft: '4px' }}>{t("teams.refresh")}</span>
+              </button>
+            </div>
+
+            {windows.length === 0 ? (
+              <div style={{ 
+                padding: '12px', 
+                background: 'var(--bg-input)', 
+                border: '1px dashed var(--border-color)', 
+                borderRadius: '6px',
+                color: 'var(--text-muted)',
+                fontSize: '13px',
+                textAlign: 'center'
+              }}>
+                {isScanning ? t("teams.scanning") : t("teams.noWindows")}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {windows.map(win => (
+                  <button
+                    key={win.hwnd}
+                    onClick={() => onSelect(win.hwnd)}
+                    style={{
+                      padding: '10px',
+                      background: 'var(--bg-input)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '6px',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      color: 'var(--text-primary)'
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--primary)'}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-color)'}
+                  >
+                    <div style={{ fontWeight: 500, fontSize: '14px' }}>{win.title}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>PID: {win.pid}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+             <button
+              onClick={onClose}
+              style={{
+                padding: '8px 16px',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                fontSize: '14px',
+                fontWeight: 500,
+                cursor: 'pointer'
+              }}
+            >
+              {t("teams.cancel")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Settings Form ---
 function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppConfig) => void }) {
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'ai' | 'summary'>('general');
-  const [teamsWindows, setTeamsWindows] = useState<TeamsWindowInfo[]>([]);
-  const [fetchingTeams, setFetchingTeams] = useState(false);
 
   useEffect(() => {
     setFormData(config);
@@ -1320,30 +1489,6 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
     setFormData(prev => ({ ...prev, openai_endpoints: [...prev.openai_endpoints, newEndpoint] }));
   };
 
-  const fetchTeamsWindows = async () => {
-    setFetchingTeams(true);
-    try {
-      const windows = await invoke<TeamsWindowInfo[]>('get_teams_windows');
-      setTeamsWindows(windows);
-      // Auto-select first window if none selected
-      if (windows.length > 0 && !formData.selected_teams_hwnd) {
-        setFormData(prev => ({ ...prev, selected_teams_hwnd: windows[0].hwnd }));
-      }
-    } catch (e) {
-      console.error('Failed to get Teams windows:', e);
-      setTeamsWindows([]);
-    } finally {
-      setFetchingTeams(false);
-    }
-  };
-
-  // Auto-fetch Teams windows when source changes to teams
-  useEffect(() => {
-    if (formData.caption_source === 'teams') {
-      fetchTeamsWindows();
-    }
-  }, [formData.caption_source]);
-
   const removeEndpoint = (index: number) => {
     if (formData.openai_endpoints.length <= 1) return;
     const newEndpoints = formData.openai_endpoints.filter((_, i) => i !== index);
@@ -1376,45 +1521,14 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           <option value="teams">{t("settings.general.captionSourceTeams")}</option>
         </select>
         
+        {/* Teams selection moved to start workflow */}
         {formData.caption_source === 'teams' && (
-          <div style={{ marginTop: '8px', paddingLeft: '8px', borderLeft: '2px solid var(--accent-color)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-              <label style={{ fontSize: '13px' }}>Target Window</label>
-              <button 
-                type="button" 
-                onClick={fetchTeamsWindows} 
-                disabled={fetchingTeams}
-                style={{ padding: '2px 8px', fontSize: '11px', background: 'transparent', border: '1px solid var(--border-color)' }}
-              >
-                {fetchingTeams ? <IconRetry className="spin" size={12} /> : <IconRetry size={12} />}
-                <span style={{ marginLeft: '4px' }}>Refresh</span>
-              </button>
-            </div>
-            
-            {teamsWindows.length === 0 ? (
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                {fetchingTeams ? 'Scanning for Teams windows...' : 'No Teams meeting windows found. Please join a meeting first.'}
-              </div>
-            ) : (
-              <select
-                value={formData.selected_teams_hwnd || ''}
-                onChange={e => setFormData(prev => ({ ...prev, selected_teams_hwnd: Number(e.target.value) }))}
-                style={{ fontSize: '13px', padding: '4px' }}
-              >
-                {teamsWindows.map(win => (
-                  <option key={win.hwnd} value={win.hwnd}>
-                    {win.title} (PID: {win.pid})
-                  </option>
-                ))}
-              </select>
-            )}
-            
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-              {t("settings.general.teamsNote")}
-            </p>
+          <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+            Teams window selection will appear when you click Start.
           </div>
         )}
-       </div>
+      </div>
+
 
        {/* Language Settings */}
        <div className="form-group">
@@ -1457,23 +1571,26 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
         />
       </div>
 
-      {/* Hide Window */}
-      <div className="form-group checkbox-group">
-        <label className="switch">
-          <input type="checkbox" checked={formData.hide_system_window} onChange={e => setFormData(prev => ({ ...prev, hide_system_window: e.target.checked }))} />
-          <span className="slider round"></span>
-        </label>
-        <span>{t("settings.general.hideSystemWindow")}</span>
-      </div>
+      {/* Hide Window & Include Microphone - Only for LiveCaptions */}
+      {formData.caption_source !== 'teams' && (
+        <>
+          <div className="form-group checkbox-group">
+            <label className="switch">
+              <input type="checkbox" checked={formData.hide_system_window} onChange={e => setFormData(prev => ({ ...prev, hide_system_window: e.target.checked }))} />
+              <span className="slider round"></span>
+            </label>
+            <span>{t("settings.general.hideSystemWindow")}</span>
+          </div>
 
-      {/* Include Microphone */}
-      <div className="form-group checkbox-group">
-        <label className="switch">
-          <input type="checkbox" checked={formData.include_microphone} onChange={e => setFormData(prev => ({ ...prev, include_microphone: e.target.checked }))} />
-          <span className="slider round"></span>
-        </label>
-        <span>{t("settings.general.includeMicrophone")}</span>
-      </div>
+          <div className="form-group checkbox-group">
+            <label className="switch">
+              <input type="checkbox" checked={formData.include_microphone} onChange={e => setFormData(prev => ({ ...prev, include_microphone: e.target.checked }))} />
+              <span className="slider round"></span>
+            </label>
+            <span>{t("settings.general.includeMicrophone")}</span>
+          </div>
+        </>
+      )}
 
       {/* Always On Top */}
       <div className="form-group checkbox-group">
@@ -1702,7 +1819,7 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
             )}
           </div>
           <div className="form-group">
-            <label>{t("settings.ai.endpointName")}</label>
+            <label>{t("settings.translation.apiKey")}</label>
             <input type="password" value={ep.api_key} onChange={e => updateEndpoint(idx, { api_key: e.target.value })} />
           </div>
           <div className="form-group">

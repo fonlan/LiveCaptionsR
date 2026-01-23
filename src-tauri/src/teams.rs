@@ -135,45 +135,6 @@ fn get_teams_related_pids() -> Vec<u32> {
         return Vec::new();
     }
 
-    // Step 2: Find direct msedgewebview2.exe children of ms-teams.exe
-    let mut first_level_webviews: Vec<u32> = Vec::new();
-    for &teams_pid in &teams_pids {
-        if let Some(children) = parent_to_children.get(&teams_pid) {
-            for &child_pid in children {
-                if let Some(info) = pid_to_info.get(&child_pid) {
-                    if info.name.to_lowercase() == "msedgewebview2.exe" {
-                        first_level_webviews.push(child_pid);
-                    }
-                }
-            }
-        }
-    }
-
-    // Step 3: Find children of first-level webviews that have --type=renderer
-    let mut renderer_pids: Vec<u32> = Vec::new();
-    for &webview_pid in &first_level_webviews {
-        if let Some(children) = parent_to_children.get(&webview_pid) {
-            for &child_pid in children {
-                if let Some(info) = pid_to_info.get(&child_pid) {
-                    if info.name.to_lowercase() == "msedgewebview2.exe"
-                        && info.cmdline.contains("--type=renderer")
-                    {
-                        renderer_pids.push(child_pid);
-                    }
-                }
-            }
-        }
-    }
-
-    // Combine all PIDs (Main Teams, Middleware WebViews, Renderers)
-    // The meeting window might be owned by any of them in New Teams
-    let mut all_pids = Vec::new();
-    all_pids.extend(teams_pids);
-    all_pids.extend(first_level_webviews);
-    all_pids.extend(renderer_pids);
-    
-    all_pids
-}
     eprintln!("[Teams Debug] Found ms-teams.exe PIDs: {:?}", teams_pids);
 
     // Step 2: Find direct msedgewebview2.exe children of ms-teams.exe
@@ -258,7 +219,7 @@ pub fn find_all_teams_windows() -> Vec<TeamsWindowInfo> {
             let visible = IsWindowVisible(hwnd).as_bool();
             let mut title = [0u16; 512];
             let title_len = GetWindowTextW(hwnd, &mut title);
-            
+
             let title_str = if title_len > 0 {
                 String::from_utf16_lossy(&title[..title_len as usize])
             } else {

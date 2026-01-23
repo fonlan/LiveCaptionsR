@@ -142,5 +142,14 @@
     "translate": "翻译",
     "cancel": "取消",
     "tooltip": "翻译会话"
+  },
+  "teams": {
+    "selectWindow": "选择 Teams 窗口",
+    "description": "请选择要捕获字幕的 Microsoft Teams 会议窗口。",
+    "availableWindows": "可用窗口",
+    "scanning": "扫描中...",
+    "noWindows": "未找到 Teams 窗口。请确保您已加入 Teams 会议。",
+    "cancel": "取消",
+    "refresh": "刷新"
   }
 }
