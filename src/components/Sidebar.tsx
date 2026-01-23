@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { SessionMetadata } from '../types';
-import { IconTrash } from './Icons';
+import { IconTrash, IconClock } from './Icons';
 
 interface SidebarProps {
   sessions: SessionMetadata[];
@@ -28,6 +28,7 @@ export function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: Sid
             <div className="session-info">
               <span className="session-name">{session.name}</span>
               <div className="session-meta">
+                <IconClock size={10} />
                 <span className="session-date">
                    {new Date(session.created_at * 1000).toLocaleString(undefined, {
                       month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
