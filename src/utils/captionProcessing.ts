@@ -1,5 +1,5 @@
 
-import { isEOSPunctuation } from "./textUtils";
+import { isEOSPunctuation, calculateSimilarity } from "./textUtils";
 
 /**
  * Splits a continuous text block into an array of complete sentences.
@@ -40,7 +40,9 @@ export function getNewSentences(currentText: string, lastText: string): string[]
     
     // Iterate through LastSentences to find the start of CurrentSentences[0]
     for (let i = 0; i < lastSentences.length; i++) {
-        if (lastSentences[i] === currentSentences[0]) {
+        // Use fuzzy matching for the start of overlap
+        // If similarity > 0.8, consider it a match to account for minor corrections
+        if (calculateSimilarity(lastSentences[i], currentSentences[0]) > 0.8) {
             // Potential match start
             // Verify subsequent matches
             let match = true;
@@ -50,7 +52,9 @@ export function getNewSentences(currentText: string, lastText: string): string[]
                     // Current is shorter than the tail of Last? (Rare, but possible if deletions)
                     break; 
                 }
-                if (lastSentences[i + j] !== currentSentences[j]) {
+                
+                // Compare subsequent sentences with fuzzy matching
+                if (calculateSimilarity(lastSentences[i + j], currentSentences[j]) <= 0.8) {
                     match = false;
                     break;
                 }

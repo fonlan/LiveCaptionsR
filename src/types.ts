@@ -74,6 +74,7 @@ export interface AppConfig {
   microsoft_proxy: ProxyConfig;
   openai_endpoints: OpenAIEndpoint[];
   openai_context_count: number;
+  github_token: string | null;
   opacity: number;
   language: string;
   translation_enabled: boolean;
@@ -111,6 +112,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   microsoft_proxy: DEFAULT_PROXY,
   openai_endpoints: [DEFAULT_OPENAI_ENDPOINT],
   openai_context_count: 2,
+  github_token: null,
   opacity: 1.0,
   language: "en",
   translation_enabled: true,

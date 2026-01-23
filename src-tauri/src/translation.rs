@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
 /// Proxy configuration for translation services
@@ -56,6 +56,7 @@ pub enum TranslationProvider {
     Google,
     Microsoft,
     OpenAI(String), // Contains the endpoint ID
+    Copilot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +75,8 @@ pub struct TranslationConfig {
     pub openai_endpoints: Vec<OpenAIEndpoint>,
     /// Maximum concurrent translation requests
     pub max_concurrent_translations: u32,
+    /// GitHub OAuth Token for Copilot
+    pub github_token: Option<String>,
 }
 
 impl Default for TranslationConfig {
@@ -89,6 +92,7 @@ impl Default for TranslationConfig {
             microsoft_proxy: ProxyConfig::default(),
             openai_endpoints: vec![OpenAIEndpoint::default()],
             max_concurrent_translations: 2,
+            github_token: None,
         }
     }
 }
@@ -113,6 +117,8 @@ fn build_client(proxy_config: &ProxyConfig) -> Result<Client> {
 pub struct TranslationService {
     config: TranslationConfig,
     semaphore: Arc<Semaphore>,
+    // Token and Expiry (Unix timestamp)
+    copilot_token: Arc<Mutex<Option<(String, u64)>>>,
 }
 
 impl TranslationService {
@@ -125,6 +131,7 @@ impl TranslationService {
         Ok(Self {
             config,
             semaphore: Arc::new(Semaphore::new(max_permits)),
+            copilot_token: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -141,6 +148,8 @@ impl TranslationService {
         } else if provider_str.starts_with("openai:") {
             let endpoint_id = provider_str.strip_prefix("openai:").unwrap_or("default");
             TranslationProvider::OpenAI(endpoint_id.to_string())
+        } else if provider_str == "copilot" {
+            TranslationProvider::Copilot
         } else {
             TranslationProvider::Google
         }
@@ -168,6 +177,7 @@ impl TranslationService {
             TranslationProvider::OpenAI(endpoint_id) => {
                 self.translate_openai(text, endpoint_id, context, target_lang).await
             }
+            TranslationProvider::Copilot => self.translate_copilot(text, context, target_lang).await,
         }
     }
 
@@ -299,6 +309,144 @@ impl TranslationService {
             .context("Empty response from Microsoft Translator")
     }
 
+    async fn get_copilot_token(&self) -> Result<String> {
+        // Check cache
+        {
+            let guard = self.copilot_token.lock().unwrap();
+            if let Some((token, expiry)) = &*guard {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                if now < *expiry {
+                    return Ok(token.clone());
+                }
+            }
+        }
+
+        // Fetch new token
+        let github_token = self.config.github_token.as_ref().context("GitHub Copilot not logged in")?;
+        
+        let client = reqwest::Client::new();
+        let res = client
+            .get("https://api.github.com/copilot_internal/v2/token")
+            .header("Authorization", format!("token {}", github_token))
+            .header("User-Agent", "GitHubCopilot/1.155.0")
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("Failed to fetch Copilot token")?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            anyhow::bail!("Copilot token error {}: {}", status, text);
+        }
+
+        #[derive(Deserialize)]
+        struct CopilotTokenRes {
+            token: String,
+            expires_at: u64,
+        }
+
+        let token_data: CopilotTokenRes = res.json().await.context("Failed to parse Copilot token")?;
+        
+        // Update cache
+        {
+            let mut guard = self.copilot_token.lock().unwrap();
+            *guard = Some((token_data.token.clone(), token_data.expires_at - 60)); // Buffer 60s
+        }
+
+        Ok(token_data.token)
+    }
+
+    async fn send_copilot_request(&self, system_prompt: &str, user_content: &str) -> Result<String> {
+        let token = self.get_copilot_token().await?;
+        
+        let client = reqwest::Client::new();
+        let url = "https://api.githubcopilot.com/chat/completions";
+
+        let request = ChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![
+                ChatMessage { role: "system".to_string(), content: system_prompt.to_string() },
+                ChatMessage { role: "user".to_string(), content: user_content.to_string() },
+            ],
+            temperature: 0.1,
+        };
+
+        let response = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("User-Agent", "GitHubCopilot/1.155.0")
+            .header("Editor-Version", "vscode/1.85.0")
+            .header("Copilot-Integration-Id", "vscode-chat")
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send request to Copilot")?;
+
+        if !response.status().is_success() {
+             let status = response.status();
+             let text = response.text().await.unwrap_or_default();
+             anyhow::bail!("Copilot API error {}: {}", status, text);
+        }
+
+        let result: ChatResponse = response
+            .json()
+            .await
+            .context("Failed to parse Copilot response")?;
+
+        result
+            .choices
+            .first()
+            .map(|c| Self::clean_thinking_content(&c.message.content))
+            .context("Empty response from Copilot")
+    }
+
+    async fn translate_copilot(&self, text: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
+        let source_lang_desc = if self.config.source_lang == "auto" {
+            "any language".to_string()
+        } else {
+            self.config.source_lang.clone()
+        };
+        let target_lang_name = Self::get_lang_name(target_lang);
+
+        let system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
+             format!(
+                "You are a translator. Translate the current sentence from {} to {}. \
+                 The previous sentences are provided ONLY for context/disambiguation. \
+                 IGNORE the language of the previous sentences. \
+                 Your output MUST be in {}. \
+                 Output ONLY the translation of the current sentence, no labels or explanations.",
+                source_lang_desc, target_lang_name, target_lang_name
+            )
+        } else {
+            format!(
+                "You are a translator. Translate from {} to {}. Output ONLY the translation.",
+                source_lang_desc, target_lang_name
+            )
+        };
+
+        let user_content = if let Some(ctx) = context {
+            if ctx.is_empty() {
+                text.to_string()
+            } else {
+                let context_text = ctx.iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("{}. {}", i + 1, s))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("Previous sentences for context:\n{}\n\nCurrent sentence to translate:\n{}", context_text, text)
+            }
+        } else {
+            text.to_string()
+        };
+
+        self.send_copilot_request(&system_prompt, &user_content).await
+    }
+
     async fn translate_openai(&self, text: &str, endpoint_id: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
         let endpoint = self
             .config
@@ -421,21 +569,6 @@ impl TranslationService {
     }
 
     pub async fn summarize(&self, text: &str, provider_id: &str) -> Result<String> {
-        // Only OpenAI supports summarization for now
-        let endpoint_id = if provider_id.starts_with("openai:") {
-            provider_id.strip_prefix("openai:").unwrap_or("default")
-        } else {
-            // Fallback or error if other providers selected (UI should prevent this)
-            return Err(anyhow::anyhow!("Summarization only supported with OpenAI providers"));
-        };
-
-        let endpoint = self
-            .config
-            .openai_endpoints
-            .iter()
-            .find(|e| e.id == endpoint_id)
-            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
-
         let system_prompt = if let Some(prompt) = &self.config.summary_prompt {
             if prompt.trim().is_empty() {
                 // Fallback if empty string provided
@@ -465,6 +598,25 @@ impl TranslationService {
                 self.config.target_lang
             )
         };
+
+        if provider_id == "copilot" {
+            return self.send_copilot_request(&system_prompt, text).await;
+        }
+
+        // Only OpenAI supports summarization for now (besides Copilot)
+        let endpoint_id = if provider_id.starts_with("openai:") {
+            provider_id.strip_prefix("openai:").unwrap_or("default")
+        } else {
+            // Fallback or error if other providers selected (UI should prevent this)
+            return Err(anyhow::anyhow!("Summarization only supported with OpenAI or Copilot providers"));
+        };
+
+        let endpoint = self
+            .config
+            .openai_endpoints
+            .iter()
+            .find(|e| e.id == endpoint_id)
+            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
 
         self.send_openai_request(endpoint, &system_prompt, text).await
     }

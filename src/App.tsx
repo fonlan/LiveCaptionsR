@@ -86,9 +86,10 @@ function App() {
    const [autoFollow, setAutoFollow] = useState<boolean>(true);
    
    // Teams Modal State
-   const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
-   const [teamsWindows, setTeamsWindows] = useState<TeamsWindowInfo[]>([]);
-   const [isScanningTeams, setIsScanningTeams] = useState(false);
+  const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
+  const [teamsWindows, setTeamsWindows] = useState<TeamsWindowInfo[]>([]);
+  const [isScanningTeams, setIsScanningTeams] = useState(false);
+  const [isDeviceAuthOpen, setDeviceAuthOpen] = useState(false);
   
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -103,6 +104,8 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
+  // Track processed sentences to prevent duplicates (especially for Teams mode)
+  const processedSentencesRef = useRef<Set<string>>(new Set());
 
   const addToast = (type: 'success' | 'error', message: string) => {
     const id = generateId();
@@ -136,6 +139,7 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(true);
       lastProcessedCardRef.current = null;
+      processedSentencesRef.current.clear(); // Clear dedup set for new session
       setPartialText("");
       lastFullTextRef.current = "";
       return session.id;
@@ -167,6 +171,7 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
       lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
+      processedSentencesRef.current.clear(); // Clear dedup set when switching sessions
       setPartialText("");
     } catch (e) {
       console.error("Failed to load session:", e);
@@ -383,6 +388,12 @@ function App() {
   const translateAndDisplay = async (originalText: string) => {
     if (!originalText.trim()) return;
 
+    // Deduplication: skip if we've already processed this exact sentence
+    const normalizedText = originalText.trim();
+    if (processedSentencesRef.current.has(normalizedText)) {
+      return;
+    }
+
     const lastCard = lastProcessedCardRef.current;
     // Prevent infinite re-translation loop on idle if text hasn't changed
     if (lastCard && lastCard.original === originalText) {
@@ -409,6 +420,8 @@ function App() {
     lastProcessedCardRef.current = newCard;
     lastOriginalTextRef.current = originalText;
     syncCountRef.current = 0;
+    // Mark as processed to prevent future duplicates
+    processedSentencesRef.current.add(normalizedText);
 
     setCards(prev => {
       if (isOverwrite && prev.length > 0) {
@@ -462,7 +475,7 @@ function App() {
 
         const newSentences = getNewSentences(fullText, lastFullTextRef.current);
         if (newSentences.length > 0) {
-          newSentences.forEach(sentence => translateAndDisplay(sentence));
+          newSentences.forEach(sentence => { void translateAndDisplay(sentence); });
         } else {
           syncCountRef.current++;
           if (syncCountRef.current >= MAX_SYNC_INTERVAL && latestCaption.trim()) {
@@ -830,7 +843,7 @@ function App() {
                   </div>
                 );
               })}
-              {partialText && (
+              {partialText && (!cards.length || cards[cards.length - 1].original !== partialText) && (
                 <div className="history-card partial">
                   <div className="card-original">{partialText}</div>
                   <div className="card-translating">...</div>
@@ -925,10 +938,22 @@ function App() {
             </button>
           </header>
           <div className="settings-content">
-            <SettingsForm config={config} onSave={saveConfig} />
+            <SettingsForm config={config} onSave={saveConfig} onStartCopilotAuth={() => setDeviceAuthOpen(true)} />
           </div>
         </div>
       </div>
+      
+      {isDeviceAuthOpen && (
+        <DeviceAuthModal 
+          isOpen={isDeviceAuthOpen}
+          onClose={() => setDeviceAuthOpen(false)}
+          onSuccess={(token) => {
+            setConfig(prev => ({ ...prev, github_token: token }));
+            saveConfig({ ...config, github_token: token });
+            setDeviceAuthOpen(false);
+          }}
+        />
+      )}
       
       <TeamsSelectionModal
         isOpen={isTeamsModalOpen}
@@ -1209,6 +1234,7 @@ function TranslateModal({
               <option value="google">{t("settings.translation.google")}</option>
               <option value="microsoft">{t("settings.translation.microsoft")}</option>
               <option value="openai">{t("settings.translation.openai")}</option>
+              <option value="copilot">GitHub Copilot</option>
             </select>
           </div>
 
@@ -1439,7 +1465,7 @@ function TeamsSelectionModal({
 }
 
 // --- Settings Form ---
-function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppConfig) => void }) {
+function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfig; onSave: (c: AppConfig) => void; onStartCopilotAuth: () => void }) {
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'ai' | 'summary'>('general');
@@ -1695,8 +1721,43 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
           <option value="google">{t("settings.translation.google")}</option>
           <option value="microsoft">{t("settings.translation.microsoft")}</option>
           <option value="openai">{t("settings.translation.openai")}</option>
+          <option value="copilot">GitHub Copilot</option>
         </select>
       </div>
+
+      {/* Copilot Auth */}
+      {formData.provider === 'copilot' && (
+        <div className="form-group" style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>GitHub Copilot</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  {formData.github_token ? "Logged in" : "Not logged in"}
+                </div>
+              </div>
+              {formData.github_token ? (
+                <button 
+                  className="btn-secondary"
+                  onClick={() => setFormData(prev => ({ ...prev, github_token: null }))}
+                  style={{ fontSize: '13px', padding: '6px 12px', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
+                >
+                  Logout
+                </button>
+              ) : (
+                <button 
+                  className="btn-primary"
+                  onClick={onStartCopilotAuth}
+                  style={{ fontSize: '13px', padding: '6px 12px', background: '#2da44e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                >
+                  Login with GitHub
+                </button>
+              )}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+              Authenticate with your GitHub account to use Copilot models.
+            </div>
+        </div>
+      )}
 
       {/* OpenAI Endpoint Selection */}
       {selectedProvider.type === 'openai' && formData.openai_endpoints.length > 1 && (
@@ -1930,6 +1991,122 @@ function SettingsForm({ config, onSave }: { config: AppConfig; onSave: (c: AppCo
         <button className="btn-save" onClick={() => onSave(formData)}>
           <IconCheck /> {t("settings.save")}
         </button>
+      </div>
+    </div>
+  );
+}
+
+
+interface DeviceAuthData {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  interval: number;
+}
+
+function DeviceAuthModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onClose: () => void; onSuccess: (token: string) => void }) {
+  const [authData, setAuthData] = useState<DeviceAuthData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isPolling, setIsPolling] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && !authData && !isPolling) {
+      startAuth();
+    }
+  }, [isOpen]);
+
+  const startAuth = async () => {
+    try {
+      setError(null);
+      const data = await invoke<DeviceAuthData>('start_copilot_auth');
+      setAuthData(data);
+      pollToken(data.device_code, data.interval);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const pollToken = async (deviceCode: string, interval: number) => {
+    setIsPolling(true);
+    try {
+      const token = await invoke<string>('poll_copilot_token', { deviceCode, interval });
+      onSuccess(token);
+    } catch (e) {
+      if (String(e).includes('cancelled') || !isOpen) return; // Stopped by user
+      setError(String(e));
+    } finally {
+      setIsPolling(false);
+    }
+  };
+
+  const copyCode = async () => {
+    if (authData?.user_code) {
+      await navigator.clipboard.writeText(authData.user_code);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="settings-overlay open" onClick={onClose}>
+      <div className="settings-drawer" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px', width: '90%' }}>
+        <header className="settings-header">
+          <h2>Login to GitHub</h2>
+          <button className="btn-icon" onClick={onClose}><IconX /></button>
+        </header>
+        <div className="settings-content" style={{ padding: '24px', textAlign: 'center' }}>
+          {error ? (
+            <div style={{ color: 'var(--error)', marginBottom: '16px' }}>
+              Error: {error}
+              <button className="btn-secondary" onClick={startAuth} style={{ marginTop: '12px', width: '100%' }}>Retry</button>
+            </div>
+          ) : authData ? (
+            <>
+              <p style={{ marginBottom: '16px', color: 'var(--text-primary)' }}>
+                Please enter the following code at GitHub:
+              </p>
+              <div style={{ 
+                fontSize: '24px', 
+                fontWeight: 'bold', 
+                letterSpacing: '4px', 
+                background: 'var(--bg-input)', 
+                padding: '16px', 
+                borderRadius: '8px',
+                marginBottom: '24px',
+                userSelect: 'all',
+                color: 'var(--primary)'
+              }}>
+                {authData.user_code}
+              </div>
+              <div style={{ marginBottom: '24px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                Waiting for authentication...
+              </div>
+              <a 
+                href={authData.verification_uri} 
+                target="_blank" 
+                rel="noreferrer"
+                onClick={copyCode}
+                className="btn-primary"
+                style={{ 
+                  display: 'block', 
+                  textDecoration: 'none', 
+                  padding: '12px', 
+                  borderRadius: '6px',
+                  background: '#2da44e',
+                  color: 'white',
+                  fontWeight: 600
+                }}
+              >
+                Copy Code & Open GitHub
+              </a>
+            </>
+          ) : (
+            <div className="summary-loading">
+               <span className="spinner"></span>
+               <div style={{ marginTop: '12px' }}>Connecting to GitHub...</div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

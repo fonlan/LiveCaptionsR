@@ -95,6 +95,8 @@ pub struct AppConfig {
     /// Maximum concurrent translation requests (default: 2)
     #[serde(default = "default_max_concurrent_translations")]
     pub max_concurrent_translations: u32,
+    /// GitHub OAuth Token for Copilot
+    pub github_token: Option<String>,
 }
 
 fn default_language() -> String {
@@ -145,6 +147,7 @@ impl Default for AppConfig {
             language: "en".to_string(),
             translation_enabled: true,
             max_concurrent_translations: 2,
+            github_token: None,
         }
     }
 }
@@ -160,6 +163,93 @@ enum CaptionThreadCommand {
 }
 
 static CAPTION_COMMAND_SENDER: Lazy<Mutex<Option<Sender<CaptionThreadCommand>>>> = Lazy::new(|| Mutex::new(None));
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DeviceAuthResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    token_type: String,
+    scope: String,
+}
+
+const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98"; // GitHub CLI Client ID
+
+#[tauri::command]
+async fn start_copilot_auth() -> Result<DeviceAuthResponse, String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .post("https://github.com/login/device/code")
+        .header("Accept", "application/json")
+        .form(&[
+            ("client_id", GITHUB_CLIENT_ID),
+            ("scope", "read:user copilot"), // Request copilot scope
+        ])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let data: DeviceAuthResponse = res.json().await.map_err(|e| e.to_string())?;
+    Ok(data)
+}
+
+#[tauri::command]
+async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let interval_duration = std::time::Duration::from_secs(interval.max(5));
+    let start_time = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(900); // 15 minutes timeout
+
+    loop {
+        if start_time.elapsed() > timeout {
+            return Err("Authentication timed out".to_string());
+        }
+
+        tokio::time::sleep(interval_duration).await;
+
+        let res = client
+            .post("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/json")
+            .form(&[
+                ("client_id", GITHUB_CLIENT_ID),
+                ("device_code", &device_code),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ])
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        
+        // Handle raw response to check for errors
+        let text = res.text().await.map_err(|e| e.to_string())?;
+        
+        // Try parsing success
+        if let Ok(token_res) = serde_json::from_str::<TokenResponse>(&text) {
+            return Ok(token_res.access_token);
+        }
+
+        // Check for specific errors
+        if text.contains("authorization_pending") {
+            continue;
+        } else if text.contains("slow_down") {
+             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+             continue;
+        } else if text.contains("expired_token") {
+            return Err("Device code expired".to_string());
+        } else if text.contains("access_denied") {
+            return Err("Access denied by user".to_string());
+        } else {
+             // Unknown error, return it
+             return Err(format!("Auth failed: {}", text));
+        }
+    }
+}
 
 #[tauri::command]
 fn get_config() -> AppConfig {
@@ -276,6 +366,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
             },
         }).collect(),
         max_concurrent_translations: config.max_concurrent_translations,
+        github_token: config.github_token.clone(),
     }
 }
 
@@ -695,7 +786,9 @@ pub fn run() {
             save_session_data,
             load_session_data,
             get_sessions,
-            delete_session_data
+            delete_session_data,
+            start_copilot_auth,
+            poll_copilot_token
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
