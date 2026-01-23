@@ -326,6 +326,21 @@ function App() {
     };
   }, []);
 
+  // Disable Context Menu in Production
+  useEffect(() => {
+    if (import.meta.env.PROD) {
+      const handleContextMenu = (e: MouseEvent) => {
+        e.preventDefault();
+      };
+      
+      document.addEventListener('contextmenu', handleContextMenu);
+
+      return () => {
+        document.removeEventListener('contextmenu', handleContextMenu);
+      };
+    }
+  }, []);
+
   // --- Logic ---
 
   const retryTranslation = async (cardId: string, originalText: string) => {

@@ -318,8 +318,56 @@ impl TeamsWatcher {
         }
     }
 
+    pub fn get_caption_container(
+        &self,
+        text_element: &IUIAutomationElement,
+    ) -> Result<IUIAutomationElement> {
+        unsafe {
+            let walker = self.automation.ControlViewWalker()?;
+            let parent = walker.GetParentElement(text_element)?;
+
+            // Strategy 1: Look for user-specified 'ui-box' container in ancestors
+            let mut candidate = parent.clone();
+            // Check up to 6 levels up for ui-box
+            for _ in 0..6 {
+                if let Ok(class_name) = candidate.CurrentClassName() {
+                    let class_str = class_name.to_string();
+                    // Check if class name starts with ui-box (case insensitive just in case)
+                    if class_str.to_lowercase().starts_with("ui-box") {
+                        eprintln!("[Teams] Locked onto 'ui-box' container: {}", class_str);
+                        return Ok(candidate);
+                    }
+                }
+
+                if let Ok(next) = walker.GetParentElement(&candidate) {
+                    candidate = next;
+                } else {
+                    break;
+                }
+            }
+
+            // Strategy 2: Fallback to Structure logic (ListItem -> List)
+            let control_type = parent.CurrentControlType()?;
+            if control_type
+                == windows::Win32::UI::Accessibility::UIA_CONTROLTYPE_ID(
+                    UIA_ListItemControlTypeId.0 as i32,
+                )
+            {
+                if let Ok(grandparent) = walker.GetParentElement(&parent) {
+                    return Ok(grandparent);
+                }
+            }
+
+            // Strategy 3: Just return the direct parent
+            Ok(parent)
+        }
+    }
+
     /// Get caption text from Teams window
-    pub fn get_caption_text(&self, window: &IUIAutomationElement) -> Result<String> {
+    pub fn get_caption_text(
+        &self,
+        window: &IUIAutomationElement,
+    ) -> Result<(String, Option<IUIAutomationElement>)> {
         unsafe {
             let text_condition = self
                 .automation
@@ -329,13 +377,25 @@ impl TeamsWatcher {
                 )
                 .context("Failed to create text condition")?;
 
+            let start = std::time::Instant::now();
             let elements = window
                 .FindAll(TreeScope_Descendants, &text_condition)
                 .context("Failed to find text elements")?;
+            let duration = start.elapsed();
+
+            // Only log significant delays
+            if duration.as_millis() > 100 {
+                eprintln!(
+                    "[Teams Performance] FindAll took {:?} for {} elements",
+                    duration,
+                    elements.Length().unwrap_or(0)
+                );
+            }
 
             let count = elements.Length().unwrap_or(0);
             let mut texts = Vec::new();
             let mut seen_texts = HashSet::new();
+            let mut first_element: Option<IUIAutomationElement> = None;
 
             for i in 0..count {
                 if let Ok(element) = elements.GetElement(i) {
@@ -352,11 +412,17 @@ impl TeamsWatcher {
                         {
                             seen_texts.insert(text.clone());
                             texts.push(text);
+
+                            // Capture the first valid text element to find the container later
+                            if first_element.is_none() {
+                                first_element = Some(element);
+                            }
                         }
                     }
                 }
             }
 
+            // Fallback to TextPattern if no elements found (legacy UIA support)
             if texts.is_empty() {
                 if let Ok(text_pattern) =
                     window.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
@@ -378,7 +444,7 @@ impl TeamsWatcher {
                 texts.join(" ")
             };
 
-            Ok(result)
+            Ok((result, first_element))
         }
     }
 
@@ -405,6 +471,7 @@ impl TeamsWatcher {
 pub struct TeamsCaptionStream {
     watcher: TeamsWatcher,
     window: Option<IUIAutomationElement>,
+    caption_parent: Option<IUIAutomationElement>,
     selected_hwnd: Option<isize>,
     running: Arc<AtomicBool>,
     last_text: String,
@@ -417,6 +484,7 @@ impl TeamsCaptionStream {
         Ok(Self {
             watcher,
             window: None,
+            caption_parent: None,
             selected_hwnd: None,
             running: Arc::new(AtomicBool::new(false)),
             last_text: String::new(),
@@ -457,21 +525,54 @@ impl TeamsCaptionStream {
             return None;
         }
 
-        let result = if let Some(ref window) = self.window {
-            self.watcher.get_caption_text(window)
+        let window_ref = if let Some(ref w) = self.window {
+            w
         } else {
-            Err(anyhow::anyhow!("No window handle"))
+            return None;
         };
 
+        // Use the cached parent if available, otherwise use the window
+        let search_target = self.caption_parent.as_ref().unwrap_or(window_ref);
+
+        let result = self.watcher.get_caption_text(search_target);
+
         match result {
-            Ok(text) => {
+            Ok((text, first_element)) => {
                 self.error_count = 0;
+
+                // If we found text but don't have a cached parent yet, try to find one
+                if !text.is_empty() && self.caption_parent.is_none() {
+                    if let Some(element) = first_element {
+                        // Try to get the container of the text element
+                        if let Ok(container) = self.watcher.get_caption_container(&element) {
+                            eprintln!("[Teams] Found caption container candidate, switching to optimized scan mode.");
+                            self.caption_parent = Some(container);
+                        }
+                    }
+                }
+
+                // If we used a cached parent but got no text, invalidate cache and retry immediately with full window
+                if text.is_empty() && self.caption_parent.is_some() {
+                    eprintln!("[Teams] Cached container yielded no text, invalidating cache.");
+                    self.caption_parent = None;
+                    // Recursive call with full window will happen next tick,
+                    // or we could retry immediately? Let's return None and let next tick handle it to avoid infinite recursion risk
+                    return None;
+                }
+
                 if !text.is_empty() && text != self.last_text {
                     self.last_text = text.clone();
                     return Some(text);
                 }
             }
             Err(e) => {
+                // If we failed with cached parent, invalidate it
+                if self.caption_parent.is_some() {
+                    eprintln!("[Teams] Error with cached container, invalidating: {}", e);
+                    self.caption_parent = None;
+                    return None;
+                }
+
                 self.error_count += 1;
                 eprintln!(
                     "Warning: Failed to get Teams caption text (attempt {}/5): {}",
