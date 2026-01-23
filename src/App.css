@@ -296,20 +296,20 @@ body {
 }
 
 .btn-icon-new {
-    background: var(--bg-input);
-    border: 1px solid var(--border-color);
-    color: var(--primary);
-    width: 28px;
-    height: 28px;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--primary);
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 .btn-icon-new:hover {
-    background: var(--primary-dim);
+  background: var(--primary-dim);
 }
 
 /* History Area */
