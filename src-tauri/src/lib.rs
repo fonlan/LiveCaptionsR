@@ -12,7 +12,7 @@ mod db;
 
 use teams::TeamsWindowInfo;
 
-use translation::{OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationProvider, TranslationService};
+use translation::{OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationProvider, TranslationService, CopilotModel};
 
 // Simple raw caption event - just the text from LiveCaptions
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -97,10 +97,17 @@ pub struct AppConfig {
     pub max_concurrent_translations: u32,
     /// GitHub OAuth Token for Copilot
     pub github_token: Option<String>,
+    /// GitHub Copilot Model
+    #[serde(default = "default_copilot_model")]
+    pub copilot_model: String,
 }
 
 fn default_language() -> String {
     "en".to_string()
+}
+
+fn default_copilot_model() -> String {
+    "gpt-4".to_string()
 }
 
 fn default_caption_source() -> String {
@@ -148,6 +155,7 @@ impl Default for AppConfig {
             translation_enabled: true,
             max_concurrent_translations: 2,
             github_token: None,
+            copilot_model: "gpt-4".to_string(),
         }
     }
 }
@@ -176,8 +184,6 @@ struct DeviceAuthResponse {
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
-    token_type: String,
-    scope: String,
 }
 
 const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98"; // GitHub CLI Client ID
@@ -249,6 +255,12 @@ async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String
              return Err(format!("Auth failed: {}", text));
         }
     }
+}
+
+#[tauri::command]
+async fn fetch_copilot_models_command() -> Result<Vec<CopilotModel>, String> {
+    let svc = get_or_init_translation_service()?;
+    svc.fetch_copilot_models().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -367,6 +379,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         }).collect(),
         max_concurrent_translations: config.max_concurrent_translations,
         github_token: config.github_token.clone(),
+        copilot_model: config.copilot_model.clone(),
     }
 }
 
@@ -788,7 +801,8 @@ pub fn run() {
             get_sessions,
             delete_session_data,
             start_copilot_auth,
-            poll_copilot_token
+            poll_copilot_token,
+            fetch_copilot_models_command
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

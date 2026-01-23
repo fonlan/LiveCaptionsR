@@ -1,5 +1,10 @@
 // --- Domain Types ---
 
+export interface CopilotModel {
+  id: string;
+  name: string;
+}
+
 export interface RawCaption {
   text: string;
   timestamp: number;
@@ -75,6 +80,7 @@ export interface AppConfig {
   openai_endpoints: OpenAIEndpoint[];
   openai_context_count: number;
   github_token: string | null;
+  copilot_model: string;
   opacity: number;
   language: string;
   translation_enabled: boolean;
@@ -113,6 +119,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   openai_endpoints: [DEFAULT_OPENAI_ENDPOINT],
   openai_context_count: 2,
   github_token: null,
+  copilot_model: "gpt-4",
   opacity: 1.0,
   language: "en",
   translation_enabled: true,

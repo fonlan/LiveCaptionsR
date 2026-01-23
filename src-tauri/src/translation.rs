@@ -59,6 +59,12 @@ pub enum TranslationProvider {
     Copilot,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CopilotModel {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranslationConfig {
     pub provider: TranslationProvider,
@@ -77,6 +83,8 @@ pub struct TranslationConfig {
     pub max_concurrent_translations: u32,
     /// GitHub OAuth Token for Copilot
     pub github_token: Option<String>,
+    /// GitHub Copilot Model
+    pub copilot_model: String,
 }
 
 impl Default for TranslationConfig {
@@ -93,6 +101,7 @@ impl Default for TranslationConfig {
             openai_endpoints: vec![OpenAIEndpoint::default()],
             max_concurrent_translations: 2,
             github_token: None,
+            copilot_model: "gpt-4".to_string(),
         }
     }
 }
@@ -367,7 +376,7 @@ impl TranslationService {
         let url = "https://api.githubcopilot.com/chat/completions";
 
         let request = ChatRequest {
-            model: "gpt-4".to_string(),
+            model: self.config.copilot_model.clone(),
             messages: vec![
                 ChatMessage { role: "system".to_string(), content: system_prompt.to_string() },
                 ChatMessage { role: "user".to_string(), content: user_content.to_string() },
@@ -403,6 +412,81 @@ impl TranslationService {
             .first()
             .map(|c| Self::clean_thinking_content(&c.message.content))
             .context("Empty response from Copilot")
+    }
+
+    pub async fn fetch_copilot_models(&self) -> Result<Vec<CopilotModel>> {
+        let token = self.get_copilot_token().await?;
+        let client = reqwest::Client::new();
+        
+        // Try the official endpoint first
+        let url = "https://api.githubcopilot.com/models";
+        
+        let response = client
+            .get(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("User-Agent", "GitHubCopilot/1.155.0")
+            .header("Copilot-Integration-Id", "vscode-chat")
+            .send()
+            .await
+            .context("Failed to request Copilot models")?;
+
+        if !response.status().is_success() {
+             anyhow::bail!("Failed to fetch models: {}", response.status());
+        }
+
+        #[derive(Deserialize, Debug)]
+        struct ModelsResponse {
+            data: Vec<serde_json::Value>,
+        }
+
+        let res: ModelsResponse = response.json().await.context("Failed to parse models response")?;
+
+        let mut models_map = std::collections::HashMap::new();
+
+        for m in res.data {
+            // Check type="chat"
+            let capabilities = match m.get("capabilities") {
+                Some(c) => c,
+                None => continue,
+            };
+            
+            let model_type = match capabilities.get("type").and_then(|t| t.as_str()) {
+                Some(t) => t,
+                None => continue,
+            };
+            
+            if model_type != "chat" {
+                continue;
+            }
+
+            // Check model_picker_enabled=true
+            let model_picker_enabled = m.get("model_picker_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if !model_picker_enabled {
+                continue;
+            }
+
+            let id = match m.get("id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(&id).to_string();
+
+            // Insert into map to deduplicate by ID
+            models_map.insert(id.clone(), CopilotModel {
+                id,
+                name,
+            });
+        }
+
+        let mut models: Vec<CopilotModel> = models_map.into_values().collect();
+        // Sort by ID to ensure stable order
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+
+        Ok(models)
     }
 
     async fn translate_copilot(&self, text: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {

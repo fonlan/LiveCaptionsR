@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,7 +22,8 @@ import {
   Session, 
   SessionMetadata, 
   TeamsWindowInfo,
-  Toast 
+  Toast,
+  CopilotModel,
 } from "./types";
 import { 
   IconCheck, 
@@ -41,7 +43,8 @@ import {
   IconWindowMaximize,
   IconWindowClose,
   IconEye,
-  IconEyeOff
+  IconEyeOff,
+  IconRefreshCw,
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { 
@@ -688,7 +691,7 @@ function App() {
   const handleWindowClose = () => appWindow.close();
 
   return (
-    <div className="app-container" onContextMenu={import.meta.env.PROD ? (e) => e.preventDefault() : undefined}>
+    <div className="app-container">
       {/* Custom Titlebar */}
       <div className="custom-titlebar">
         <div className="titlebar-drag" data-tauri-drag-region>
@@ -1469,6 +1472,8 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'ai' | 'summary'>('general');
+  const [copilotModels, setCopilotModels] = useState<CopilotModel[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
 
   useEffect(() => {
     setFormData(config);
@@ -1480,6 +1485,26 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
       i18n.changeLanguage(formData.language);
     }
   }, [formData.language, i18n]);
+
+  const fetchCopilotModels = async () => {
+    if (!formData.github_token) return;
+    setIsLoadingModels(true);
+    try {
+      const models = await invoke<CopilotModel[]>('fetch_copilot_models_command');
+      setCopilotModels(models);
+    } catch (err) {
+      console.error("Failed to fetch Copilot models:", err);
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
+
+  // Auto-fetch if token exists and models empty
+  useEffect(() => {
+    if (formData.provider === 'copilot' && formData.github_token && copilotModels.length === 0) {
+      fetchCopilotModels();
+    }
+  }, [formData.provider, formData.github_token]);
 
   const getSelectedProvider = (): { type: string; endpointId?: string } => {
     if (formData.provider.startsWith('openai:')) {
@@ -1755,6 +1780,63 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
               Authenticate with your GitHub account to use Copilot models.
+            </div>
+            
+            <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ display: 'block', color: 'var(--text-primary)', fontWeight: 500, fontSize: '13px' }}>
+                    Model
+                  </label>
+                  <button 
+                    onClick={fetchCopilotModels}
+                    disabled={isLoadingModels || !formData.github_token}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--primary)',
+                      cursor: isLoadingModels || !formData.github_token ? 'default' : 'pointer',
+                      fontSize: '11px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: isLoadingModels || !formData.github_token ? 0.5 : 1
+                    }}
+                    title="Refresh models"
+                  >
+                     <IconRefreshCw className={isLoadingModels ? "spin" : ""} size={12} />
+                     <span style={{ marginLeft: '4px' }}>Refresh</span>
+                  </button>
+                </div>
+                <select
+                  value={formData.copilot_model || 'gpt-4'}
+                  onChange={e => setFormData(prev => ({ ...prev, copilot_model: e.target.value }))}
+                  style={{
+                    width: '100%',
+                    padding: '8px',
+                    background: 'var(--bg-input)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    outline: 'none',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {copilotModels.length > 0 ? (
+                    copilotModels.map(model => (
+                      <option key={model.id} value={model.id}>
+                        {model.name}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="gpt-4">GPT-4 (Default)</option>
+                      <option value="gpt-4o">GPT-4o</option>
+                      <option value="claude-3.5-sonnet">Claude 3.5 Sonnet</option>
+                      <option value="o1">o1-preview</option>
+                      <option value="o1-mini">o1-mini</option>
+                    </>
+                  )}
+                </select>
             </div>
         </div>
       )}
@@ -2039,9 +2121,13 @@ function DeviceAuthModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onCl
     }
   };
 
-  const copyCode = async () => {
+  const handleCopyAndOpen = async (e: React.MouseEvent) => {
+    e.preventDefault();
     if (authData?.user_code) {
       await navigator.clipboard.writeText(authData.user_code);
+    }
+    if (authData?.verification_uri) {
+      await openUrl(authData.verification_uri);
     }
   };
 
@@ -2085,16 +2171,17 @@ function DeviceAuthModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onCl
                 href={authData.verification_uri} 
                 target="_blank" 
                 rel="noreferrer"
-                onClick={copyCode}
+                onClick={handleCopyAndOpen}
                 className="btn-primary"
                 style={{ 
                   display: 'block', 
                   textDecoration: 'none', 
                   padding: '12px', 
-                  borderRadius: '6px',
+                  borderRadius: '6px', 
                   background: '#2da44e',
                   color: 'white',
-                  fontWeight: 600
+                  fontWeight: 600,
+                  cursor: 'pointer'
                 }}
               >
                 Copy Code & Open GitHub
