@@ -355,7 +355,20 @@ impl TranslationService {
         self.send_openai_request(endpoint, &system_prompt, &user_content).await
     }
 
-
+    /// Remove <think>...</think> blocks from content
+    fn clean_thinking_content(content: &str) -> String {
+        let mut result = content.to_string();
+        while let Some(start) = result.find("<think>") {
+            if let Some(end_offset) = result[start..].find("</think>") {
+                let end = start + end_offset + 8;
+                result.replace_range(start..end, "");
+            } else {
+                result.replace_range(start.., "");
+                break;
+            }
+        }
+        result.trim().to_string()
+    }
 
     /// Helper for OpenAI requests
     async fn send_openai_request(
@@ -403,7 +416,7 @@ impl TranslationService {
         result
             .choices
             .first()
-            .map(|c| c.message.content.trim().to_string())
+            .map(|c| Self::clean_thinking_content(&c.message.content))
             .context("Empty response from OpenAI")
     }
 
@@ -485,5 +498,24 @@ struct Choice {
 #[derive(Deserialize)]
 struct ResponseMessage {
     content: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_thinking_content() {
+        assert_eq!(TranslationService::clean_thinking_content("Hello"), "Hello");
+        assert_eq!(TranslationService::clean_thinking_content("<think>thinking...</think> Hello"), "Hello");
+        assert_eq!(TranslationService::clean_thinking_content("Hello <think>thinking...</think> World"), "Hello  World");
+        assert_eq!(TranslationService::clean_thinking_content("<think>thinking...</think>"), "");
+        assert_eq!(TranslationService::clean_thinking_content("<think>thinking..."), ""); // Truncated
+        assert_eq!(TranslationService::clean_thinking_content("Start <think>1</think> Mid <think>2</think> End"), "Start  Mid  End");
+        
+        // Multiline check
+        let multiline = "Result\n<think>\nLine 1\nLine 2\n</think>\nFinal";
+        assert_eq!(TranslationService::clean_thinking_content(multiline), "Result\n\nFinal");
+    }
 }
 
