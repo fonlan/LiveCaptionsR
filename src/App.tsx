@@ -45,6 +45,7 @@ import {
   IconEye,
   IconEyeOff,
   IconRefreshCw,
+  IconUser,
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { 
@@ -828,13 +829,9 @@ function App() {
                 return (
                   <div key={item.id} className={`history-card ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'failed' : ''}`}>
                     {item.user && (
-                        <div style={{
-                            fontSize: '11px',
-                            fontWeight: 'bold',
-                            color: 'var(--primary)',
-                            marginBottom: '4px'
-                        }}>
-                            {item.user}
+                        <div className="card-user">
+                            <IconUser />
+                            <span>{item.user}</span>
                         </div>
                     )}
                     <div className="card-original">{item.original}</div>
