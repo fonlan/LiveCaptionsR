@@ -7,6 +7,7 @@ export interface CopilotModel {
 
 export interface RawCaption {
   text: string;
+  user?: string;
   timestamp: number;
 }
 
@@ -15,6 +16,7 @@ export interface SentenceCard {
   original: string;
   translated: string | null;
   status?: 'translating' | 'success' | 'error';
+  user?: string;
   retrying?: boolean;
   timestamp: number; // Added timestamp
 }

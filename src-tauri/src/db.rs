@@ -61,5 +61,14 @@ pub fn init() -> anyhow::Result<()> {
         tx.commit()?;
     }
 
+    let current_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 2 {
+        let tx = conn.transaction()?;
+        // Add user column to session_cards
+        tx.execute("ALTER TABLE session_cards ADD COLUMN user TEXT", [])?;
+        tx.pragma_update(None, "user_version", 2)?;
+        tx.commit()?;
+    }
+
     Ok(())
 }

@@ -72,3 +72,57 @@ export function getNewSentences(currentText: string, lastText: string): string[]
     // If no overlap found (e.g. disjoint or correction), return all current sentences
     return currentSentences;
 }
+
+/**
+ * Filters out sentences that are duplications of the recent history.
+ * This handles cases where the caption source artificially repeats a sequence of sentences.
+ * (文比较去重)
+ */
+export function filterDuplicateSentences(existingSentences: string[], newSentences: string[]): string[] {
+    if (existingSentences.length === 0) return newSentences;
+    if (newSentences.length === 0) return [];
+
+    // Look back at most 10 sentences to check for duplicate sequences
+    const lookback = Math.min(existingSentences.length, 10);
+    const recentExisting = existingSentences.slice(-lookback);
+
+    for (let i = 0; i < recentExisting.length; i++) {
+        // Check if the sequence starting at recentExisting[i] matches the start of newSentences
+        if (calculateSimilarity(recentExisting[i], newSentences[0]) > 0.8) {
+            let match = true;
+            let overlapCount = 0;
+            
+            const suffixLength = recentExisting.length - i;
+            
+            for (let j = 0; j < suffixLength; j++) {
+                if (j >= newSentences.length) {
+                    // New sentences are fully contained in the existing suffix
+                    overlapCount = newSentences.length; // Consume all
+                    break; 
+                }
+                
+                if (calculateSimilarity(recentExisting[i + j], newSentences[j]) <= 0.8) {
+                    match = false;
+                    break;
+                }
+                overlapCount++;
+            }
+            
+            if (match) {
+                // We found that newSentences starts with a sequence that already exists at the end of existingSentences
+                
+                // Heuristic: Only filter if it's a SEQUENCE repetition (more than 1 sentence) 
+                // OR if it's a long enough sentence (> 10 chars) to be considered a unique thought rather than a short interjection like "Yes" or "Hello".
+                const isSequence = overlapCount > 1;
+                const isLongSentence = overlapCount === 1 && newSentences[0].length > 10;
+                
+                if (isSequence || isLongSentence) {
+                     return newSentences.slice(overlapCount);
+                }
+                // Otherwise, preserve the repetition (e.g. user saying "Hello." twice)
+            }
+        }
+    }
+    
+    return newSentences;
+}

@@ -634,6 +634,9 @@ impl CaptionStream {
 
         match result {
             Ok(text) => {
+                if !text.is_empty() {
+                    eprintln!("[LiveCaptions Raw] {}", text);
+                }
                 self.error_count = 0;
                 if !text.is_empty() && text != self.last_text {
                     self.last_text = text.clone();

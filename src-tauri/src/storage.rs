@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::db;
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Session {
@@ -16,6 +16,7 @@ pub struct SessionCard {
     pub original: String,
     pub translated: Option<String>,
     pub status: Option<String>,
+    pub user: Option<String>,
     pub timestamp: u64,
 }
 
@@ -45,8 +46,8 @@ pub fn save_session(session: &Session) -> anyhow::Result<()> {
     )?;
 
     let mut stmt = tx.prepare(
-        "INSERT INTO session_cards (id, session_id, original, translated, status, timestamp) 
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        "INSERT INTO session_cards (id, session_id, original, translated, status, user, timestamp) 
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
 
     for card in &session.cards {
@@ -56,6 +57,7 @@ pub fn save_session(session: &Session) -> anyhow::Result<()> {
             card.original,
             card.translated,
             card.status,
+            card.user,
             card.timestamp as i64
         ])?;
     }
@@ -67,20 +69,20 @@ pub fn save_session(session: &Session) -> anyhow::Result<()> {
 
 pub fn load_session(id: &str) -> anyhow::Result<Session> {
     let conn = db::get_connection()?;
-    
+
     // Get session info
     let (name, created_at): (String, i64) = conn.query_row(
         "SELECT name, created_at FROM sessions WHERE id = ?1",
         params![id],
-        |row| Ok((row.get(0)?, row.get(1)?))
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
     // Get cards
     let mut stmt = conn.prepare(
-        "SELECT id, original, translated, status, timestamp 
+        "SELECT id, original, translated, status, user, timestamp 
          FROM session_cards 
          WHERE session_id = ?1 
-         ORDER BY timestamp ASC"
+         ORDER BY timestamp ASC",
     )?;
 
     let card_iter = stmt.query_map(params![id], |row| {
@@ -89,7 +91,8 @@ pub fn load_session(id: &str) -> anyhow::Result<Session> {
             original: row.get(1)?,
             translated: row.get(2)?,
             status: row.get(3)?,
-            timestamp: row.get::<_, i64>(4)? as u64,
+            user: row.get(4)?,
+            timestamp: row.get::<_, i64>(5)? as u64,
         })
     })?;
 
@@ -108,7 +111,7 @@ pub fn load_session(id: &str) -> anyhow::Result<Session> {
 
 pub fn list_sessions() -> anyhow::Result<Vec<SessionMetadata>> {
     let conn = db::get_connection()?;
-    
+
     let mut stmt = conn.prepare(
         "SELECT 
             s.id, 

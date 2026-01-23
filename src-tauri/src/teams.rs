@@ -12,9 +12,15 @@ use windows::{
     core::*,
     Win32::Foundation::{BOOL, HWND, LPARAM, TRUE},
     Win32::System::Com::*,
-    Win32::UI::Accessibility::*,
+    Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationElement, TreeScope_Descendants,
+        UIA_ControlTypePropertyId, UIA_ListItemControlTypeId, UIA_TextControlTypeId,
+    },
     Win32::UI::WindowsAndMessaging::*,
 };
+
+mod runtime_id;
+use runtime_id::get_runtime_id_string;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -58,8 +64,7 @@ fn get_all_processes() -> Vec<ProcessInfo> {
 
     let stdout = match output {
         Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-        Err(e) => {
-            eprintln!("[Teams Debug] Failed to get process list: {}", e);
+        Err(_) => {
             return Vec::new();
         }
     };
@@ -135,8 +140,6 @@ fn get_teams_related_pids() -> Vec<u32> {
         return Vec::new();
     }
 
-    eprintln!("[Teams Debug] Found ms-teams.exe PIDs: {:?}", teams_pids);
-
     // Step 2: Find direct msedgewebview2.exe children of ms-teams.exe
     let mut first_level_webviews: Vec<u32> = Vec::new();
     for &teams_pid in &teams_pids {
@@ -150,11 +153,6 @@ fn get_teams_related_pids() -> Vec<u32> {
             }
         }
     }
-    eprintln!(
-        "[Teams Debug] Found {} first-level msedgewebview2.exe processes: {:?}",
-        first_level_webviews.len(),
-        first_level_webviews
-    );
 
     // Step 3: Find children of first-level webviews that have --type=renderer
     let mut renderer_pids: Vec<u32> = Vec::new();
@@ -165,21 +163,12 @@ fn get_teams_related_pids() -> Vec<u32> {
                     if info.name.to_lowercase() == "msedgewebview2.exe"
                         && info.cmdline.contains("--type=renderer")
                     {
-                        eprintln!(
-                            "[Teams Debug] Found renderer PID {} (parent: {})",
-                            child_pid, webview_pid
-                        );
                         renderer_pids.push(child_pid);
                     }
                 }
             }
         }
     }
-
-    eprintln!(
-        "[Teams Debug] Found {} renderer processes",
-        renderer_pids.len()
-    );
 
     // Combine all PIDs (Main Teams, Middleware WebViews, Renderers)
     // The meeting window might be owned by any of them in New Teams
@@ -188,10 +177,6 @@ fn get_teams_related_pids() -> Vec<u32> {
     all_pids.extend(first_level_webviews);
     all_pids.extend(renderer_pids);
 
-    eprintln!(
-        "[Teams Debug] Total relevant PIDs to search: {}",
-        all_pids.len()
-    );
     all_pids
 }
 
@@ -282,10 +267,6 @@ pub fn find_teams_webview_window() -> Option<HWND> {
 
     // Priority 2: Fallback to any window found
     if let Some(first) = windows.first() {
-        eprintln!(
-            "[Teams Debug] No distinct meeting window found, falling back to: '{}' (PID: {})",
-            first.title, first.pid
-        );
         return Some(HWND(first.hwnd as *mut _));
     }
 
@@ -364,11 +345,14 @@ impl TeamsWatcher {
     }
 
     /// Get caption text from Teams window
+    /// Revised strategy: Find all Text elements, then group them by their 'fui-ChatMessageCompact' parent.
     pub fn get_caption_text(
         &self,
         window: &IUIAutomationElement,
-    ) -> Result<(String, Option<IUIAutomationElement>)> {
+    ) -> Result<(Option<String>, String, Option<IUIAutomationElement>)> {
         unsafe {
+            let walker = self.automation.ControlViewWalker()?;
+
             let text_condition = self
                 .automation
                 .CreatePropertyCondition(
@@ -393,58 +377,120 @@ impl TeamsWatcher {
             }
 
             let count = elements.Length().unwrap_or(0);
-            let mut texts = Vec::new();
-            let mut seen_texts = HashSet::new();
-            let mut first_element: Option<IUIAutomationElement> = None;
+
+            // Vector of (ParentRuntimeIdString, Vec<String>)
+            // We use RuntimeId string representation to group siblings
+            let mut messages: Vec<(String, Vec<String>)> = Vec::new();
+            let mut first_container_element: Option<IUIAutomationElement> = None;
 
             for i in 0..count {
-                if let Ok(element) = elements.GetElement(i) {
-                    if let Ok(name) = element.CurrentName() {
-                        let text = name.to_string();
-                        if !text.is_empty()
-                            && !text.contains("Microsoft Teams")
-                            && !text.contains("Live captions")
-                            && !text.contains("Turn on")
-                            && !text.contains("Turn off")
-                            && !text.contains("Settings")
-                            && text.len() > 2
-                            && !seen_texts.contains(&text)
-                        {
-                            seen_texts.insert(text.clone());
-                            texts.push(text);
+                if let Ok(text_element) = elements.GetElement(i) {
+                    // Get the text content
+                    let text_content = if let Ok(name) = text_element.CurrentName() {
+                        name.to_string()
+                    } else {
+                        continue;
+                    };
 
-                            // Capture the first valid text element to find the container later
-                            if first_element.is_none() {
-                                first_element = Some(element);
+                    if text_content.trim().is_empty() {
+                        continue;
+                    }
+
+                    // Walk up to find the parent with ClassName starting with "fui-ChatMessageCompact"
+                    if let Ok(parent) = walker.GetParentElement(&text_element) {
+                        if let Ok(class_name) = parent.CurrentClassName() {
+                            let class_str = class_name.to_string();
+                            if class_str.starts_with("fui-ChatMessageCompact") {
+                                // Found a valid message container!
+
+                                // Capture the first valid container we find for future optimized scanning
+                                if first_container_element.is_none() {
+                                    // We might want the parent of this (the ui-box/list) for the stream's caption_parent
+                                    // But storing this element is also useful as a hint
+                                    if let Ok(grandparent) = walker.GetParentElement(&parent) {
+                                        first_container_element = Some(grandparent);
+                                    } else {
+                                        first_container_element = Some(parent.clone());
+                                    }
+                                }
+
+                                // Group by RuntimeId of the parent (fui-ChatMessageCompact)
+                                // This ensures we group "User" and "Message" together
+                                let runtime_id = if let Ok(_id_arr) = parent.GetRuntimeId() {
+                                    Some(parent.clone())
+                                } else {
+                                    None
+                                };
+
+                                let mut added_to_last = false;
+                                if let Some(ref _current_parent) = runtime_id {
+                                    if let Some((last_parent_key, last_texts)) = messages.last_mut()
+                                    {
+                                        let current_id_str = get_runtime_id_string(&parent);
+                                        if *last_parent_key == current_id_str {
+                                            last_texts.push(text_content.clone());
+                                            added_to_last = true;
+                                        }
+                                    }
+
+                                    if !added_to_last {
+                                        let current_id_str = get_runtime_id_string(&parent);
+                                        messages.push((current_id_str, vec![text_content]));
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Fallback to TextPattern if no elements found (legacy UIA support)
-            if texts.is_empty() {
-                if let Ok(text_pattern) =
-                    window.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-                {
-                    if let Ok(range) = text_pattern.DocumentRange() {
-                        if let Ok(text) = range.GetText(-1) {
-                            let text_str = text.to_string();
-                            if !text_str.is_empty() {
-                                texts.push(text_str);
-                            }
-                        }
-                    }
-                }
-            }
-
-            let result = if texts.len() > 3 {
-                texts[texts.len() - 3..].join(" ")
+            // Format messages
+            // We take the last few messages (e.g. last 3)
+            let start_idx = if messages.len() > 3 {
+                messages.len() - 3
             } else {
-                texts.join(" ")
+                0
             };
+            let mut result_parts = Vec::new();
+            let mut captured_user: Option<String> = None;
 
-            Ok((result, first_element))
+            for (_idx, (_current_id_str, texts)) in messages[start_idx..].iter().enumerate() {
+                // Logic for "fui-ChatMessageCompact" container which holds multiple messages (a list)
+                // The structure observed is [User, Content, User, Content, ...]
+                // We want to extract only the Content parts (Odd indices)
+
+                // Safety check: Ensure we have pairs
+                if texts.len() >= 2 {
+                    // Capture the username from the first pair if we haven't yet
+                    if captured_user.is_none() {
+                        captured_user = Some(texts[0].clone());
+                    }
+
+                    let mut group_contents = Vec::new();
+
+                    for i in 0..texts.len() {
+                        // Heuristic: Assume strict alternation User -> Content
+                        // Take odd indices (1, 3, 5...)
+                        if i % 2 == 1 {
+                            group_contents.push(texts[i].clone());
+                        }
+                    }
+
+                    if !group_contents.is_empty() {
+                        result_parts.push(group_contents.join("  "));
+                    }
+                } else if texts.len() == 1 {
+                    // Edge case: Just one element? Might be content only or user only.
+                    // If it's short, might be ignored, but let's pass it for now.
+                    result_parts.push(texts[0].clone());
+                }
+            }
+
+            Ok((
+                captured_user,
+                result_parts.join("  "),
+                first_container_element,
+            ))
         }
     }
 
@@ -520,7 +566,7 @@ impl TeamsCaptionStream {
         }
     }
 
-    pub fn get_next_caption(&mut self) -> Option<String> {
+    pub fn get_next_caption(&mut self) -> Option<(Option<String>, String)> {
         if !self.running.load(Ordering::SeqCst) {
             return None;
         }
@@ -537,7 +583,7 @@ impl TeamsCaptionStream {
         let result = self.watcher.get_caption_text(search_target);
 
         match result {
-            Ok((text, first_element)) => {
+            Ok((user, text, first_element)) => {
                 self.error_count = 0;
 
                 // If we found text but don't have a cached parent yet, try to find one
@@ -562,13 +608,12 @@ impl TeamsCaptionStream {
 
                 if !text.is_empty() && text != self.last_text {
                     self.last_text = text.clone();
-                    return Some(text);
+                    return Some((user, text));
                 }
             }
             Err(e) => {
                 // If we failed with cached parent, invalidate it
                 if self.caption_parent.is_some() {
-                    eprintln!("[Teams] Error with cached container, invalidating: {}", e);
                     self.caption_parent = None;
                     return None;
                 }
@@ -582,7 +627,7 @@ impl TeamsCaptionStream {
                 if self.error_count > 5 {
                     self.window = None;
                     self.running.store(false, Ordering::SeqCst);
-                    return Some(format!("[ERROR] Lost connection to Teams: {}", e));
+                    return Some((None, format!("[ERROR] Lost connection to Teams: {}", e)));
                 }
 
                 if let Ok(new_window) = self.watcher.find_teams_window_uia(self.selected_hwnd) {

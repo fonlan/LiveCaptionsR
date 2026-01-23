@@ -98,7 +98,7 @@ function App() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
-  const saveTimeoutRef = useRef<number | null>(null);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const lastFullTextRef = useRef<string>("");
   const lastOriginalTextRef = useRef<string>("");
@@ -107,8 +107,7 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
-  // Track processed sentences to prevent duplicates (especially for Teams mode)
-  const processedSentencesRef = useRef<Set<string>>(new Set());
+
 
   const addToast = (type: 'success' | 'error', message: string) => {
     const id = generateId();
@@ -141,7 +140,7 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(true);
       lastProcessedCardRef.current = null;
-      processedSentencesRef.current.clear(); // Clear dedup set for new session
+
       setPartialText("");
       lastFullTextRef.current = "";
       return session.id;
@@ -173,7 +172,7 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
       lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
-      processedSentencesRef.current.clear(); // Clear dedup set when switching sessions
+
       setPartialText("");
     } catch (e) {
       console.error("Failed to load session:", e);
@@ -402,18 +401,13 @@ function App() {
     }
   };
 
-  const translateAndDisplay = async (originalText: string) => {
+  const translateAndDisplay = async (originalText: string, allowDuplicate: boolean = false, user?: string) => {
     if (!originalText.trim()) return;
-
-    // Deduplication: skip if we've already processed this exact sentence
-    const normalizedText = originalText.trim();
-    if (processedSentencesRef.current.has(normalizedText)) {
-      return;
-    }
 
     const lastCard = lastProcessedCardRef.current;
     // Prevent infinite re-translation loop on idle if text hasn't changed
-    if (lastCard && lastCard.original === originalText) {
+    // BUT allow duplicate if explicitly requested (from new sentences detection)
+    if (!allowDuplicate && lastCard && lastCard.original === originalText) {
       return;
     }
 
@@ -421,7 +415,9 @@ function App() {
     const newId = generateId();
     let isOverwrite = false;
 
-    if (lastCard && shouldOverwrite(lastCard.original, originalText)) {
+    // Only check overwrite logic if this is NOT a confirmed new sentence from the stream
+    // If it IS a new sentence (allowDuplicate=true), we always append (never overwrite)
+    if (!allowDuplicate && lastCard && shouldOverwrite(lastCard.original, originalText)) {
       isOverwrite = true;
     }
 
@@ -431,14 +427,14 @@ function App() {
       original: originalText,
       translated: null,
       status: 'translating',
+      user,
       timestamp
     };
 
     lastProcessedCardRef.current = newCard;
     lastOriginalTextRef.current = originalText;
     syncCountRef.current = 0;
-    // Mark as processed to prevent future duplicates
-    processedSentencesRef.current.add(normalizedText);
+
 
     setCards(prev => {
       if (isOverwrite && prev.length > 0) {
@@ -472,6 +468,7 @@ function App() {
   useEffect(() => {
     const unlistenRaw = listen<RawCaption>("caption-raw", async (event) => {
       const fullText = event.payload.text;
+      const user = event.payload.user;
       const latestCaption = getLatestCaption(fullText);
       setPartialText(latestCaption);
 
@@ -484,19 +481,23 @@ function App() {
       if (fullText === lastFullTextRef.current) {
         idleCountRef.current++;
         if (idleCountRef.current === MAX_IDLE_INTERVAL && latestCaption.trim()) {
-          translateAndDisplay(latestCaption);
+          translateAndDisplay(latestCaption, false, user);
           idleCountRef.current = 0;
         }
       } else {
         idleCountRef.current = 0;
 
         const newSentences = getNewSentences(fullText, lastFullTextRef.current);
+        // Deduplication disabled by user request
+        // const recentOriginals = cardsRef.current.map(c => c.original);
+        // const newSentences = filterDuplicateSentences(recentOriginals, newSentencesRaw);
+
         if (newSentences.length > 0) {
-          newSentences.forEach(sentence => { void translateAndDisplay(sentence); });
+          newSentences.forEach(sentence => { void translateAndDisplay(sentence, true, user); });
         } else {
           syncCountRef.current++;
           if (syncCountRef.current >= MAX_SYNC_INTERVAL && latestCaption.trim()) {
-            translateAndDisplay(latestCaption);
+            translateAndDisplay(latestCaption, false, user);
           }
         }
         lastFullTextRef.current = fullText;
@@ -826,6 +827,16 @@ function App() {
 
                 return (
                   <div key={item.id} className={`history-card ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'failed' : ''}`}>
+                    {item.user && (
+                        <div style={{
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            color: 'var(--primary)',
+                            marginBottom: '4px'
+                        }}>
+                            {item.user}
+                        </div>
+                    )}
                     <div className="card-original">{item.original}</div>
                     {shouldShowTranslation && (
                       <>

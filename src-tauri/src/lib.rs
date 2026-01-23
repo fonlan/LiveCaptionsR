@@ -4,11 +4,11 @@ use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender};
 use tauri::{AppHandle, Emitter, Manager};
 
-mod livecaptions;
-mod teams;
-mod storage;
-mod translation;
 mod db;
+mod livecaptions;
+mod storage;
+mod teams;
+mod translation;
 
 use teams::TeamsWindowInfo;
 
@@ -18,6 +18,7 @@ use translation::{OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationPro
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RawCaption {
     pub text: String,
+    pub user: Option<String>,
     pub timestamp: u64,
 }
 
@@ -593,7 +594,7 @@ fn start_livecaptions_loop(
                 .unwrap_or_default()
                 .as_secs();
 
-            let caption = RawCaption { text, timestamp };
+            let caption = RawCaption { text, user: None, timestamp };
             let _ = app.emit("caption-raw", caption);
         }
 
@@ -662,7 +663,7 @@ fn start_teams_caption_loop(
             }
         }
 
-        if let Some(text) = stream.get_next_caption() {
+        if let Some((user, text)) = stream.get_next_caption() {
             if text == last_text {
                 std::thread::sleep(stream.poll_interval());
                 continue;
@@ -679,7 +680,7 @@ fn start_teams_caption_loop(
                 .unwrap_or_default()
                 .as_secs();
 
-            let caption = RawCaption { text, timestamp };
+            let caption = RawCaption { text, user, timestamp };
             let _ = app.emit("caption-raw", caption);
         }
 
