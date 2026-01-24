@@ -376,12 +376,14 @@ function App() {
       const currentConfig = configRef.current;
       const cardIndex = currentCards.findIndex(c => c.id === cardId);
       let context: string[] | null = null;
-      
-      if (currentConfig.provider.startsWith('openai:') && currentConfig.openai_context_count > 0 && cardIndex > 0) {
+
+      // Include context for AI models (not Google/Microsoft)
+      const isAIModel = currentConfig.provider !== 'google' && currentConfig.provider !== 'microsoft';
+      if (isAIModel && currentConfig.openai_context_count > 0 && cardIndex > 0) {
         const startIdx = Math.max(0, cardIndex - currentConfig.openai_context_count);
         context = currentCards.slice(startIdx, cardIndex).map(c => c.original);
       }
-      
+
       const translated = await invoke<string>("translate_text", { text: originalText, context });
       setCards(prev => prev.map(c => c.id === cardId ? { ...c, translated, retrying: false, status: 'success' as const } : c));
     } catch (e) {
@@ -394,9 +396,11 @@ function App() {
     try {
       const currentCards = cardsRef.current;
       const currentConfig = configRef.current;
-      
+
       let context: string[] | null = null;
-      if (currentConfig.provider.startsWith('openai:') && currentConfig.openai_context_count > 0) {
+      // Include context for AI models (not Google/Microsoft)
+      const isAIModel = currentConfig.provider !== 'google' && currentConfig.provider !== 'microsoft';
+      if (isAIModel && currentConfig.openai_context_count > 0) {
         const cardIndex = currentCards.findIndex(c => c.id === cardId);
         if (cardIndex >= 0) {
           const startIdx = Math.max(0, cardIndex - currentConfig.openai_context_count);
@@ -442,9 +446,9 @@ function App() {
     const newId = generateId();
     let isOverwrite = false;
 
-    // Only check overwrite logic if this is NOT a confirmed new sentence from the stream
-    // If it IS a new sentence (allowDuplicate=true), we always append (never overwrite)
-    if (!allowDuplicate && lastCard && shouldOverwrite(lastCard.original, originalText)) {
+    // Always check overwrite logic, even for new sentences
+    // A "new sentence" might be a continuation/completion of a partial sentence
+    if (lastCard && shouldOverwrite(lastCard.original, originalText)) {
       isOverwrite = true;
     }
 
@@ -515,9 +519,6 @@ function App() {
         idleCountRef.current = 0;
 
         const newSentences = getNewSentences(fullText, lastFullTextRef.current);
-        // Deduplication disabled by user request
-        // const recentOriginals = cardsRef.current.map(c => c.original);
-        // const newSentences = filterDuplicateSentences(recentOriginals, newSentencesRaw);
 
         if (newSentences.length > 0) {
           newSentences.forEach(sentence => { void translateAndDisplay(sentence, true, user); });
@@ -703,7 +704,9 @@ function App() {
         // Use override provider or config provider for context logic checks
         const effectiveProvider = providerOverride || config.provider;
 
-        if (effectiveProvider.startsWith('openai:') && config.openai_context_count > 0 && cardIndex > 0) {
+        // Include context for AI models (not Google/Microsoft)
+        const isAIModel = effectiveProvider !== 'google' && effectiveProvider !== 'microsoft';
+        if (isAIModel && config.openai_context_count > 0 && cardIndex > 0) {
           const startIdx = Math.max(0, cardIndex - config.openai_context_count);
           context = cards.slice(startIdx, cardIndex).map(c => c.original);
         }
@@ -1915,18 +1918,23 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
       {(() => {
           const selectedModel = formData.ai_models.find(m => m.id === formData.provider);
           const selectedChannel = selectedModel ? formData.ai_channels.find(c => c.id === selectedModel.channel_id) : null;
-          const isOpenAI = (selectedChannel?.type === 'openai') || formData.provider.startsWith('openai:');
-          
-          return isOpenAI && (
+          // Show context setting for AI models (OpenAI or Copilot), not for Google/Microsoft
+          const isAIModel = formData.provider !== 'google' && formData.provider !== 'microsoft';
+
+          return isAIModel && (
             <div className="endpoint-card" style={{ marginTop: '0px' }}>
               <div className="form-group">
-                <label>{t("settings.translation.contextMemory")}</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                  <label>{t("settings.translation.contextMemory")}</label>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{formData.openai_context_count ?? 2}</span>
+                </div>
                 <input
                   type="range"
                   min="0"
                   max="10"
                   value={formData.openai_context_count ?? 2}
                   onChange={e => setFormData(prev => ({ ...prev, openai_context_count: parseInt(e.target.value) }))}
+                  style={{ width: '100%', accentColor: 'var(--primary)', cursor: 'pointer' }}
                 />
               </div>
             </div>
