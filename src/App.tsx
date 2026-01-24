@@ -1916,8 +1916,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
       </div>
 
       {(() => {
-          const selectedModel = formData.ai_models.find(m => m.id === formData.provider);
-          const selectedChannel = selectedModel ? formData.ai_channels.find(c => c.id === selectedModel.channel_id) : null;
           // Show context setting for AI models (OpenAI or Copilot), not for Google/Microsoft
           const isAIModel = formData.provider !== 'google' && formData.provider !== 'microsoft';
 
