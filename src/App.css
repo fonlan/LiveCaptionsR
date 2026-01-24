@@ -851,6 +851,13 @@ input:checked + .slider:before {
   margin-top: 0;
 }
 
+/* Channels and Models List */
+.channels-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 /* OpenAI Endpoints */
 .endpoint-card {
   background: var(--bg-card);
