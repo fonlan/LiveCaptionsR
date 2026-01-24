@@ -1337,11 +1337,11 @@ function TranslateModal({
                 flex: 1,
                 padding: '10px 16px',
                 background: 'var(--primary)',
-                color: 'white',
+                color: 'var(--bg-card)',
                 border: 'none',
                 borderRadius: '6px',
                 fontSize: '14px',
-                fontWeight: 500,
+                fontWeight: 600,
                 cursor: 'pointer',
                 transition: 'opacity 0.2s'
               }}
