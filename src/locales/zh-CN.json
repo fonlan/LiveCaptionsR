@@ -182,6 +182,8 @@
   "teams": {
     "selectWindow": "选择 Teams 窗口",
     "description": "请选择要捕获字幕的 Microsoft Teams 会议窗口。",
+    "instructionTitle": "操作提示：",
+    "instructionStep": "需开启Teams实时字幕，在Teams会议主界面顶部点击“更多” > “语言和语音” > “显示实时字幕”",
     "availableWindows": "可用窗口",
     "scanning": "扫描中...",
     "noWindows": "未找到 Teams 窗口。请确保您已加入 Teams 会议。",

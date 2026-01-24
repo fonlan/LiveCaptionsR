@@ -182,6 +182,8 @@
   "teams": {
     "selectWindow": "Select Teams Window",
     "description": "Please select the Microsoft Teams meeting window to capture subtitles from.",
+    "instructionTitle": "Instruction:",
+    "instructionStep": "Need enable Teams Live Captions. Teams meeting top menu: \"More\" > \"Language and speech\" > \"Turn on live captions\"",
     "availableWindows": "Available Windows",
     "scanning": "Scanning...",
     "noWindows": "No Teams windows found. Please ensure you are in a Teams meeting.",

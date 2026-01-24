@@ -1410,6 +1410,22 @@ function TeamsSelectionModal({
             {t("teams.description")}
           </p>
 
+          <div style={{
+            marginBottom: '16px',
+            padding: '12px',
+            background: 'rgba(255, 165, 0, 0.15)',
+            border: '1px solid rgba(255, 165, 0, 0.3)',
+            borderRadius: '6px',
+            color: '#ffa500',
+            fontSize: '13px',
+            lineHeight: '1.5'
+          }}>
+            <strong>{t("teams.instructionTitle")}</strong>
+            <div style={{ marginTop: '4px' }}>
+              {t("teams.instructionStep")}
+            </div>
+          </div>
+
           <div className="form-group">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <label style={{ display: 'block', color: 'var(--text-primary)', fontWeight: 500 }}>
