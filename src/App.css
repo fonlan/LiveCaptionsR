@@ -925,6 +925,37 @@ input:checked + .slider:before {
   filter: brightness(1.1);
 }
 
+.btn-primary {
+  padding: 4px 12px;
+  background: var(--primary);
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.btn-secondary {
+  padding: 4px 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-secondary:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--text-muted);
+}
+
 /* Animations */
 @keyframes pulse {
   0% { opacity: 1; }
@@ -1225,4 +1256,24 @@ input:checked + .slider:before {
 .copy-dropdown-item:hover {
   background: var(--bg-card-hover);
   color: var(--text-primary);
+}
+
+.summary-prompt-textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.summary-prompt-textarea:focus {
+  border-color: var(--primary);
 }
