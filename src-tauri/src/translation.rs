@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use tokio::sync::Semaphore;
 
 /// Proxy configuration for translation services
@@ -126,8 +127,8 @@ fn build_client(proxy_config: &ProxyConfig) -> Result<Client> {
 pub struct TranslationService {
     config: TranslationConfig,
     semaphore: Arc<Semaphore>,
-    // Token and Expiry (Unix timestamp)
-    copilot_token: Arc<Mutex<Option<(String, u64)>>>,
+    // Map PersistentToken -> (ShortLivedToken, Expiry)
+    copilot_tokens: Arc<Mutex<HashMap<String, (String, u64)>>>,
 }
 
 impl TranslationService {
@@ -140,7 +141,7 @@ impl TranslationService {
         Ok(Self {
             config,
             semaphore: Arc::new(Semaphore::new(max_permits)),
-            copilot_token: Arc::new(Mutex::new(None)),
+            copilot_tokens: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -160,7 +161,8 @@ impl TranslationService {
         } else if provider_str == "copilot" {
             TranslationProvider::Copilot
         } else {
-            TranslationProvider::Google
+            // Treat as OpenAI model ID by default (for new ai_models architecture)
+            TranslationProvider::OpenAI(provider_str.to_string())
         }
     }
 
@@ -318,11 +320,11 @@ impl TranslationService {
             .context("Empty response from Microsoft Translator")
     }
 
-    async fn get_copilot_token(&self) -> Result<String> {
+    async fn get_copilot_token(&self, github_token: &str) -> Result<String> {
         // Check cache
         {
-            let guard = self.copilot_token.lock().unwrap();
-            if let Some((token, expiry)) = &*guard {
+            let guard = self.copilot_tokens.lock().unwrap();
+            if let Some((token, expiry)) = guard.get(github_token) {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -334,8 +336,6 @@ impl TranslationService {
         }
 
         // Fetch new token
-        let github_token = self.config.github_token.as_ref().context("GitHub Copilot not logged in")?;
-        
         let client = reqwest::Client::new();
         let res = client
             .get("https://api.github.com/copilot_internal/v2/token")
@@ -362,15 +362,15 @@ impl TranslationService {
         
         // Update cache
         {
-            let mut guard = self.copilot_token.lock().unwrap();
-            *guard = Some((token_data.token.clone(), token_data.expires_at - 60)); // Buffer 60s
+            let mut guard = self.copilot_tokens.lock().unwrap();
+            guard.insert(github_token.to_string(), (token_data.token.clone(), token_data.expires_at - 60)); // Buffer 60s
         }
 
         Ok(token_data.token)
     }
 
-    async fn send_copilot_request(&self, system_prompt: &str, user_content: &str) -> Result<String> {
-        let token = self.get_copilot_token().await?;
+    async fn send_copilot_request(&self, system_prompt: &str, user_content: &str, github_token: &str) -> Result<String> {
+        let token = self.get_copilot_token(github_token).await?;
         
         let client = reqwest::Client::new();
         let url = "https://api.githubcopilot.com/chat/completions";
@@ -414,8 +414,8 @@ impl TranslationService {
             .context("Empty response from Copilot")
     }
 
-    pub async fn fetch_copilot_models(&self) -> Result<Vec<CopilotModel>> {
-        let token = self.get_copilot_token().await?;
+    pub async fn fetch_copilot_models(&self, github_token: &str) -> Result<Vec<CopilotModel>> {
+        let token = self.get_copilot_token(github_token).await?;
         let client = reqwest::Client::new();
         
         // Try the official endpoint first
@@ -490,6 +490,7 @@ impl TranslationService {
     }
 
     async fn translate_copilot(&self, text: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
+        let github_token = self.config.github_token.as_ref().context("GitHub Copilot not logged in")?;
         let source_lang_desc = if self.config.source_lang == "auto" {
             "any language".to_string()
         } else {
@@ -528,7 +529,7 @@ impl TranslationService {
             text.to_string()
         };
 
-        self.send_copilot_request(&system_prompt, &user_content).await
+        self.send_copilot_request(&system_prompt, &user_content, github_token).await
     }
 
     async fn translate_openai(&self, text: &str, endpoint_id: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
@@ -684,15 +685,15 @@ impl TranslationService {
         };
 
         if provider_id == "copilot" {
-            return self.send_copilot_request(&system_prompt, text).await;
+            let github_token = self.config.github_token.as_ref().context("GitHub Copilot not logged in")?;
+            return self.send_copilot_request(&system_prompt, text, github_token).await;
         }
 
-        // Only OpenAI supports summarization for now (besides Copilot)
+        // OpenAI or compatible model
         let endpoint_id = if provider_id.starts_with("openai:") {
             provider_id.strip_prefix("openai:").unwrap_or("default")
         } else {
-            // Fallback or error if other providers selected (UI should prevent this)
-            return Err(anyhow::anyhow!("Summarization only supported with OpenAI or Copilot providers"));
+            provider_id
         };
 
         let endpoint = self

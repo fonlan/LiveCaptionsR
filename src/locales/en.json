@@ -13,6 +13,7 @@
     "defaultName": "Session {{date}}",
     "switchConfirm": "Stop current capture to switch session?",
     "deleteConfirm": "Are you sure you want to delete this session?",
+    "clearAllConfirm": "Are you sure you want to delete ALL sessions? This cannot be undone.",
     "failedToCreate": "Failed to create new session",
     "failedToLoad": "Failed to load session data",
     "deleted": "Session deleted",
@@ -39,6 +40,7 @@
     "closeTooltip": "Close Sidebar",
     "renameTooltip": "Click to rename",
     "deleteTooltip": "Delete Session",
+    "clearAllTooltip": "Delete All Sessions",
     "emptyState": "No saved sessions"
   },
   "controls": {
@@ -56,7 +58,9 @@
       "general": "General",
       "translation": "Translation",
       "ai": "AI Config",
-      "summary": "Summary"
+      "summary": "Summary",
+      "channels": "Channels",
+      "models": "Models"
     },
     "general": {
       "captionSource": "Caption Source",
@@ -111,8 +115,40 @@
       "model": "Model",
       "modelPlaceholder": "gpt-4o-mini"
     },
+    "channels": {
+      "title": "AI Channels",
+      "add": "Add Channel",
+      "namePlaceholder": "Channel Name",
+      "type": "Type",
+      "types": {
+        "openai": "OpenAI Compatible",
+        "copilot": "GitHub Copilot"
+      },
+      "login": {
+        "loggedIn": "Logged in",
+        "notLoggedIn": "Not logged in",
+        "button": "Login with GitHub",
+        "relogin": "Re-login"
+      }
+    },
+    "models": {
+      "title": "AI Models",
+      "add": "Add Model",
+      "channel": "Channel",
+      "name": "Model Name",
+      "placeholder": "e.g. gpt-4",
+      "fetch": "Fetch",
+      "fetchTooltip": "Fetch available models",
+      "loginFirst": "Login to channel first",
+      "toast": {
+        "channelNotAuth": "Channel not authenticated",
+        "fetched": "Fetched {{count}} models",
+        "failed": "Failed to fetch models: {{error}}"
+      }
+    },
     "summary": {
       "provider": "Summary Provider (OpenAI Only)",
+      "selectProvider": "Select a provider",
       "prompt": "Custom Summary Prompt",
       "promptPlaceholder": "Leave empty to use built-in prompt",
       "description": "Configures which AI model generates summaries of your captions. Ensure that selected provider is configured in the \"AI Config\" tab."
@@ -151,5 +187,13 @@
     "noWindows": "No Teams windows found. Please ensure you are in a Teams meeting.",
     "cancel": "Cancel",
     "refresh": "Refresh"
+  },
+  "deviceAuth": {
+    "title": "Login to GitHub",
+    "instruction": "Please enter the following code at GitHub:",
+    "waiting": "Waiting for authentication...",
+    "copyAndOpen": "Copy Code & Open GitHub",
+    "connecting": "Connecting to GitHub...",
+    "retry": "Retry"
   }
 }

@@ -1,10 +1,5 @@
 // --- Domain Types ---
 
-export interface CopilotModel {
-  id: string;
-  name: string;
-}
-
 export interface RawCaption {
   text: string;
   user?: string;
@@ -54,13 +49,30 @@ export interface ProxyConfig {
   enabled: boolean;
 }
 
-export interface OpenAIEndpoint {
+export type AIChannelType = 'openai' | 'copilot';
+
+export interface AIChannel {
+  id: string;
+  type: AIChannelType;
+  name: string;
+  // OpenAI
+  api_key?: string;
+  base_url?: string;
+  // Copilot
+  token?: string;
+  // Shared
+  proxy: ProxyConfig;
+}
+
+export interface AIModel {
+  id: string; // generated ID
+  name: string; // actual model name (e.g. gpt-4)
+  channel_id: string;
+}
+
+export interface CopilotModel {
   id: string;
   name: string;
-  api_key: string;
-  base_url: string;
-  model: string;
-  proxy: ProxyConfig;
 }
 
 export interface AppConfig {
@@ -79,10 +91,9 @@ export interface AppConfig {
   microsoft_api_key: string | null;
   microsoft_region: string | null;
   microsoft_proxy: ProxyConfig;
-  openai_endpoints: OpenAIEndpoint[];
+  ai_channels: AIChannel[];
+  ai_models: AIModel[];
   openai_context_count: number;
-  github_token: string | null;
-  copilot_model: string;
   opacity: number;
   language: string;
   translation_enabled: boolean;
@@ -90,15 +101,6 @@ export interface AppConfig {
 }
 
 export const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
-
-export const DEFAULT_OPENAI_ENDPOINT: OpenAIEndpoint = {
-  id: "default",
-  name: "OpenAI",
-  api_key: "",
-  base_url: "https://api.openai.com/v1",
-  model: "gpt-4o-mini",
-  proxy: { url: "", enabled: false },
-};
 
 export const DEFAULT_SUMMARY_PROMPT = "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \n\n Please follow these steps:\n 1. Analyze the context to infer and correct any errors or missing information in the transcript.\n 2. Generate a clear and concise summary of the corrected content in {target_lang}.\n \n Output using Markdown formatting.";
 
@@ -112,16 +114,15 @@ export const DEFAULT_CONFIG: AppConfig = {
   hide_system_window: true,
   always_on_top: false,
   include_microphone: false,
-  summary_provider: "openai:default",
+  summary_provider: "",
   summary_prompt: DEFAULT_SUMMARY_PROMPT,
   google_proxy: DEFAULT_PROXY,
   microsoft_api_key: "",
   microsoft_region: "",
   microsoft_proxy: DEFAULT_PROXY,
-  openai_endpoints: [DEFAULT_OPENAI_ENDPOINT],
+  ai_channels: [],
+  ai_models: [],
   openai_context_count: 2,
-  github_token: null,
-  copilot_model: "gpt-4",
   opacity: 1.0,
   language: "en",
   translation_enabled: true,

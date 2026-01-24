@@ -147,3 +147,9 @@ pub fn delete_session(id: &str) -> anyhow::Result<()> {
     conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
     Ok(())
 }
+
+pub fn delete_all_sessions() -> anyhow::Result<()> {
+    let conn = db::get_connection()?;
+    conn.execute("DELETE FROM sessions", [])?;
+    Ok(())
+}

@@ -40,6 +40,25 @@ pub struct OpenAIEndpointDTO {
     pub proxy: ProxyConfigDTO,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AIChannelDTO {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub channel_type: String, // "openai" or "copilot"
+    pub name: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub token: Option<String>,
+    pub proxy: ProxyConfigDTO,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AIModelDTO {
+    pub id: String,
+    pub name: String,
+    pub channel_id: String,
+}
+
 impl Default for OpenAIEndpointDTO {
     fn default() -> Self {
         Self {
@@ -80,7 +99,13 @@ pub struct AppConfig {
     pub microsoft_api_key: Option<String>,
     pub microsoft_region: Option<String>,
     pub microsoft_proxy: ProxyConfigDTO,
-    // Multiple OpenAI endpoints
+    // AI Channels and Models
+    #[serde(default)]
+    pub ai_channels: Vec<AIChannelDTO>,
+    #[serde(default)]
+    pub ai_models: Vec<AIModelDTO>,
+    // Legacy support (optional, can be ignored)
+    #[serde(default, skip_serializing)]
     pub openai_endpoints: Vec<OpenAIEndpointDTO>,
     /// Window background opacity (0.1 to 1.0)
     #[serde(default = "default_opacity")]
@@ -143,13 +168,15 @@ impl Default for AppConfig {
             hide_system_window: true,
             always_on_top: false,
             include_microphone: false,
-            summary_provider: "openai:default".to_string(),
+            summary_provider: String::new(),
             summary_prompt: None,
             google_proxy: ProxyConfigDTO::default(),
             microsoft_api_key: None,
             microsoft_region: None,
             microsoft_proxy: ProxyConfigDTO::default(),
-            openai_endpoints: vec![OpenAIEndpointDTO::default()],
+            ai_channels: vec![],
+            ai_models: vec![],
+            openai_endpoints: vec![],
             opacity: 1.0,
             openai_context_count: 2,
             language: "en".to_string(),
@@ -259,9 +286,9 @@ async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String
 }
 
 #[tauri::command]
-async fn fetch_copilot_models_command() -> Result<Vec<CopilotModel>, String> {
+async fn fetch_copilot_models_command(token: String) -> Result<Vec<CopilotModel>, String> {
     let svc = get_or_init_translation_service()?;
-    svc.fetch_copilot_models().await.map_err(|e| e.to_string())
+    svc.fetch_copilot_models(&token).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -341,16 +368,56 @@ fn load_config_from_file() -> Option<AppConfig> {
 }
 
 fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
+    // Determine provider and potential Copilot model override
+    let mut copilot_model_override = None;
+
     let provider = if config.provider == "google" {
         TranslationProvider::Google
     } else if config.provider == "microsoft" {
         TranslationProvider::Microsoft
+    } else if config.provider == "copilot" {
+        TranslationProvider::Copilot
     } else if config.provider.starts_with("openai:") {
         let endpoint_id = config.provider.strip_prefix("openai:").unwrap_or("default");
         TranslationProvider::OpenAI(endpoint_id.to_string())
     } else {
-        TranslationProvider::Google
+        // Check if provider string is a Model ID
+        if let Some(model) = config.ai_models.iter().find(|m| m.id == config.provider) {
+            if let Some(channel) = config.ai_channels.iter().find(|c| c.id == model.channel_id) {
+                if channel.channel_type == "copilot" {
+                    copilot_model_override = Some(model.name.clone());
+                    TranslationProvider::Copilot
+                } else {
+                    // It's an OpenAI model, treat ID as endpoint ID
+                    TranslationProvider::OpenAI(model.id.clone())
+                }
+            } else {
+                TranslationProvider::Google
+            }
+        } else {
+            TranslationProvider::Google
+        }
     };
+
+    // Convert AI Models (OpenAI type) to OpenAIEndpoints
+    let openai_endpoints = config.ai_models.iter().filter_map(|m| {
+        let channel = config.ai_channels.iter().find(|c| c.id == m.channel_id)?;
+        if channel.channel_type == "openai" {
+            Some(OpenAIEndpoint {
+                id: m.id.clone(),
+                name: m.name.clone(), // Use model name as endpoint name for logs
+                api_key: channel.api_key.clone().unwrap_or_default(),
+                base_url: channel.base_url.clone().unwrap_or_default(),
+                model: m.name.clone(),
+                proxy: ProxyConfig {
+                    url: channel.proxy.url.clone(),
+                    enabled: channel.proxy.enabled,
+                },
+            })
+        } else {
+            None
+        }
+    }).collect();
 
     TranslationConfig {
         provider,
@@ -367,20 +434,10 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
             url: config.microsoft_proxy.url.clone(),
             enabled: config.microsoft_proxy.enabled,
         },
-        openai_endpoints: config.openai_endpoints.iter().map(|e| OpenAIEndpoint {
-            id: e.id.clone(),
-            name: e.name.clone(),
-            api_key: e.api_key.clone(),
-            base_url: e.base_url.clone(),
-            model: e.model.clone(),
-            proxy: ProxyConfig {
-                url: e.proxy.url.clone(),
-                enabled: e.proxy.enabled,
-            },
-        }).collect(),
+        openai_endpoints,
         max_concurrent_translations: config.max_concurrent_translations,
         github_token: config.github_token.clone(),
-        copilot_model: config.copilot_model.clone(),
+        copilot_model: copilot_model_override.unwrap_or(config.copilot_model.clone()),
     }
 }
 
@@ -761,6 +818,11 @@ fn delete_session_data(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn delete_all_sessions_command() -> Result<(), String> {
+    storage::delete_all_sessions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn toggle_livecaptions_visibility() -> Result<(), String> {
     let sender = CAPTION_COMMAND_SENDER.lock().unwrap();
     if let Some(tx) = &*sender {
@@ -801,6 +863,7 @@ pub fn run() {
             load_session_data,
             get_sessions,
             delete_session_data,
+            delete_all_sessions_command,
             start_copilot_auth,
             poll_copilot_token,
             fetch_copilot_models_command

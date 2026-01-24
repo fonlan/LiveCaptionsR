@@ -10,12 +10,12 @@ import Markdown from 'react-markdown';
 import "./App.css";
 import { 
   AppConfig, 
+  AIModel,
+  CopilotModel,
   DEFAULT_CONFIG, 
-  DEFAULT_OPENAI_ENDPOINT, 
   DEFAULT_PROXY,
   DEFAULT_SUMMARY_PROMPT,
   LANGUAGES, 
-  OpenAIEndpoint, 
   ProxyConfig, 
   RawCaption, 
   SentenceCard, 
@@ -23,7 +23,8 @@ import {
   SessionMetadata, 
   TeamsWindowInfo,
   Toast,
-  CopilotModel,
+  AIChannel,
+  AIChannelType,
 } from "./types";
 import { 
   IconCheck, 
@@ -44,7 +45,6 @@ import {
   IconWindowClose,
   IconEye,
   IconEyeOff,
-  IconRefreshCw,
   IconUser,
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
@@ -94,6 +94,7 @@ function App() {
   const [teamsWindows, setTeamsWindows] = useState<TeamsWindowInfo[]>([]);
   const [isScanningTeams, setIsScanningTeams] = useState(false);
   const [isDeviceAuthOpen, setDeviceAuthOpen] = useState(false);
+  const [authChannelId, setAuthChannelId] = useState<string | null>(null);
   
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -183,7 +184,7 @@ function App() {
 
   const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent selection
-    if (!await tauriConfirm("Are you sure you want to delete this session?", { title: "Delete Session", kind: 'warning' })) return;
+    if (!await tauriConfirm(t("session.deleteConfirm"), { title: "Delete Session", kind: 'warning' })) return;
     
     try {
       await invoke("delete_session_data", { id });
@@ -191,14 +192,40 @@ function App() {
       if (activeSessionId === id) {
         setActiveSessionId(null);
         setActiveSessionName("");
+        setActiveSessionCreatedAt(0);
         setCards([]);
         setTempTranslations({}); // Clear temp translations
         lastProcessedCardRef.current = null;
+        setPartialText("");
       }
-      addToast('success', "Session deleted");
+      addToast('success', t("session.deleted"));
     } catch (err) {
       console.error("Failed to delete session:", err);
-      addToast('error', "Failed to delete session");
+      addToast('error', t("session.failedToDelete"));
+    }
+  };
+
+  const handleClearAllSessions = async () => {
+    if (sessions.length === 0) return;
+    if (!await tauriConfirm(t("session.clearAllConfirm"), { title: "Clear All Sessions", kind: 'warning' })) return;
+
+    try {
+      await invoke("delete_all_sessions_command");
+      await refreshSessionList();
+      
+      // Reset current session state
+      setActiveSessionId(null);
+      setActiveSessionName("");
+      setActiveSessionCreatedAt(0);
+      setCards([]);
+      setTempTranslations({});
+      lastProcessedCardRef.current = null;
+      setPartialText("");
+      
+      addToast('success', t("session.deleted"));
+    } catch (e) {
+      console.error("Failed to clear all sessions:", e);
+      addToast('error', "Failed to clear sessions");
     }
   };
 
@@ -278,7 +305,6 @@ function App() {
             summary_prompt: savedConfig.summary_prompt || DEFAULT_SUMMARY_PROMPT, // Ensure default prompt if empty
             google_proxy: savedConfig.google_proxy || DEFAULT_PROXY,
             microsoft_proxy: savedConfig.microsoft_proxy || DEFAULT_PROXY,
-            openai_endpoints: savedConfig.openai_endpoints?.length ? savedConfig.openai_endpoints : [DEFAULT_OPENAI_ENDPOINT],
           });
         }
         const running = await invoke<boolean>("is_watcher_running");
@@ -737,6 +763,7 @@ function App() {
           currentId={activeSessionId}
           onSelect={handleSelectSession}
           onDelete={handleDeleteSession}
+          onClearAll={handleClearAllSessions}
           isOpen={isSidebarOpen} 
         />
 
@@ -968,7 +995,7 @@ function App() {
             </button>
           </header>
           <div className="settings-content">
-            <SettingsForm config={config} onSave={saveConfig} onStartCopilotAuth={() => setDeviceAuthOpen(true)} />
+            <SettingsForm config={config} onSave={saveConfig} onStartCopilotAuth={() => setDeviceAuthOpen(true)} addToast={addToast} />
           </div>
         </div>
       </div>
@@ -976,11 +1003,17 @@ function App() {
       {isDeviceAuthOpen && (
         <DeviceAuthModal 
           isOpen={isDeviceAuthOpen}
-          onClose={() => setDeviceAuthOpen(false)}
+          onClose={() => { setDeviceAuthOpen(false); setAuthChannelId(null); }}
           onSuccess={(token) => {
-            setConfig(prev => ({ ...prev, github_token: token }));
-            saveConfig({ ...config, github_token: token });
+            if (authChannelId) {
+                const newConfig = {
+                    ...config,
+                    ai_channels: config.ai_channels.map(c => c.id === authChannelId ? { ...c, token } : c)
+                };
+                saveConfig(newConfig);
+            }
             setDeviceAuthOpen(false);
+            setAuthChannelId(null);
           }}
         />
       )}
@@ -1205,28 +1238,23 @@ function TranslateModal({
   const { t } = useTranslation();
   const [selectedLang, setSelectedLang] = useState<string>(currentTargetLang);
   const [selectedProvider, setSelectedProvider] = useState<string>('google');
-  const [selectedEndpointId, setSelectedEndpointId] = useState<string>('default');
 
   useEffect(() => {
     if (isOpen) {
       setSelectedLang(currentTargetLang);
       // Initialize from current config
-      if (config.provider.startsWith('openai:')) {
-          setSelectedProvider('openai');
-          setSelectedEndpointId(config.provider.slice(7) || 'default');
-      } else {
-          setSelectedProvider(config.provider);
-      }
+      setSelectedProvider(config.provider);
     }
   }, [isOpen, currentTargetLang, config]);
 
   const handleTranslate = () => {
-    let providerString = selectedProvider;
-    if (selectedProvider === 'openai') {
-        providerString = `openai:${selectedEndpointId}`;
-    }
-    onTranslate(selectedLang, providerString);
+    onTranslate(selectedLang, selectedProvider);
     onClose();
+  };
+
+  const getProviderLabel = (model: AIModel) => {
+    const channel = config.ai_channels.find(c => c.id === model.channel_id);
+    return `${model.name} (${channel?.name || 'Unknown'})`;
   };
 
   if (!isOpen) return null;
@@ -1263,40 +1291,13 @@ function TranslateModal({
             >
               <option value="google">{t("settings.translation.google")}</option>
               <option value="microsoft">{t("settings.translation.microsoft")}</option>
-              <option value="openai">{t("settings.translation.openai")}</option>
-              <option value="copilot">GitHub Copilot</option>
+              {config.ai_models.map(model => (
+                <option key={model.id} value={model.id}>
+                    {getProviderLabel(model)}
+                </option>
+              ))}
             </select>
           </div>
-
-          {/* OpenAI Endpoint Selection */}
-          {selectedProvider === 'openai' && config.openai_endpoints.length > 1 && (
-            <div className="form-group" style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-primary)', fontWeight: 500 }}>
-                {t("settings.translation.endpoint")}
-              </label>
-              <select
-                value={selectedEndpointId}
-                onChange={e => setSelectedEndpointId(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  background: 'var(--bg-input)',
-                  color: 'var(--text-primary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  outline: 'none',
-                  cursor: 'pointer'
-                }}
-              >
-                {config.openai_endpoints.map(ep => (
-                  <option key={ep.id} value={ep.id}>
-                    {ep.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
 
           <div className="form-group" style={{ marginBottom: '20px' }}>
             <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-primary)', fontWeight: 500 }}>
@@ -1494,101 +1495,249 @@ function TeamsSelectionModal({
   );
 }
 
+// --- Channels Tab ---
+function ChannelsTab({ channels, onChange, onAuth }: { channels: AIChannel[]; onChange: (channels: AIChannel[]) => void; onAuth: (id: string) => void }) {
+  const { t } = useTranslation();
+
+  const addChannel = () => {
+    const newChannel: AIChannel = {
+      id: generateId(),
+      type: 'openai',
+      name: 'New Channel',
+      api_key: '',
+      base_url: 'https://api.openai.com/v1',
+      proxy: { url: '', enabled: false }
+    };
+    onChange([...channels, newChannel]);
+  };
+
+  const updateChannel = (id: string, updates: Partial<AIChannel>) => {
+    onChange(channels.map(c => c.id === id ? { ...c, ...updates } : c));
+  };
+
+  const removeChannel = (id: string) => {
+    onChange(channels.filter(c => c.id !== id));
+  };
+
+  return (
+    <div className="tab-panel">
+      <div className="divider">
+        {t("settings.channels.title")}
+        <button className="btn-add-endpoint" onClick={addChannel} title={t("settings.channels.add")}>
+          <IconPlus />
+        </button>
+      </div>
+      <div className="channels-list">
+        {channels.map((channel) => (
+          <div key={channel.id} className="endpoint-card">
+             <div className="endpoint-header">
+                <input 
+                  value={channel.name} 
+                  onChange={e => updateChannel(channel.id, { name: e.target.value })}
+                  className="endpoint-name-input"
+                  placeholder={t("settings.channels.namePlaceholder")}
+                />
+                {channels.length > 1 && (
+                    <button className="btn-remove-endpoint" onClick={() => removeChannel(channel.id)} title={t("settings.ai.removeEndpoint")}>
+                    <IconMinus />
+                    </button>
+                )}
+             </div>
+             
+             <div className="form-group">
+               <label>{t("settings.channels.type")}</label>
+               <select 
+                 value={channel.type} 
+                 onChange={e => updateChannel(channel.id, { type: e.target.value as AIChannelType })}
+               >
+                 <option value="openai">{t("settings.channels.types.openai")}</option>
+                 <option value="copilot">{t("settings.channels.types.copilot")}</option>
+               </select>
+             </div>
+
+             {channel.type === 'openai' && (
+               <>
+                 <div className="form-group">
+                   <label>{t("settings.translation.apiKey")}</label>
+                   <input type="password" value={channel.api_key || ''} onChange={e => updateChannel(channel.id, { api_key: e.target.value })} />
+                 </div>
+                 <div className="form-group">
+                   <label>{t("settings.ai.baseUrl")}</label>
+                   <input type="text" value={channel.base_url || ''} onChange={e => updateChannel(channel.id, { base_url: e.target.value })} placeholder="https://api.openai.com/v1" />
+                 </div>
+               </>
+             )}
+
+             {channel.type === 'copilot' && (
+               <div className="form-group">
+                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-input)', padding: '10px', borderRadius: '6px' }}>
+                    <span style={{ fontSize: '13px' }}>{channel.token ? t("settings.channels.login.loggedIn") : t("settings.channels.login.notLoggedIn")}</span>
+                    <button 
+                      className={channel.token ? "btn-secondary" : "btn-primary"} 
+                      onClick={() => onAuth(channel.id)}
+                      style={{ padding: '4px 12px', fontSize: '12px', cursor: 'pointer' }}
+                    >
+                      {channel.token ? t("settings.channels.login.relogin") : t("settings.channels.login.button")}
+                    </button>
+                 </div>
+               </div>
+             )}
+
+             <ProxyConfigForm 
+               proxy={channel.proxy} 
+               onChange={p => updateChannel(channel.id, { proxy: p })} 
+               label={t("settings.translation.useProxy")}
+             />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- Models Tab ---
+function ModelsTab({ models, channels, onChange, addToast }: { models: AIModel[]; channels: AIChannel[]; onChange: (models: AIModel[]) => void; addToast: (type: 'success' | 'error', msg: string) => void }) {
+  const { t } = useTranslation();
+  const [fetchedModels, setFetchedModels] = useState<Record<string, CopilotModel[]>>({});
+  const [isFetching, setIsFetching] = useState<Record<string, boolean>>({});
+
+  const addModel = () => {
+    const newModel: AIModel = {
+      id: generateId(),
+      name: 'gpt-4o-mini',
+      channel_id: channels.length > 0 ? channels[0].id : 'default',
+    };
+    onChange([...models, newModel]);
+  };
+
+  const updateModel = (id: string, updates: Partial<AIModel>) => {
+    onChange(models.map(m => m.id === id ? { ...m, ...updates } : m));
+  };
+
+  const removeModel = (id: string) => {
+    onChange(models.filter(m => m.id !== id));
+  };
+
+  const handleFetchModels = async (channelId: string) => {
+    const channel = channels.find(c => c.id === channelId);
+    if (!channel || !channel.token) {
+        addToast('error', t("settings.models.toast.channelNotAuth"));
+        return;
+    }
+
+    setIsFetching(prev => ({ ...prev, [channelId]: true }));
+    try {
+      const result = await invoke<CopilotModel[]>('fetch_copilot_models_command', { token: channel.token });
+      setFetchedModels(prev => ({ ...prev, [channelId]: result }));
+      addToast('success', t("settings.models.toast.fetched", { count: result.length }));
+    } catch (e) {
+      console.error(e);
+      addToast('error', t("settings.models.toast.failed", { error: String(e) }));
+    } finally {
+      setIsFetching(prev => ({ ...prev, [channelId]: false }));
+    }
+  };
+
+  return (
+    <div className="tab-panel">
+      <div className="divider">
+        {t("settings.models.title")}
+        <button className="btn-add-endpoint" onClick={addModel} title={t("settings.models.add")}>
+          <IconPlus />
+        </button>
+      </div>
+      <div className="channels-list">
+        {models.map((model) => {
+          const selectedChannel = channels.find(c => c.id === model.channel_id);
+          const isCopilot = selectedChannel?.type === 'copilot';
+          const channelFetchedModels = isCopilot ? fetchedModels[model.channel_id] : null;
+
+          return (
+            <div key={model.id} className="endpoint-card">
+               <div className="endpoint-header">
+                  <span style={{ fontWeight: 500 }}>{model.name}</span>
+                  {models.length > 1 && (
+                      <button className="btn-remove-endpoint" onClick={() => removeModel(model.id)} title={t("settings.ai.removeEndpoint")}>
+                        <IconMinus />
+                      </button>
+                  )}
+               </div>
+               
+               <div className="form-group">
+                 <label>{t("settings.models.channel")}</label>
+                 <select 
+                   value={model.channel_id} 
+                   onChange={e => updateModel(model.id, { channel_id: e.target.value })}
+                 >
+                   {channels.map(c => (
+                     <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+                   ))}
+                 </select>
+               </div>
+
+               <div className="form-group">
+                 <label>{t("settings.models.name")}</label>
+                 <div style={{ display: 'flex', gap: '8px' }}>
+                    {isCopilot && channelFetchedModels ? (
+                        <select 
+                            value={model.name} 
+                            onChange={e => updateModel(model.id, { name: e.target.value })}
+                            style={{ flex: 1 }}
+                        >
+                            {channelFetchedModels.map(m => (
+                                <option key={m.id} value={m.id}>{m.name} ({m.id})</option>
+                            ))}
+                        </select>
+                    ) : (
+                        <input 
+                            type="text" 
+                            value={model.name} 
+                            onChange={e => updateModel(model.id, { name: e.target.value })}
+                            style={{ flex: 1 }}
+                            placeholder={t("settings.models.placeholder")}
+                        />
+                    )}
+                    
+                    {isCopilot && (
+                        <button 
+                            className="btn-secondary"
+                            onClick={() => handleFetchModels(model.channel_id)}
+                            disabled={isFetching[model.channel_id] || !selectedChannel?.token}
+                            title={!selectedChannel?.token ? t("settings.models.loginFirst") : t("settings.models.fetchTooltip")}
+                            style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center' }}
+                        >
+                            {isFetching[model.channel_id] ? <span className="spinner" style={{width: 12, height: 12, borderWidth: 2}}></span> : <IconRetry size={14} />}
+                            <span style={{ marginLeft: 4 }}>{t("settings.models.fetch")}</span>
+                        </button>
+                    )}
+                 </div>
+               </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // --- Settings Form ---
-function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfig; onSave: (c: AppConfig) => void; onStartCopilotAuth: () => void }) {
+function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config: AppConfig; onSave: (c: AppConfig) => void; onStartCopilotAuth: (id: string) => void; addToast: (type: 'success' | 'error', msg: string) => void }) {
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
-  const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'ai' | 'summary'>('general');
-  const [copilotModels, setCopilotModels] = useState<CopilotModel[]>([]);
-  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'channels' | 'models' | 'summary'>('general');
 
   useEffect(() => {
     setFormData(config);
   }, [config]);
 
-  // Handle immediate language change
   useEffect(() => {
     if (formData.language && i18n.language !== formData.language) {
       i18n.changeLanguage(formData.language);
     }
   }, [formData.language, i18n]);
 
-  const fetchCopilotModels = async () => {
-    if (!formData.github_token) return;
-    setIsLoadingModels(true);
-    try {
-      const models = await invoke<CopilotModel[]>('fetch_copilot_models_command');
-      setCopilotModels(models);
-    } catch (err) {
-      console.error("Failed to fetch Copilot models:", err);
-    } finally {
-      setIsLoadingModels(false);
-    }
-  };
-
-  // Auto-fetch if token exists and models empty
-  useEffect(() => {
-    if (formData.provider === 'copilot' && formData.github_token && copilotModels.length === 0) {
-      fetchCopilotModels();
-    }
-  }, [formData.provider, formData.github_token]);
-
-  const getSelectedProvider = (): { type: string; endpointId?: string } => {
-    if (formData.provider.startsWith('openai:')) {
-      return { type: 'openai', endpointId: formData.provider.slice(7) };
-    }
-    return { type: formData.provider };
-  };
-
-  const setProvider = (type: string, endpointId?: string) => {
-    if (type === 'openai' && endpointId) {
-      setFormData(prev => ({ ...prev, provider: `openai:${endpointId}` }));
-    } else {
-      setFormData(prev => ({ ...prev, provider: type }));
-    }
-  };
-
-  const updateEndpoint = (index: number, updates: Partial<OpenAIEndpoint>) => {
-    const newEndpoints = [...formData.openai_endpoints];
-    newEndpoints[index] = { ...newEndpoints[index], ...updates };
-    setFormData(prev => ({ ...prev, openai_endpoints: newEndpoints }));
-  };
-
-  const addEndpoint = () => {
-    const newId = `endpoint_${Date.now()}`;
-    const newEndpoint: OpenAIEndpoint = {
-      id: newId,
-      name: `Endpoint ${formData.openai_endpoints.length + 1}`,
-      api_key: "",
-      base_url: "https://api.openai.com/v1",
-      model: "gpt-4o-mini",
-      proxy: { url: "", enabled: false },
-    };
-    setFormData(prev => ({ ...prev, openai_endpoints: [...prev.openai_endpoints, newEndpoint] }));
-  };
-
-  const removeEndpoint = (index: number) => {
-    if (formData.openai_endpoints.length <= 1) return;
-    const newEndpoints = formData.openai_endpoints.filter((_, i) => i !== index);
-    setFormData(prev => {
-      const removedId = prev.openai_endpoints[index].id;
-      let newProvider = prev.provider;
-      if (prev.provider === `openai:${removedId}`) {
-        newProvider = `openai:${newEndpoints[0].id}`;
-      }
-      let newSummaryProvider = prev.summary_provider;
-      if (prev.summary_provider === `openai:${removedId}`) {
-        newSummaryProvider = `openai:${newEndpoints[0].id}`;
-      }
-      return { ...prev, openai_endpoints: newEndpoints, provider: newProvider, summary_provider: newSummaryProvider };
-    });
-  };
-
-  const selectedProvider = getSelectedProvider();
-
   const renderGeneralTab = () => (
     <div className="tab-panel">
-       {/* Caption Source */}
        <div className="form-group">
         <label>{t("settings.general.captionSource")}</label>
         <select
@@ -1598,8 +1747,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
           <option value="livecaptions">{t("settings.general.captionSourceLiveCaptions")}</option>
           <option value="teams">{t("settings.general.captionSourceTeams")}</option>
         </select>
-        
-        {/* Teams selection moved to start workflow */}
         {formData.caption_source === 'teams' && (
           <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
             Teams window selection will appear when you click Start.
@@ -1607,8 +1754,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         )}
       </div>
 
-
-       {/* Language Settings */}
        <div className="form-group">
         <label>{t("settings.general.language")}</label>
         <select
@@ -1620,7 +1765,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         </select>
       </div>
 
-       {/* Theme Settings */}
        <div className="form-group">
         <label>{t("settings.general.theme")}</label>
         <select
@@ -1632,7 +1776,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         </select>
       </div>
 
-      {/* Opacity Settings */}
       <div className="form-group">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
           <label>{t("settings.general.backgroundOpacity")}</label>
@@ -1649,7 +1792,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         />
       </div>
 
-      {/* Hide Window & Include Microphone - Only for LiveCaptions */}
       {formData.caption_source !== 'teams' && (
         <>
           <div className="form-group checkbox-group">
@@ -1670,7 +1812,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         </>
       )}
 
-      {/* Always On Top */}
       <div className="form-group checkbox-group">
         <label className="switch">
           <input
@@ -1679,7 +1820,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
             onChange={async e => {
               const checked = e.target.checked;
               setFormData(prev => ({ ...prev, always_on_top: checked }));
-              // Apply immediately for UX
               try {
                 await invoke("set_always_on_top", { alwaysOnTop: checked });
               } catch (err) {
@@ -1696,12 +1836,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
 
   const renderTranslationTab = () => (
     <div className="tab-panel">
-      {/* Enable Translation Toggle */}
       <div className="form-group checkbox-group" style={{ marginBottom: '16px' }}>
         <label className="switch">
           <input
             type="checkbox"
-            checked={formData.translation_enabled !== false} // Default to true if undefined
+            checked={formData.translation_enabled !== false}
             onChange={e => setFormData(prev => ({ ...prev, translation_enabled: e.target.checked }))}
           />
           <span className="slider round"></span>
@@ -1709,7 +1848,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         <span>{t("settings.translation.enableTranslation")}</span>
       </div>
 
-      {/* Max Concurrent Translations */}
       <div className="form-group">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
           <label>{t("settings.translation.maxConcurrent")}</label>
@@ -1726,7 +1864,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         />
       </div>
 
-      {/* Language Settings */}
       <div className="form-row">
         <div className="form-group">
           <label>{t("settings.translation.sourceLanguage")}</label>
@@ -1756,181 +1893,46 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         </div>
       </div>
 
-      {/* Provider Selection */}
       <div className="form-group">
         <label>{t("settings.translation.provider")}</label>
         <select
-          value={selectedProvider.type === 'openai' ? 'openai' : formData.provider}
-          onChange={e => {
-            const val = e.target.value;
-            if (val === 'openai') {
-              setProvider('openai', formData.openai_endpoints[0]?.id || 'default');
-            } else {
-              setProvider(val);
-            }
-          }}
+          value={formData.provider}
+          onChange={e => setFormData(prev => ({ ...prev, provider: e.target.value }))}
         >
           <option value="google">{t("settings.translation.google")}</option>
           <option value="microsoft">{t("settings.translation.microsoft")}</option>
-          <option value="openai">{t("settings.translation.openai")}</option>
-          <option value="copilot">GitHub Copilot</option>
+          {formData.ai_models.map(model => {
+             const channel = formData.ai_channels.find(c => c.id === model.channel_id);
+             return (
+               <option key={model.id} value={model.id}>
+                 {model.name} ({channel?.name || 'Unknown'})
+               </option>
+             );
+          })}
         </select>
       </div>
 
-      {/* Copilot Auth */}
-      {formData.provider === 'copilot' && (
-        <div className="form-group" style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>GitHub Copilot</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                  {formData.github_token ? "Logged in" : "Not logged in"}
-                </div>
+      {(() => {
+          const selectedModel = formData.ai_models.find(m => m.id === formData.provider);
+          const selectedChannel = selectedModel ? formData.ai_channels.find(c => c.id === selectedModel.channel_id) : null;
+          const isOpenAI = (selectedChannel?.type === 'openai') || formData.provider.startsWith('openai:');
+          
+          return isOpenAI && (
+            <div className="endpoint-card" style={{ marginTop: '0px' }}>
+              <div className="form-group">
+                <label>{t("settings.translation.contextMemory")}</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="10"
+                  value={formData.openai_context_count ?? 2}
+                  onChange={e => setFormData(prev => ({ ...prev, openai_context_count: parseInt(e.target.value) }))}
+                />
               </div>
-              {formData.github_token ? (
-                <button 
-                  className="btn-secondary"
-                  onClick={() => setFormData(prev => ({ ...prev, github_token: null }))}
-                  style={{ fontSize: '13px', padding: '6px 12px', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
-                >
-                  Logout
-                </button>
-              ) : (
-                <button 
-                  className="btn-primary"
-                  onClick={onStartCopilotAuth}
-                  style={{ fontSize: '13px', padding: '6px 12px', background: '#2da44e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
-                >
-                  Login with GitHub
-                </button>
-              )}
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
-              Authenticate with your GitHub account to use Copilot models.
-            </div>
-            
-            <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <label style={{ display: 'block', color: 'var(--text-primary)', fontWeight: 500, fontSize: '13px' }}>
-                    Model
-                  </label>
-                  <button 
-                    onClick={fetchCopilotModels}
-                    disabled={isLoadingModels || !formData.github_token}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--primary)',
-                      cursor: isLoadingModels || !formData.github_token ? 'default' : 'pointer',
-                      fontSize: '11px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      opacity: isLoadingModels || !formData.github_token ? 0.5 : 1
-                    }}
-                    title="Refresh models"
-                  >
-                     <IconRefreshCw className={isLoadingModels ? "spin" : ""} size={12} />
-                     <span style={{ marginLeft: '4px' }}>Refresh</span>
-                  </button>
-                </div>
-                <select
-                  value={formData.copilot_model || 'gpt-4'}
-                  onChange={e => setFormData(prev => ({ ...prev, copilot_model: e.target.value }))}
-                  style={{
-                    width: '100%',
-                    padding: '8px',
-                    background: 'var(--bg-input)',
-                    color: 'var(--text-primary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '6px',
-                    fontSize: '13px',
-                    outline: 'none',
-                    cursor: 'pointer'
-                  }}
-                >
-                  {copilotModels.length > 0 ? (
-                    copilotModels.map(model => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))
-                  ) : (
-                    <>
-                      <option value="gpt-4">GPT-4 (Default)</option>
-                      <option value="gpt-4o">GPT-4o</option>
-                      <option value="claude-3.5-sonnet">Claude 3.5 Sonnet</option>
-                      <option value="o1">o1-preview</option>
-                      <option value="o1-mini">o1-mini</option>
-                    </>
-                  )}
-                </select>
-            </div>
-        </div>
-      )}
+          );
+      })()}
 
-      {/* OpenAI Endpoint Selection */}
-      {selectedProvider.type === 'openai' && formData.openai_endpoints.length > 1 && (
-        <div className="form-group">
-          <label>{t("settings.translation.selectEndpoint")}</label>
-          <select
-            value={selectedProvider.endpointId}
-            onChange={e => setProvider('openai', e.target.value)}
-          >
-            {formData.openai_endpoints.map(ep => (
-              <option key={ep.id} value={ep.id}>{ep.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {/* OpenAI Context Count */}
-      {selectedProvider.type === 'openai' && (
-        <div className="endpoint-card" style={{ marginTop: '0px' }}>
-          <div className="form-group">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-              <label style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{t("settings.translation.contextMemory")}</label>
-              <span style={{
-                color: 'var(--primary)',
-                background: 'var(--bg-input)',
-                border: '1px solid var(--border-color)',
-                padding: '2px 8px',
-                borderRadius: '4px',
-                fontSize: '12px',
-                fontWeight: 600,
-                minWidth: '100px',
-                textAlign: 'center'
-              }}>
-                {formData.openai_context_count ?? 2} {t("settings.translation.contextMemoryUnit")}
-              </span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="10"
-              step="1"
-              value={formData.openai_context_count ?? 2}
-              onChange={e => setFormData(prev => ({ ...prev, openai_context_count: parseInt(e.target.value) }))}
-              style={{ 
-                width: '100%', 
-                accentColor: 'var(--primary)',
-                cursor: 'pointer',
-                marginTop: '8px',
-                marginBottom: '8px'
-              }}
-            />
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.4' }}>
-              {t("settings.translation.contextMemoryNote")}
-              { (formData.openai_context_count ?? 2) > 4 &&
-                <span style={{ color: 'var(--warning)', marginLeft: '6px' }}>
-                  {t("settings.translation.contextMemoryWarning")}
-                </span>
-              }
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Google Settings */}
       {formData.provider === 'google' && (
         <>
           <div className="divider">{t("settings.translation.googleSettings")}</div>
@@ -1942,7 +1944,6 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
         </>
       )}
 
-      {/* Microsoft Settings */}
       {formData.provider === 'microsoft' && (
         <>
           <div className="divider">{t("settings.translation.microsoftSettings")}</div>
@@ -1952,7 +1953,7 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
           </div>
           <div className="form-group">
             <label>{t("settings.translation.region")}</label>
-            <input type="text" value={formData.microsoft_region || ''} onChange={e => setFormData(prev => ({ ...prev, microsoft_region: e.target.value }))} placeholder={t("settings.translation.regionPlaceholder")} />
+            <input type="text" value={formData.microsoft_region || ''} onChange={e => setFormData(prev => ({ ...prev, microsoft_region: e.target.value }))} />
           </div>
           <ProxyConfigForm
             proxy={formData.microsoft_proxy}
@@ -1964,94 +1965,32 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
     </div>
   );
 
-  const renderAIConfigTab = () => (
-    <div className="tab-panel">
-      <div className="divider">
-        {t("settings.ai.title")}
-        <button className="btn-add-endpoint" onClick={addEndpoint} title={t("settings.ai.addEndpoint")}>
-          <IconPlus />
-        </button>
-      </div>
-      {formData.openai_endpoints.map((ep, idx) => (
-        <div key={ep.id} className="endpoint-card">
-          <div className="endpoint-header">
-            <input
-              type="text"
-              value={ep.name}
-              onChange={e => updateEndpoint(idx, { name: e.target.value })}
-              className="endpoint-name-input"
-              placeholder={t("settings.ai.endpointNamePlaceholder")}
-            />
-            {formData.openai_endpoints.length > 1 && (
-              <button className="btn-remove-endpoint" onClick={() => removeEndpoint(idx)} title={t("settings.ai.removeEndpoint")}>
-                <IconMinus />
-              </button>
-            )}
-          </div>
-          <div className="form-group">
-            <label>{t("settings.translation.apiKey")}</label>
-            <input type="password" value={ep.api_key} onChange={e => updateEndpoint(idx, { api_key: e.target.value })} />
-          </div>
-          <div className="form-group">
-            <label>{t("settings.ai.baseUrl")}</label>
-            <input type="text" value={ep.base_url} onChange={e => updateEndpoint(idx, { base_url: e.target.value })} placeholder={t("settings.ai.baseUrlPlaceholder")} />
-          </div>
-          <div className="form-group">
-            <label>{t("settings.ai.model")}</label>
-            <input type="text" value={ep.model} onChange={e => updateEndpoint(idx, { model: e.target.value })} placeholder={t("settings.ai.modelPlaceholder")} />
-          </div>
-          <ProxyConfigForm
-            proxy={ep.proxy}
-            onChange={p => updateEndpoint(idx, { proxy: p })}
-            label={t("settings.translation.useProxy")}
-          />
-        </div>
-      ))}
-    </div>
-  );
-
   const renderSummaryTab = () => (
     <div className="tab-panel">
       <div className="form-group">
         <label>{t("settings.summary.provider")}</label>
         <select
-          value={formData.summary_provider || (formData.openai_endpoints[0] ? `openai:${formData.openai_endpoints[0].id}` : '')}
+          value={formData.summary_provider}
           onChange={e => setFormData(prev => ({ ...prev, summary_provider: e.target.value }))}
         >
-          {formData.openai_endpoints.map(ep => (
-            <option key={ep.id} value={`openai:${ep.id}`}>
-              {ep.name} ({ep.model})
-            </option>
-          ))}
+          <option value="">{t("settings.summary.selectProvider")}</option>
+          {formData.ai_models.map(model => {
+             const channel = formData.ai_channels.find(c => c.id === model.channel_id);
+             return (
+               <option key={model.id} value={model.id}>
+                 {model.name} ({channel?.name || 'Unknown'})
+               </option>
+             );
+          })}
         </select>
-        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
-          {t("settings.summary.description")}
-        </div>
       </div>
-
       <div className="form-group">
         <label>{t("settings.summary.prompt")}</label>
         <textarea
+          className="summary-prompt-textarea"
           value={formData.summary_prompt || ''}
           onChange={e => setFormData(prev => ({ ...prev, summary_prompt: e.target.value }))}
-          placeholder={t("settings.summary.promptPlaceholder")}
           rows={10}
-          style={{ 
-            width: '100%', 
-            resize: 'vertical', 
-            fontFamily: 'inherit',
-            background: 'var(--bg-input)',
-            color: 'var(--text-primary)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '6px',
-            padding: '10px 12px',
-            fontSize: '14px',
-            outline: 'none',
-            transition: 'border-color 0.2s',
-            lineHeight: '1.5'
-          }}
-          onFocus={e => e.target.style.borderColor = 'var(--primary)'}
-          onBlur={e => e.target.style.borderColor = 'var(--border-color)'}
         />
       </div>
     </div>
@@ -2059,43 +1998,35 @@ function SettingsForm({ config, onSave, onStartCopilotAuth }: { config: AppConfi
 
   return (
     <div className="form-stack">
-      {/* Tabs */}
       <div className="settings-tabs">
-        <button
-          className={`tab-btn ${activeTab === 'general' ? 'active' : ''}`}
-          onClick={() => setActiveTab('general')}
-        >
-          {t("settings.tabs.general")}
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'translation' ? 'active' : ''}`}
-          onClick={() => setActiveTab('translation')}
-        >
-          {t("settings.tabs.translation")}
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('ai')}
-        >
-          {t("settings.tabs.ai")}
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'summary' ? 'active' : ''}`}
-          onClick={() => setActiveTab('summary')}
-        >
-          {t("settings.tabs.summary")}
-        </button>
+        <button className={`tab-btn ${activeTab === 'general' ? 'active' : ''}`} onClick={() => setActiveTab('general')}>{t("settings.tabs.general")}</button>
+        <button className={`tab-btn ${activeTab === 'translation' ? 'active' : ''}`} onClick={() => setActiveTab('translation')}>{t("settings.tabs.translation")}</button>
+        <button className={`tab-btn ${activeTab === 'channels' ? 'active' : ''}`} onClick={() => setActiveTab('channels')}>{t("settings.tabs.channels")}</button>
+        <button className={`tab-btn ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')}>{t("settings.tabs.models")}</button>
+        <button className={`tab-btn ${activeTab === 'summary' ? 'active' : ''}`} onClick={() => setActiveTab('summary')}>{t("settings.tabs.summary")}</button>
       </div>
 
-      {/* Tab Content */}
       <div className="tab-content-container" style={{ flex: 1, minHeight: 0 }}>
         {activeTab === 'general' && renderGeneralTab()}
         {activeTab === 'translation' && renderTranslationTab()}
-        {activeTab === 'ai' && renderAIConfigTab()}
+        {activeTab === 'channels' && (
+            <ChannelsTab 
+                channels={formData.ai_channels} 
+                onChange={channels => setFormData({ ...formData, ai_channels: channels })}
+                onAuth={onStartCopilotAuth}
+            />
+        )}
+        {activeTab === 'models' && (
+            <ModelsTab 
+                models={formData.ai_models}
+                channels={formData.ai_channels}
+                onChange={models => setFormData({ ...formData, ai_models: models })}
+                addToast={addToast}
+            />
+        )}
         {activeTab === 'summary' && renderSummaryTab()}
       </div>
 
-      {/* Save Button */}
       <div className="form-actions" style={{ marginTop: 'auto', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
         <button className="btn-save" onClick={() => onSave(formData)}>
           <IconCheck /> {t("settings.save")}
@@ -2117,6 +2048,7 @@ function DeviceAuthModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onCl
   const [authData, setAuthData] = useState<DeviceAuthData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPolling, setIsPolling] = useState(false);
+  const { t } = useTranslation();
 
   useEffect(() => {
     if (isOpen && !authData && !isPolling) {
@@ -2164,19 +2096,19 @@ function DeviceAuthModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onCl
     <div className="settings-overlay open" onClick={onClose}>
       <div className="settings-drawer" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px', width: '90%' }}>
         <header className="settings-header">
-          <h2>Login to GitHub</h2>
+          <h2>{t("deviceAuth.title")}</h2>
           <button className="btn-icon" onClick={onClose}><IconX /></button>
         </header>
         <div className="settings-content" style={{ padding: '24px', textAlign: 'center' }}>
           {error ? (
             <div style={{ color: 'var(--error)', marginBottom: '16px' }}>
-              Error: {error}
-              <button className="btn-secondary" onClick={startAuth} style={{ marginTop: '12px', width: '100%' }}>Retry</button>
+              {t("deviceAuth.error", { error })}
+              <button className="btn-secondary" onClick={startAuth} style={{ marginTop: '12px', width: '100%' }}>{t("deviceAuth.retry")}</button>
             </div>
           ) : authData ? (
             <>
               <p style={{ marginBottom: '16px', color: 'var(--text-primary)' }}>
-                Please enter the following code at GitHub:
+                {t("deviceAuth.instruction")}
               </p>
               <div style={{ 
                 fontSize: '24px', 
@@ -2192,7 +2124,7 @@ function DeviceAuthModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onCl
                 {authData.user_code}
               </div>
               <div style={{ marginBottom: '24px', fontSize: '12px', color: 'var(--text-muted)' }}>
-                Waiting for authentication...
+                {t("deviceAuth.waiting")}
               </div>
               <a 
                 href={authData.verification_uri} 
@@ -2211,13 +2143,13 @@ function DeviceAuthModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onCl
                   cursor: 'pointer'
                 }}
               >
-                Copy Code & Open GitHub
+                {t("deviceAuth.copyAndOpen")}
               </a>
             </>
           ) : (
             <div className="summary-loading">
                <span className="spinner"></span>
-               <div style={{ marginTop: '12px' }}>Connecting to GitHub...</div>
+               <div style={{ marginTop: '12px' }}>{t("deviceAuth.connecting")}</div>
             </div>
           )}
         </div>

@@ -8,15 +8,26 @@ interface SidebarProps {
   currentId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string, e: React.MouseEvent) => void;
+  onClearAll: () => void;
   isOpen: boolean;
 }
 
-export function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: SidebarProps) {
+export function Sidebar({ sessions, currentId, onSelect, onDelete, onClearAll, isOpen }: SidebarProps) {
   const { t } = useTranslation();
   return (
     <div className={`sidebar ${isOpen ? 'open' : 'closed'}`}>
       <div className="sidebar-header">
         <h3>{t("sidebar.title")}</h3>
+        {sessions.length > 0 && (
+          <button 
+            type="button"
+            className="btn-icon" 
+            onClick={onClearAll} 
+            title={t("sidebar.clearAllTooltip")}
+          >
+            <IconTrash />
+          </button>
+        )}
       </div>
       <div className="session-list">
         {sessions.map(session => (
@@ -41,6 +52,7 @@ export function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: Sid
               </span>
             </div>
             <button
+              type="button"
               className="btn-delete-session"
               onClick={(e) => {
                 e.stopPropagation();
