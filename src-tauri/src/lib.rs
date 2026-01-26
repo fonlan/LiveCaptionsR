@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 mod db;
 mod livecaptions;
+mod logger;
 mod storage;
 mod teams;
 mod translation;
