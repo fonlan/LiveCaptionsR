@@ -473,13 +473,16 @@ impl TranslationService {
                     .unwrap()
                     .as_secs();
                 if now < *expiry {
+                    debug!("Using cached Copilot token (expires in {}s)", expiry - now);
                     return Ok(token.clone());
                 }
             }
         }
 
         // Fetch new token using proxy if configured
+        debug!("Fetching new Copilot token from GitHub");
         let client = build_client(&self.config.copilot_proxy)?;
+        let start = std::time::Instant::now();
         let res = client
             .get("https://api.github.com/copilot_internal/v2/token")
             .header("Authorization", format!("token {}", github_token))
@@ -490,15 +493,30 @@ impl TranslationService {
             .await
             .map_err(|e| {
                 if self.config.copilot_proxy.is_active() {
-                    anyhow::anyhow!("Network request failed via proxy {}: {} (URL: https://api.github.com/copilot_internal/v2/token)", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e)
+                    let err = anyhow::anyhow!("Network request failed via proxy {}: {} (URL: https://api.github.com/copilot_internal/v2/token)", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e);
+                    error!("{}", err);
+                    err
                 } else {
-                    anyhow::anyhow!("Network request failed (no proxy): {} (URL: https://api.github.com/copilot_internal/v2/token)", e)
+                    let err = anyhow::anyhow!("Network request failed (no proxy): {} (URL: https://api.github.com/copilot_internal/v2/token)", e);
+                    error!("{}", err);
+                    err
                 }
             })?;
 
-        if !res.status().is_success() {
-            let status = res.status();
+        let status = res.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot token response"
+        );
+
+        if !status.is_success() {
             let text = res.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                error_body = %text,
+                "Failed to get Copilot token"
+            );
             anyhow::bail!("Copilot token error {}: {}", status, text);
         }
 
@@ -509,13 +527,14 @@ impl TranslationService {
         }
 
         let token_data: CopilotTokenRes = res.json().await.context("Failed to parse Copilot token")?;
-        
+
         // Update cache
         {
             let mut guard = self.copilot_tokens.lock().unwrap();
             guard.insert(github_token.to_string(), (token_data.token.clone(), token_data.expires_at - 60)); // Buffer 60s
         }
 
+        debug!("Successfully obtained new Copilot token");
         Ok(token_data.token)
     }
 
@@ -535,6 +554,16 @@ impl TranslationService {
             temperature: 0.1,
         };
 
+        // Log request details at DEBUG level
+        debug!(
+            method = "POST",
+            url = %url,
+            model = %model,
+            request_body = %serde_json::to_string_pretty(&request).unwrap_or_default(),
+            "Sending Copilot API request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .post(url)
             .header("Authorization", format!("Bearer {}", token))
@@ -547,9 +576,20 @@ impl TranslationService {
             .await
             .context("Failed to send request to Copilot")?;
 
-        if !response.status().is_success() {
-             let status = response.status();
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot API response"
+        );
+
+        if !status.is_success() {
              let text = response.text().await.unwrap_or_default();
+             error!(
+                 status = %status,
+                 error_body = %text,
+                 "Copilot API error"
+             );
              anyhow::bail!("Copilot API error {}: {}", status, text);
         }
 
