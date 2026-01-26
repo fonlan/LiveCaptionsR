@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tokio::sync::Semaphore;
+use tracing::{debug, error, info};
 
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -165,6 +166,13 @@ impl TranslationService {
         } else {
             2 // Safety fallback
         };
+
+        info!(
+            provider = ?config.provider,
+            max_concurrent = config.max_concurrent_translations,
+            "Translation service initialized"
+        );
+
         Ok(Self {
             config,
             semaphore: Arc::new(Semaphore::new(max_permits)),
@@ -210,9 +218,34 @@ impl TranslationService {
         };
 
         match &provider {
-            TranslationProvider::Google => self.translate_google(text, target_lang).await,
-            TranslationProvider::Microsoft => self.translate_microsoft(text, target_lang).await,
+            TranslationProvider::Google => {
+                debug!(
+                    provider = "google",
+                    text_len = text.len(),
+                    source_lang = %self.config.source_lang,
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
+                self.translate_google(text, target_lang).await
+            }
+            TranslationProvider::Microsoft => {
+                debug!(
+                    provider = "microsoft",
+                    text_len = text.len(),
+                    source_lang = %self.config.source_lang,
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
+                self.translate_microsoft(text, target_lang).await
+            }
             TranslationProvider::OpenAI(endpoint_id) => {
+                debug!(
+                    provider = "openai",
+                    endpoint_id = %endpoint_id,
+                    text_len = text.len(),
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
                 // Check if this is a Copilot model ID by looking up in ai_models
                 if let Some(model) = self.config.ai_models.iter().find(|m| m.id == *endpoint_id) {
                     if let Some(channel) = self.config.ai_channels.iter().find(|c| c.id == model.channel_id && c.channel_type == "copilot") {
@@ -221,7 +254,15 @@ impl TranslationService {
                 }
                 self.translate_openai(text, endpoint_id, context, target_lang).await
             }
-            TranslationProvider::Copilot => self.translate_copilot(text, context, target_lang, None, None).await,
+            TranslationProvider::Copilot => {
+                debug!(
+                    provider = "copilot",
+                    text_len = text.len(),
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
+                self.translate_copilot(text, context, target_lang, None, None).await
+            }
         }
     }
 
@@ -248,7 +289,7 @@ impl TranslationService {
 
     async fn translate_google(&self, text: &str, target_lang: &str) -> Result<String> {
         let client = build_client(&self.config.google_proxy)?;
-        
+
         let url = format!(
             "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl={}&dt=t&q={}",
             self.config.source_lang,
@@ -256,6 +297,14 @@ impl TranslationService {
             urlencoding::encode(text)
         );
 
+        debug!(
+            method = "GET",
+            url = %url,
+            text_preview = %text.chars().take(100).collect::<String>(),
+            "Sending Google Translate request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .get(&url)
             .header("User-Agent", "Mozilla/5.0")
@@ -263,9 +312,31 @@ impl TranslationService {
             .await
             .context("Failed to send request to Google Translate")?;
 
-        let json: serde_json::Value = response
-            .json()
-            .await
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Google Translate response"
+        );
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "Google Translate API error"
+            );
+            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+        }
+
+        let body = response.text().await.context("Failed to read response body")?;
+
+        debug!(
+            response_body_preview = %body.chars().take(200).collect::<String>(),
+            "Google Translate response body"
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&body)
             .context("Failed to parse Google Translate response")?;
 
         let mut result = String::new();
@@ -286,7 +357,7 @@ impl TranslationService {
 
     async fn translate_microsoft(&self, text: &str, target_lang: &str) -> Result<String> {
         let client = build_client(&self.config.microsoft_proxy)?;
-        
+
         let api_key = self
             .config
             .microsoft_api_key
@@ -311,6 +382,13 @@ impl TranslationService {
             )
         };
 
+        // Sanitize API key for logging (show only first 4 chars)
+        let api_key_preview = if api_key.len() >= 4 {
+            format!("{}...", &api_key[..4])
+        } else {
+            "***".to_string()
+        };
+
         #[derive(Serialize)]
         struct RequestBody {
             #[serde(rename = "Text")]
@@ -331,6 +409,16 @@ impl TranslationService {
             text: text.to_string(),
         }];
 
+        debug!(
+            method = "POST",
+            url = %url,
+            api_key = %api_key_preview,
+            region = %region,
+            text_preview = %text.chars().take(100).collect::<String>(),
+            "Sending Microsoft Translator request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .post(&url)
             .header("Ocp-Apim-Subscription-Key", api_key)
@@ -341,9 +429,31 @@ impl TranslationService {
             .await
             .context("Failed to send request to Microsoft Translator")?;
 
-        let results: Vec<TranslationResult> = response
-            .json()
-            .await
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Microsoft Translator response"
+        );
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "Microsoft Translator API error"
+            );
+            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+        }
+
+        let response_text = response.text().await.context("Failed to read response body")?;
+
+        debug!(
+            response_body_preview = %response_text.chars().take(200).collect::<String>(),
+            "Microsoft Translator response body"
+        );
+
+        let results: Vec<TranslationResult> = serde_json::from_str(&response_text)
             .context("Failed to parse Microsoft Translator response")?;
 
         results
@@ -699,6 +809,23 @@ impl TranslationService {
             temperature: 0.3,
         };
 
+        // Sanitize API key for logging (show only first 4 chars)
+        let api_key_preview = if endpoint.api_key.len() >= 4 {
+            format!("{}...", &endpoint.api_key[..4])
+        } else {
+            "***".to_string()
+        };
+
+        debug!(
+            method = "POST",
+            url = %url,
+            api_key = %api_key_preview,
+            model = %endpoint.model,
+            request_body = %serde_json::to_string_pretty(&request).unwrap_or_default(),
+            "Sending OpenAI API request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", endpoint.api_key))
@@ -708,9 +835,31 @@ impl TranslationService {
             .await
             .context("Failed to send request to OpenAI")?;
 
-        let result: ChatResponse = response
-            .json()
-            .await
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received OpenAI API response"
+        );
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "OpenAI API error"
+            );
+            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+        }
+
+        let response_text = response.text().await.context("Failed to read response body")?;
+
+        debug!(
+            response_body = %response_text,
+            "OpenAI API response body"
+        );
+
+        let result: ChatResponse = serde_json::from_str(&response_text)
             .context("Failed to parse OpenAI response")?;
 
         result
