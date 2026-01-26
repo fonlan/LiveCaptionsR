@@ -153,7 +153,7 @@
       }
     },
     "summary": {
-      "provider": "摘要服务商 (仅 OpenAI)",
+      "provider": "摘要服务商",
       "selectProvider": "请选择服务商",
       "prompt": "自定义摘要提示词",
       "promptPlaceholder": "留空使用内置提示词",

@@ -2159,15 +2159,14 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
     <div className="form-stack">
       <div className="settings-tabs">
         <button className={`tab-btn ${activeTab === 'general' ? 'active' : ''}`} onClick={() => setActiveTab('general')}>{t("settings.tabs.general")}</button>
-        <button className={`tab-btn ${activeTab === 'translation' ? 'active' : ''}`} onClick={() => setActiveTab('translation')}>{t("settings.tabs.translation")}</button>
         <button className={`tab-btn ${activeTab === 'channels' ? 'active' : ''}`} onClick={() => setActiveTab('channels')}>{t("settings.tabs.channels")}</button>
         <button className={`tab-btn ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')}>{t("settings.tabs.models")}</button>
+        <button className={`tab-btn ${activeTab === 'translation' ? 'active' : ''}`} onClick={() => setActiveTab('translation')}>{t("settings.tabs.translation")}</button>
         <button className={`tab-btn ${activeTab === 'summary' ? 'active' : ''}`} onClick={() => setActiveTab('summary')}>{t("settings.tabs.summary")}</button>
       </div>
 
       <div className="tab-content-container" style={{ flex: 1, minHeight: 0 }}>
         {activeTab === 'general' && renderGeneralTab()}
-        {activeTab === 'translation' && renderTranslationTab()}
         {activeTab === 'channels' && (
             <ChannelsTab
                 channels={formData.ai_channels}
@@ -2191,6 +2190,7 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
                 addToast={addToast}
             />
         )}
+        {activeTab === 'translation' && renderTranslationTab()}
         {activeTab === 'summary' && renderSummaryTab()}
       </div>
     </div>
