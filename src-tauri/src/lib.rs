@@ -128,6 +128,9 @@ pub struct AppConfig {
     /// GitHub Copilot Model
     #[serde(default = "default_copilot_model")]
     pub copilot_model: String,
+    /// Log level: "error", "warn", "info", "debug"
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
 }
 
 fn default_language() -> String {
@@ -158,6 +161,10 @@ fn default_openai_context_count() -> u32 {
     2
 }
 
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -186,6 +193,7 @@ impl Default for AppConfig {
             max_concurrent_translations: 2,
             github_token: None,
             copilot_model: "gpt-4".to_string(),
+            log_level: "info".to_string(),
         }
     }
 }

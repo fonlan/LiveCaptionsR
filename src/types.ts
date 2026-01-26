@@ -98,6 +98,7 @@ export interface AppConfig {
   language: string;
   translation_enabled: boolean;
   max_concurrent_translations: number;
+  log_level: string; // "error" | "warn" | "info" | "debug"
 }
 
 export const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
@@ -127,6 +128,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   language: "en",
   translation_enabled: true,
   max_concurrent_translations: 2,
+  log_level: "info",
 };
 
 export const LANGUAGES = [
