@@ -1851,7 +1851,23 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           <option value="debug">{t("settings.general.logLevelDebug")}</option>
         </select>
         <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-          {t("settings.general.logsLocation")}: %APPDATA%\LiveCaptionsR\logs
+          {t("settings.general.logsLocation")}:{' '}
+          <span
+            style={{
+              color: 'var(--accent)',
+              cursor: 'pointer',
+              textDecoration: 'underline'
+            }}
+            onClick={async () => {
+              try {
+                await invoke('open_log_directory');
+              } catch (err) {
+                console.error('Failed to open log directory:', err);
+              }
+            }}
+          >
+            %APPDATA%\LiveCaptionsR\logs
+          </span>
         </div>
       </div>
 

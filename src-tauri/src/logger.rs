@@ -105,6 +105,41 @@ pub fn update_log_level_command(level: String) -> Result<(), String> {
     }
 }
 
+/// Open log directory in file explorer (Tauri command)
+#[tauri::command]
+pub fn open_log_directory() -> Result<(), String> {
+    let log_dir = dirs::config_dir()
+        .ok_or_else(|| "Could not find config directory".to_string())?
+        .join("LiveCaptionsR")
+        .join("logs");
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open finder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open file manager: {}", e))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

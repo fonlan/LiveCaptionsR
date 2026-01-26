@@ -984,7 +984,8 @@ pub fn run() {
             start_copilot_auth,
             poll_copilot_token,
             fetch_copilot_models_command,
-            logger::update_log_level_command
+            logger::update_log_level_command,
+            logger::open_log_directory
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
