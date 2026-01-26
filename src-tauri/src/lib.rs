@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender};
 use tauri::{AppHandle, Emitter, Manager};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 mod db;
@@ -313,6 +314,13 @@ fn get_config() -> AppConfig {
 
 #[tauri::command]
 fn save_config(app: AppHandle, config: AppConfig) -> Result<String, String> {
+    info!(
+        theme = %config.theme,
+        provider = %config.provider,
+        log_level = %config.log_level,
+        "Saving configuration"
+    );
+
     // Update window always_on_top state
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(config.always_on_top);
@@ -323,7 +331,7 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<String, String> {
         let mut current = APP_CONFIG.lock().unwrap();
         *current = config.clone();
     }
-    
+
     // Recreate translation service with new config
     {
         let translation_config = config_to_translation_config(&config);
@@ -367,14 +375,17 @@ fn save_config_to_file(config: &AppConfig) -> anyhow::Result<()> {
     std::fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("config.json");
     let json = serde_json::to_string_pretty(config)?;
-    std::fs::write(config_path, json)?;
+    std::fs::write(&config_path, json)?;
+    debug!(path = %config_path.display(), "Configuration persisted to file");
     Ok(())
 }
 
 fn load_config_from_file() -> Option<AppConfig> {
     let config_path = dirs::config_dir()?.join("LiveCaptionsR").join("config.json");
-    let json = std::fs::read_to_string(config_path).ok()?;
-    serde_json::from_str(&json).ok()
+    let json = std::fs::read_to_string(&config_path).ok()?;
+    let config: AppConfig = serde_json::from_str(&json).ok()?;
+    info!(path = %config_path.display(), "Configuration loaded from file");
+    Some(config)
 }
 
 fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
@@ -558,6 +569,13 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
         cfg.clone()
     };
 
+    info!(
+        caption_source = %config.caption_source,
+        hide_system_window = config.hide_system_window,
+        include_microphone = config.include_microphone,
+        "Starting caption watcher"
+    );
+
     // Initialize translation service
     {
         let translation_config = config_to_translation_config(&config);
@@ -629,6 +647,7 @@ fn start_livecaptions_loop(
     let mut stream = match livecaptions::CaptionStream::new() {
         Ok(s) => s,
         Err(e) => {
+            error!(error = %e, "Failed to initialize LiveCaptions stream");
             let _ = app.emit("caption-error", format!("Init failed: {}", e));
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -638,14 +657,17 @@ fn start_livecaptions_loop(
 
     match stream.connect(hide_system_window, hwnd_override) {
         Ok(msg) => {
+            info!("LiveCaptions stream connected successfully");
             let _ = app.emit("caption-status", msg);
             if include_microphone {
                 if let Err(e) = stream.configure_microphone(include_microphone) {
+                    error!(error = %e, "Failed to configure microphone");
                     let _ = app.emit("caption-error", format!("Mic config failed: {}", e));
                 }
             }
         }
         Err(e) => {
+            error!(error = %e, "Failed to connect LiveCaptions stream");
             let _ = app.emit("caption-error", e.to_string());
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -686,6 +708,14 @@ fn start_livecaptions_loop(
                 continue;
             }
 
+            // Log caption with preview (truncate to 100 chars)
+            let preview = if text.len() > 100 {
+                format!("{}...", &text[..100])
+            } else {
+                text.clone()
+            };
+            debug!(caption_preview = %preview, "Received LiveCaptions caption");
+
             let timestamp = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -714,6 +744,7 @@ fn start_teams_caption_loop(
     let mut stream = match teams::TeamsCaptionStream::new() {
         Ok(s) => s,
         Err(e) => {
+            error!(error = %e, "Failed to initialize Teams stream");
             let _ = app.emit("caption-error", format!("Teams init failed: {}", e));
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -728,9 +759,11 @@ fn start_teams_caption_loop(
 
     match stream.connect() {
         Ok(msg) => {
+            info!("Teams caption stream connected successfully");
             let _ = app.emit("caption-status", msg);
         }
         Err(e) => {
+            error!(error = %e, "Failed to connect Teams stream");
             let _ = app.emit("caption-error", e.to_string());
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -771,6 +804,14 @@ fn start_teams_caption_loop(
                 let _ = app.emit("caption-error", text);
                 continue;
             }
+
+            // Log caption with preview (truncate to 100 chars)
+            let preview = if text.len() > 100 {
+                format!("{}...", &text[..100])
+            } else {
+                text.clone()
+            };
+            debug!(user = %user.as_deref().unwrap_or("unknown"), caption_preview = %preview, "Received Teams caption");
 
             let timestamp = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -826,6 +867,8 @@ fn create_session(name: String) -> Result<storage::Session, String> {
     let id = Uuid::new_v4().to_string();
     let created_at = now.as_secs();
 
+    info!(session_id = %id, session_name = %name, "Creating new session");
+
     let session = storage::Session {
         id,
         name,
@@ -854,6 +897,7 @@ fn get_sessions() -> Result<Vec<storage::SessionMetadata>, String> {
 
 #[tauri::command]
 fn delete_session_data(id: String) -> Result<(), String> {
+    info!(session_id = %id, "Deleting session");
     storage::delete_session(&id).map_err(|e| e.to_string())
 }
 
