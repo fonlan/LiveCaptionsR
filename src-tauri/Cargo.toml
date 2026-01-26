@@ -39,6 +39,7 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
 ] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 codegen-units = 1 # 最大化优化，牺牲编译速度

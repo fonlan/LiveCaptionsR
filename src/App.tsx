@@ -95,7 +95,7 @@ function App() {
   const [isScanningTeams, setIsScanningTeams] = useState(false);
   const [isDeviceAuthOpen, setDeviceAuthOpen] = useState(false);
   const [authChannelId, setAuthChannelId] = useState<string | null>(null);
-  
+
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
@@ -998,7 +998,7 @@ function App() {
             </button>
           </header>
           <div className="settings-content">
-            <SettingsForm config={config} onSave={saveConfig} onStartCopilotAuth={() => setDeviceAuthOpen(true)} addToast={addToast} />
+            <SettingsForm config={config} onSave={saveConfig} onStartCopilotAuth={(id) => { setAuthChannelId(id); setDeviceAuthOpen(true); }} addToast={addToast} />
           </div>
         </div>
       </div>
@@ -1020,7 +1020,7 @@ function App() {
           }}
         />
       )}
-      
+
       <TeamsSelectionModal
         isOpen={isTeamsModalOpen}
         onClose={() => setIsTeamsModalOpen(false)}
@@ -1619,6 +1619,7 @@ function ModelsTab({ models, channels, onChange, addToast }: { models: AIModel[]
   const { t } = useTranslation();
   const [fetchedModels, setFetchedModels] = useState<Record<string, CopilotModel[]>>({});
   const [isFetching, setIsFetching] = useState<Record<string, boolean>>({});
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
   const addModel = () => {
     const newModel: AIModel = {
@@ -1651,7 +1652,10 @@ function ModelsTab({ models, channels, onChange, addToast }: { models: AIModel[]
       addToast('success', t("settings.models.toast.fetched", { count: result.length }));
     } catch (e) {
       console.error(e);
-      addToast('error', t("settings.models.toast.failed", { error: String(e) }));
+      const errorMsg = String(e);
+      addToast('error', t("settings.models.toast.failed", { error: errorMsg }));
+      // Show detailed error in a dialog
+      setErrorDetails(errorMsg);
     } finally {
       setIsFetching(prev => ({ ...prev, [channelId]: false }));
     }
@@ -1735,6 +1739,12 @@ function ModelsTab({ models, channels, onChange, addToast }: { models: AIModel[]
           );
         })}
       </div>
+
+      <ErrorDetailModal
+        isOpen={errorDetails !== null}
+        onClose={() => setErrorDetails(null)}
+        errorDetails={errorDetails}
+      />
     </div>
   );
 }
@@ -2058,6 +2068,59 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
   );
 }
 
+// --- Error Detail Modal ---
+function ErrorDetailModal({ isOpen, onClose, errorDetails }: { isOpen: boolean; onClose: () => void; errorDetails: string | null }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (errorDetails) {
+      await navigator.clipboard.writeText(errorDetails);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  if (!isOpen || !errorDetails) return null;
+
+  return (
+    <div className="settings-overlay open" onClick={onClose}>
+      <div className="settings-drawer" onClick={e => e.stopPropagation()} style={{ maxWidth: '600px', width: '90%' }}>
+        <header className="settings-header">
+          <h2>Error Details</h2>
+          <button className="btn-icon" onClick={onClose}><IconX /></button>
+        </header>
+        <div className="settings-content" style={{ padding: '24px' }}>
+          <p style={{ marginBottom: '12px', color: 'var(--text-muted)' }}>
+            {t("settings.models.toast.failed", { error: "" }).replace(": undefined", "")}
+          </p>
+          <div style={{
+            background: 'var(--bg-input)',
+            padding: '16px',
+            borderRadius: '8px',
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            maxHeight: '300px',
+            overflow: 'auto',
+            border: '1px solid var(--border-color)'
+          }}>
+            {errorDetails}
+          </div>
+          <div style={{ marginTop: '16px', display: 'flex', gap: '8px' }}>
+            <button className="btn-secondary" onClick={handleCopy} style={{ flex: 1 }}>
+              {copied ? "Copied!" : "Copy Error"}
+            </button>
+            <button className="btn-primary" onClick={onClose} style={{ flex: 1 }}>
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 interface DeviceAuthData {
   device_code: string;

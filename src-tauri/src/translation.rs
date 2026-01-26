@@ -82,10 +82,34 @@ pub struct TranslationConfig {
     pub openai_endpoints: Vec<OpenAIEndpoint>,
     /// Maximum concurrent translation requests
     pub max_concurrent_translations: u32,
-    /// GitHub OAuth Token for Copilot
+    /// GitHub OAuth Token for Copilot (legacy, for backward compatibility)
     pub github_token: Option<String>,
     /// GitHub Copilot Model
     pub copilot_model: String,
+    /// Copilot proxy configuration
+    pub copilot_proxy: ProxyConfig,
+    /// AI channels for Copilot token lookup
+    pub ai_channels: Vec<AIChannel>,
+    /// AI models for model type lookup
+    pub ai_models: Vec<AIModel>,
+}
+
+/// AI Channel for Copilot/OpenAI credentials
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AIChannel {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub channel_type: String,
+    pub token: Option<String>,
+    pub proxy: ProxyConfig,
+}
+
+/// AI Model mapping
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AIModel {
+    pub id: String,
+    pub name: String,
+    pub channel_id: String,
 }
 
 impl Default for TranslationConfig {
@@ -103,6 +127,9 @@ impl Default for TranslationConfig {
             max_concurrent_translations: 2,
             github_token: None,
             copilot_model: "gpt-4".to_string(),
+            copilot_proxy: ProxyConfig::default(),
+            ai_channels: vec![],
+            ai_models: vec![],
         }
     }
 }
@@ -186,9 +213,15 @@ impl TranslationService {
             TranslationProvider::Google => self.translate_google(text, target_lang).await,
             TranslationProvider::Microsoft => self.translate_microsoft(text, target_lang).await,
             TranslationProvider::OpenAI(endpoint_id) => {
+                // Check if this is a Copilot model ID by looking up in ai_models
+                if let Some(model) = self.config.ai_models.iter().find(|m| m.id == *endpoint_id) {
+                    if let Some(channel) = self.config.ai_channels.iter().find(|c| c.id == model.channel_id && c.channel_type == "copilot") {
+                        return self.translate_copilot(text, context, target_lang, channel.token.as_deref(), Some(&model.name)).await;
+                    }
+                }
                 self.translate_openai(text, endpoint_id, context, target_lang).await
             }
-            TranslationProvider::Copilot => self.translate_copilot(text, context, target_lang).await,
+            TranslationProvider::Copilot => self.translate_copilot(text, context, target_lang, None, None).await,
         }
     }
 
@@ -335,16 +368,23 @@ impl TranslationService {
             }
         }
 
-        // Fetch new token
-        let client = reqwest::Client::new();
+        // Fetch new token using proxy if configured
+        let client = build_client(&self.config.copilot_proxy)?;
         let res = client
             .get("https://api.github.com/copilot_internal/v2/token")
             .header("Authorization", format!("token {}", github_token))
             .header("User-Agent", "GitHubCopilot/1.155.0")
             .header("Accept", "application/json")
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
-            .context("Failed to fetch Copilot token")?;
+            .map_err(|e| {
+                if self.config.copilot_proxy.is_active() {
+                    anyhow::anyhow!("Network request failed via proxy {}: {} (URL: https://api.github.com/copilot_internal/v2/token)", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e)
+                } else {
+                    anyhow::anyhow!("Network request failed (no proxy): {} (URL: https://api.github.com/copilot_internal/v2/token)", e)
+                }
+            })?;
 
         if !res.status().is_success() {
             let status = res.status();
@@ -369,14 +409,15 @@ impl TranslationService {
         Ok(token_data.token)
     }
 
-    async fn send_copilot_request(&self, system_prompt: &str, user_content: &str, github_token: &str) -> Result<String> {
+    async fn send_copilot_request(&self, system_prompt: &str, user_content: &str, github_token: &str, model_override: Option<&str>) -> Result<String> {
         let token = self.get_copilot_token(github_token).await?;
-        
-        let client = reqwest::Client::new();
+
+        let client = build_client(&self.config.copilot_proxy)?;
         let url = "https://api.githubcopilot.com/chat/completions";
 
+        let model = model_override.unwrap_or(&self.config.copilot_model);
         let request = ChatRequest {
-            model: self.config.copilot_model.clone(),
+            model: model.to_string(),
             messages: vec![
                 ChatMessage { role: "system".to_string(), content: system_prompt.to_string() },
                 ChatMessage { role: "user".to_string(), content: user_content.to_string() },
@@ -415,31 +456,47 @@ impl TranslationService {
     }
 
     pub async fn fetch_copilot_models(&self, github_token: &str) -> Result<Vec<CopilotModel>> {
-        let token = self.get_copilot_token(github_token).await?;
-        let client = reqwest::Client::new();
-        
+        let token = self.get_copilot_token(github_token).await
+            .map_err(|e| anyhow::anyhow!("Failed to get Copilot token: {}", e))?;
+
+        // Use proxy if configured
+        let client = build_client(&self.config.copilot_proxy)
+            .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
+
         // Try the official endpoint first
         let url = "https://api.githubcopilot.com/models";
-        
+
         let response = client
             .get(url)
             .header("Authorization", format!("Bearer {}", token))
             .header("User-Agent", "GitHubCopilot/1.155.0")
             .header("Copilot-Integration-Id", "vscode-chat")
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
-            .context("Failed to request Copilot models")?;
+            .map_err(|e| {
+                if self.config.copilot_proxy.is_active() {
+                    anyhow::anyhow!("Network request failed via proxy {}: {} (URL: {})", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e, url)
+                } else {
+                    anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url)
+                }
+            })?;
 
         if !response.status().is_success() {
-             anyhow::bail!("Failed to fetch models: {}", response.status());
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to fetch models: {} - {}", status, error_text);
         }
+
+        let response_text = response.text().await.context("Failed to read models response")?;
 
         #[derive(Deserialize, Debug)]
         struct ModelsResponse {
             data: Vec<serde_json::Value>,
         }
 
-        let res: ModelsResponse = response.json().await.context("Failed to parse models response")?;
+        let res: ModelsResponse = serde_json::from_str(&response_text)
+            .with_context(|| format!("Failed to parse models response. Response: {}", response_text))?;
 
         let mut models_map = std::collections::HashMap::new();
 
@@ -449,12 +506,12 @@ impl TranslationService {
                 Some(c) => c,
                 None => continue,
             };
-            
+
             let model_type = match capabilities.get("type").and_then(|t| t.as_str()) {
                 Some(t) => t,
                 None => continue,
             };
-            
+
             if model_type != "chat" {
                 continue;
             }
@@ -482,6 +539,15 @@ impl TranslationService {
             });
         }
 
+        // If no models found, return fallback models
+        if models_map.is_empty() {
+            return Ok(vec![
+                CopilotModel { id: "gpt-4".to_string(), name: "GPT-4".to_string() },
+                CopilotModel { id: "gpt-4o".to_string(), name: "GPT-4o".to_string() },
+                CopilotModel { id: "gpt-4o-mini".to_string(), name: "GPT-4o Mini".to_string() },
+            ]);
+        }
+
         let mut models: Vec<CopilotModel> = models_map.into_values().collect();
         // Sort by ID to ensure stable order
         models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -489,8 +555,9 @@ impl TranslationService {
         Ok(models)
     }
 
-    async fn translate_copilot(&self, text: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
-        let github_token = self.config.github_token.as_ref().context("GitHub Copilot not logged in")?;
+    async fn translate_copilot(&self, text: &str, context: Option<&[String]>, target_lang: &str, github_token: Option<&str>, model_name: Option<&str>) -> Result<String> {
+        let github_token = github_token.or(self.config.github_token.as_deref())
+            .context("GitHub Copilot not logged in")?;
         let source_lang_desc = if self.config.source_lang == "auto" {
             "any language".to_string()
         } else {
@@ -529,7 +596,7 @@ impl TranslationService {
             text.to_string()
         };
 
-        self.send_copilot_request(&system_prompt, &user_content, github_token).await
+        self.send_copilot_request(&system_prompt, &user_content, github_token, model_name).await
     }
 
     async fn translate_openai(&self, text: &str, endpoint_id: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
@@ -684,9 +751,18 @@ impl TranslationService {
             )
         };
 
+        // Check if provider_id is a Copilot model ID
+        if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
+            if let Some(channel) = self.config.ai_channels.iter().find(|c| c.id == model.channel_id && c.channel_type == "copilot") {
+                let github_token = channel.token.as_ref().context("Copilot channel not logged in")?;
+                return self.send_copilot_request(&system_prompt, text, github_token, Some(&model.name)).await;
+            }
+        }
+
+        // Legacy copilot provider
         if provider_id == "copilot" {
             let github_token = self.config.github_token.as_ref().context("GitHub Copilot not logged in")?;
-            return self.send_copilot_request(&system_prompt, text, github_token).await;
+            return self.send_copilot_request(&system_prompt, text, github_token, None).await;
         }
 
         // OpenAI or compatible model

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender};
 use tauri::{AppHandle, Emitter, Manager};
+use uuid::Uuid;
 
 mod db;
 mod livecaptions;
@@ -419,6 +420,33 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         }
     }).collect();
 
+    // Find Copilot proxy from any Copilot channel (for fetching models, token, etc.)
+    let copilot_proxy = config.ai_channels.iter()
+        .find(|c| c.channel_type == "copilot")
+        .map(|c| ProxyConfig {
+            url: c.proxy.url.clone(),
+            enabled: c.proxy.enabled,
+        })
+        .unwrap_or_default();
+
+    // Convert ai_channels to translation service format
+    let ai_channels = config.ai_channels.iter().map(|c| translation::AIChannel {
+        id: c.id.clone(),
+        channel_type: c.channel_type.clone(),
+        token: c.token.clone(),
+        proxy: translation::ProxyConfig {
+            url: c.proxy.url.clone(),
+            enabled: c.proxy.enabled,
+        },
+    }).collect();
+
+    // Convert ai_models to translation service format
+    let ai_models = config.ai_models.iter().map(|m| translation::AIModel {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        channel_id: m.channel_id.clone(),
+    }).collect();
+
     TranslationConfig {
         provider,
         source_lang: config.source_lang.clone(),
@@ -438,6 +466,9 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         max_concurrent_translations: config.max_concurrent_translations,
         github_token: config.github_token.clone(),
         copilot_model: copilot_model_override.unwrap_or(config.copilot_model.clone()),
+        copilot_proxy,
+        ai_channels,
+        ai_models,
     }
 }
 
@@ -783,16 +814,16 @@ fn is_watcher_running() -> bool {
 fn create_session(name: String) -> Result<storage::Session, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let id = format!("{}", now.as_nanos()); // Use nanos for unique ID
+    let id = Uuid::new_v4().to_string();
     let created_at = now.as_secs();
-    
+
     let session = storage::Session {
         id,
         name,
         created_at,
         cards: Vec::new(),
     };
-    
+
     storage::save_session(&session).map_err(|e| e.to_string())?;
     Ok(session)
 }
