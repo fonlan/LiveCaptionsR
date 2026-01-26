@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tokio::sync::Semaphore;
+use tracing::{debug, error, info};
 
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -165,6 +166,13 @@ impl TranslationService {
         } else {
             2 // Safety fallback
         };
+
+        info!(
+            provider = ?config.provider,
+            max_concurrent = config.max_concurrent_translations,
+            "Translation service initialized"
+        );
+
         Ok(Self {
             config,
             semaphore: Arc::new(Semaphore::new(max_permits)),
@@ -210,18 +218,120 @@ impl TranslationService {
         };
 
         match &provider {
-            TranslationProvider::Google => self.translate_google(text, target_lang).await,
-            TranslationProvider::Microsoft => self.translate_microsoft(text, target_lang).await,
+            TranslationProvider::Google => {
+                debug!(
+                    provider = "google",
+                    text_len = text.len(),
+                    source_lang = %self.config.source_lang,
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
+                let result = self.translate_google(text, target_lang).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "google",
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "google",
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
+            }
+            TranslationProvider::Microsoft => {
+                debug!(
+                    provider = "microsoft",
+                    text_len = text.len(),
+                    source_lang = %self.config.source_lang,
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
+                let result = self.translate_microsoft(text, target_lang).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "microsoft",
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "microsoft",
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
+            }
             TranslationProvider::OpenAI(endpoint_id) => {
+                debug!(
+                    provider = "openai",
+                    endpoint_id = %endpoint_id,
+                    text_len = text.len(),
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
                 // Check if this is a Copilot model ID by looking up in ai_models
                 if let Some(model) = self.config.ai_models.iter().find(|m| m.id == *endpoint_id) {
                     if let Some(channel) = self.config.ai_channels.iter().find(|c| c.id == model.channel_id && c.channel_type == "copilot") {
-                        return self.translate_copilot(text, context, target_lang, channel.token.as_deref(), Some(&model.name)).await;
+                        let result = self.translate_copilot(text, context, target_lang, channel.token.as_deref(), Some(&model.name)).await;
+                        match &result {
+                            Ok(translated) => debug!(
+                                provider = "copilot",
+                                model = %model.name,
+                                result_len = translated.len(),
+                                "Translation completed successfully"
+                            ),
+                            Err(e) => error!(
+                                provider = "copilot",
+                                model = %model.name,
+                                error = %e,
+                                "Translation failed"
+                            ),
+                        }
+                        return result;
                     }
                 }
-                self.translate_openai(text, endpoint_id, context, target_lang).await
+                let result = self.translate_openai(text, endpoint_id, context, target_lang).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "openai",
+                        endpoint_id = %endpoint_id,
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "openai",
+                        endpoint_id = %endpoint_id,
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
             }
-            TranslationProvider::Copilot => self.translate_copilot(text, context, target_lang, None, None).await,
+            TranslationProvider::Copilot => {
+                debug!(
+                    provider = "copilot",
+                    text_len = text.len(),
+                    target_lang = %target_lang,
+                    "Starting translation"
+                );
+                let result = self.translate_copilot(text, context, target_lang, None, None).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "copilot",
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "copilot",
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
+            }
         }
     }
 
@@ -248,7 +358,7 @@ impl TranslationService {
 
     async fn translate_google(&self, text: &str, target_lang: &str) -> Result<String> {
         let client = build_client(&self.config.google_proxy)?;
-        
+
         let url = format!(
             "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl={}&dt=t&q={}",
             self.config.source_lang,
@@ -256,6 +366,14 @@ impl TranslationService {
             urlencoding::encode(text)
         );
 
+        debug!(
+            method = "GET",
+            url = %url,
+            text_preview = %text.chars().take(100).collect::<String>(),
+            "Sending Google Translate request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .get(&url)
             .header("User-Agent", "Mozilla/5.0")
@@ -263,9 +381,31 @@ impl TranslationService {
             .await
             .context("Failed to send request to Google Translate")?;
 
-        let json: serde_json::Value = response
-            .json()
-            .await
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Google Translate response"
+        );
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "Google Translate API error"
+            );
+            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+        }
+
+        let body = response.text().await.context("Failed to read response body")?;
+
+        debug!(
+            response_body_preview = %body.chars().take(200).collect::<String>(),
+            "Google Translate response body"
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&body)
             .context("Failed to parse Google Translate response")?;
 
         let mut result = String::new();
@@ -286,7 +426,7 @@ impl TranslationService {
 
     async fn translate_microsoft(&self, text: &str, target_lang: &str) -> Result<String> {
         let client = build_client(&self.config.microsoft_proxy)?;
-        
+
         let api_key = self
             .config
             .microsoft_api_key
@@ -311,6 +451,13 @@ impl TranslationService {
             )
         };
 
+        // Sanitize API key for logging (show only first 4 chars)
+        let api_key_preview = if api_key.len() >= 4 {
+            format!("{}...", &api_key[..4])
+        } else {
+            "***".to_string()
+        };
+
         #[derive(Serialize)]
         struct RequestBody {
             #[serde(rename = "Text")]
@@ -331,6 +478,16 @@ impl TranslationService {
             text: text.to_string(),
         }];
 
+        debug!(
+            method = "POST",
+            url = %url,
+            api_key = %api_key_preview,
+            region = %region,
+            text_preview = %text.chars().take(100).collect::<String>(),
+            "Sending Microsoft Translator request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .post(&url)
             .header("Ocp-Apim-Subscription-Key", api_key)
@@ -341,9 +498,31 @@ impl TranslationService {
             .await
             .context("Failed to send request to Microsoft Translator")?;
 
-        let results: Vec<TranslationResult> = response
-            .json()
-            .await
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Microsoft Translator response"
+        );
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "Microsoft Translator API error"
+            );
+            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+        }
+
+        let response_text = response.text().await.context("Failed to read response body")?;
+
+        debug!(
+            response_body_preview = %response_text.chars().take(200).collect::<String>(),
+            "Microsoft Translator response body"
+        );
+
+        let results: Vec<TranslationResult> = serde_json::from_str(&response_text)
             .context("Failed to parse Microsoft Translator response")?;
 
         results
@@ -363,13 +542,16 @@ impl TranslationService {
                     .unwrap()
                     .as_secs();
                 if now < *expiry {
+                    debug!("Using cached Copilot token (expires in {}s)", expiry - now);
                     return Ok(token.clone());
                 }
             }
         }
 
         // Fetch new token using proxy if configured
+        debug!("Fetching new Copilot token from GitHub");
         let client = build_client(&self.config.copilot_proxy)?;
+        let start = std::time::Instant::now();
         let res = client
             .get("https://api.github.com/copilot_internal/v2/token")
             .header("Authorization", format!("token {}", github_token))
@@ -380,15 +562,30 @@ impl TranslationService {
             .await
             .map_err(|e| {
                 if self.config.copilot_proxy.is_active() {
-                    anyhow::anyhow!("Network request failed via proxy {}: {} (URL: https://api.github.com/copilot_internal/v2/token)", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e)
+                    let err = anyhow::anyhow!("Network request failed via proxy {}: {} (URL: https://api.github.com/copilot_internal/v2/token)", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e);
+                    error!("{}", err);
+                    err
                 } else {
-                    anyhow::anyhow!("Network request failed (no proxy): {} (URL: https://api.github.com/copilot_internal/v2/token)", e)
+                    let err = anyhow::anyhow!("Network request failed (no proxy): {} (URL: https://api.github.com/copilot_internal/v2/token)", e);
+                    error!("{}", err);
+                    err
                 }
             })?;
 
-        if !res.status().is_success() {
-            let status = res.status();
+        let status = res.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot token response"
+        );
+
+        if !status.is_success() {
             let text = res.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                error_body = %text,
+                "Failed to get Copilot token"
+            );
             anyhow::bail!("Copilot token error {}: {}", status, text);
         }
 
@@ -399,13 +596,14 @@ impl TranslationService {
         }
 
         let token_data: CopilotTokenRes = res.json().await.context("Failed to parse Copilot token")?;
-        
+
         // Update cache
         {
             let mut guard = self.copilot_tokens.lock().unwrap();
             guard.insert(github_token.to_string(), (token_data.token.clone(), token_data.expires_at - 60)); // Buffer 60s
         }
 
+        debug!("Successfully obtained new Copilot token");
         Ok(token_data.token)
     }
 
@@ -425,6 +623,16 @@ impl TranslationService {
             temperature: 0.1,
         };
 
+        // Log request details at DEBUG level
+        debug!(
+            method = "POST",
+            url = %url,
+            model = %model,
+            request_body = %serde_json::to_string_pretty(&request).unwrap_or_default(),
+            "Sending Copilot API request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .post(url)
             .header("Authorization", format!("Bearer {}", token))
@@ -437,9 +645,20 @@ impl TranslationService {
             .await
             .context("Failed to send request to Copilot")?;
 
-        if !response.status().is_success() {
-             let status = response.status();
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot API response"
+        );
+
+        if !status.is_success() {
              let text = response.text().await.unwrap_or_default();
+             error!(
+                 status = %status,
+                 error_body = %text,
+                 "Copilot API error"
+             );
              anyhow::bail!("Copilot API error {}: {}", status, text);
         }
 
@@ -456,6 +675,8 @@ impl TranslationService {
     }
 
     pub async fn fetch_copilot_models(&self, github_token: &str) -> Result<Vec<CopilotModel>> {
+        debug!("Fetching Copilot models list");
+
         let token = self.get_copilot_token(github_token).await
             .map_err(|e| anyhow::anyhow!("Failed to get Copilot token: {}", e))?;
 
@@ -466,6 +687,13 @@ impl TranslationService {
         // Try the official endpoint first
         let url = "https://api.githubcopilot.com/models";
 
+        debug!(
+            method = "GET",
+            url = %url,
+            "Sending Copilot models request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .get(url)
             .header("Authorization", format!("Bearer {}", token))
@@ -476,19 +704,39 @@ impl TranslationService {
             .await
             .map_err(|e| {
                 if self.config.copilot_proxy.is_active() {
-                    anyhow::anyhow!("Network request failed via proxy {}: {} (URL: {})", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e, url)
+                    let err = anyhow::anyhow!("Network request failed via proxy {}: {} (URL: {})", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e, url);
+                    error!("{}", err);
+                    err
                 } else {
-                    anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url)
+                    let err = anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url);
+                    error!("{}", err);
+                    err
                 }
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot models response"
+        );
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "Failed to fetch Copilot models"
+            );
             anyhow::bail!("Failed to fetch models: {} - {}", status, error_text);
         }
 
         let response_text = response.text().await.context("Failed to read models response")?;
+
+        debug!(
+            response_body_len = response_text.len(),
+            "Parsing Copilot models response"
+        );
 
         #[derive(Deserialize, Debug)]
         struct ModelsResponse {
@@ -496,7 +744,10 @@ impl TranslationService {
         }
 
         let res: ModelsResponse = serde_json::from_str(&response_text)
-            .with_context(|| format!("Failed to parse models response. Response: {}", response_text))?;
+            .with_context(|| {
+                error!("Failed to parse models JSON: {}", response_text);
+                format!("Failed to parse models response. Response: {}", response_text)
+            })?;
 
         let mut models_map = std::collections::HashMap::new();
 
@@ -541,6 +792,7 @@ impl TranslationService {
 
         // If no models found, return fallback models
         if models_map.is_empty() {
+            info!("No models found in Copilot API response, using fallback models");
             return Ok(vec![
                 CopilotModel { id: "gpt-4".to_string(), name: "GPT-4".to_string() },
                 CopilotModel { id: "gpt-4o".to_string(), name: "GPT-4o".to_string() },
@@ -551,6 +803,12 @@ impl TranslationService {
         let mut models: Vec<CopilotModel> = models_map.into_values().collect();
         // Sort by ID to ensure stable order
         models.sort_by(|a, b| a.id.cmp(&b.id));
+
+        info!(
+            model_count = models.len(),
+            models = ?models.iter().map(|m| &m.id).collect::<Vec<_>>(),
+            "Successfully fetched Copilot models"
+        );
 
         Ok(models)
     }
@@ -699,6 +957,23 @@ impl TranslationService {
             temperature: 0.3,
         };
 
+        // Sanitize API key for logging (show only first 4 chars)
+        let api_key_preview = if endpoint.api_key.len() >= 4 {
+            format!("{}...", &endpoint.api_key[..4])
+        } else {
+            "***".to_string()
+        };
+
+        debug!(
+            method = "POST",
+            url = %url,
+            api_key = %api_key_preview,
+            model = %endpoint.model,
+            request_body = %serde_json::to_string_pretty(&request).unwrap_or_default(),
+            "Sending OpenAI API request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", endpoint.api_key))
@@ -708,9 +983,31 @@ impl TranslationService {
             .await
             .context("Failed to send request to OpenAI")?;
 
-        let result: ChatResponse = response
-            .json()
-            .await
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received OpenAI API response"
+        );
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "OpenAI API error"
+            );
+            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+        }
+
+        let response_text = response.text().await.context("Failed to read response body")?;
+
+        debug!(
+            response_body = %response_text,
+            "OpenAI API response body"
+        );
+
+        let result: ChatResponse = serde_json::from_str(&response_text)
             .context("Failed to parse OpenAI response")?;
 
         result

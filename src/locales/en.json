@@ -72,6 +72,12 @@
       "refresh": "Refresh",
       "teamsNote": "Make sure Teams is running with captions enabled before starting capture.",
       "language": "Language",
+      "logLevel": "Log Level",
+      "logLevelError": "ERROR",
+      "logLevelWarn": "WARN",
+      "logLevelInfo": "INFO",
+      "logLevelDebug": "DEBUG",
+      "logsLocation": "Logs Location",
       "theme": "Theme",
       "themeDark": "Dark",
       "themeLight": "Light",
@@ -170,7 +176,9 @@
     "configSaved": "Configuration saved successfully",
     "configSaveFailed": "Failed to save configuration: {{error}}",
     "copySuccess": "Copied to clipboard",
-    "copyFailed": "Failed to copy"
+    "copyFailed": "Failed to copy",
+    "logLevelUpdated": "Log level updated to {{level}}",
+    "logLevelUpdateFailed": "Failed to update log level: {{error}}"
   },
   "translateSession": {
     "title": "Translate Session",

@@ -1795,6 +1795,33 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
       </div>
 
        <div className="form-group">
+        <label>{t("settings.general.logLevel")}</label>
+        <select
+          value={formData.log_level || 'info'}
+          onChange={async e => {
+            const newLevel = e.target.value;
+            const updatedConfig = { ...formData, log_level: newLevel };
+            setFormData(updatedConfig);
+            try {
+              await invoke("update_log_level_command", { level: newLevel });
+              await onSave(updatedConfig);
+            } catch (err) {
+              console.error("Failed to update log level:", err);
+              addToast('error', t("toast.logLevelUpdateFailed", { error: String(err) }));
+            }
+          }}
+        >
+          <option value="error">{t("settings.general.logLevelError")}</option>
+          <option value="warn">{t("settings.general.logLevelWarn")}</option>
+          <option value="info">{t("settings.general.logLevelInfo")}</option>
+          <option value="debug">{t("settings.general.logLevelDebug")}</option>
+        </select>
+        <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+          {t("settings.general.logsLocation")}: %APPDATA%\LiveCaptionsR\logs
+        </div>
+      </div>
+
+       <div className="form-group">
         <label>{t("settings.general.theme")}</label>
         <select
           value={formData.theme || 'dark'}

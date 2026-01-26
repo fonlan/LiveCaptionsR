@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender};
 use tauri::{AppHandle, Emitter, Manager};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 mod db;
 mod livecaptions;
+mod logger;
 mod storage;
 mod teams;
 mod translation;
@@ -127,6 +129,9 @@ pub struct AppConfig {
     /// GitHub Copilot Model
     #[serde(default = "default_copilot_model")]
     pub copilot_model: String,
+    /// Log level: "error", "warn", "info", "debug"
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
 }
 
 fn default_language() -> String {
@@ -157,6 +162,10 @@ fn default_openai_context_count() -> u32 {
     2
 }
 
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -185,6 +194,7 @@ impl Default for AppConfig {
             max_concurrent_translations: 2,
             github_token: None,
             copilot_model: "gpt-4".to_string(),
+            log_level: "info".to_string(),
         }
     }
 }
@@ -304,6 +314,13 @@ fn get_config() -> AppConfig {
 
 #[tauri::command]
 fn save_config(app: AppHandle, config: AppConfig) -> Result<String, String> {
+    info!(
+        theme = %config.theme,
+        provider = %config.provider,
+        log_level = %config.log_level,
+        "Saving configuration"
+    );
+
     // Update window always_on_top state
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(config.always_on_top);
@@ -314,7 +331,7 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<String, String> {
         let mut current = APP_CONFIG.lock().unwrap();
         *current = config.clone();
     }
-    
+
     // Recreate translation service with new config
     {
         let translation_config = config_to_translation_config(&config);
@@ -358,20 +375,20 @@ fn save_config_to_file(config: &AppConfig) -> anyhow::Result<()> {
     std::fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("config.json");
     let json = serde_json::to_string_pretty(config)?;
-    std::fs::write(config_path, json)?;
+    std::fs::write(&config_path, json)?;
+    debug!(path = %config_path.display(), "Configuration persisted to file");
     Ok(())
 }
 
 fn load_config_from_file() -> Option<AppConfig> {
     let config_path = dirs::config_dir()?.join("LiveCaptionsR").join("config.json");
-    let json = std::fs::read_to_string(config_path).ok()?;
-    serde_json::from_str(&json).ok()
+    let json = std::fs::read_to_string(&config_path).ok()?;
+    let config: AppConfig = serde_json::from_str(&json).ok()?;
+    info!(path = %config_path.display(), "Configuration loaded from file");
+    Some(config)
 }
 
 fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
-    // Determine provider and potential Copilot model override
-    let mut copilot_model_override = None;
-
     let provider = if config.provider == "google" {
         TranslationProvider::Google
     } else if config.provider == "microsoft" {
@@ -384,14 +401,10 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     } else {
         // Check if provider string is a Model ID
         if let Some(model) = config.ai_models.iter().find(|m| m.id == config.provider) {
-            if let Some(channel) = config.ai_channels.iter().find(|c| c.id == model.channel_id) {
-                if channel.channel_type == "copilot" {
-                    copilot_model_override = Some(model.name.clone());
-                    TranslationProvider::Copilot
-                } else {
-                    // It's an OpenAI model, treat ID as endpoint ID
-                    TranslationProvider::OpenAI(model.id.clone())
-                }
+            if config.ai_channels.iter().any(|c| c.id == model.channel_id) {
+                // Both Copilot and OpenAI models use the OpenAI provider variant
+                // The translate method will check channel_type to determine which API to use
+                TranslationProvider::OpenAI(model.id.clone())
             } else {
                 TranslationProvider::Google
             }
@@ -465,7 +478,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         openai_endpoints,
         max_concurrent_translations: config.max_concurrent_translations,
         github_token: config.github_token.clone(),
-        copilot_model: copilot_model_override.unwrap_or(config.copilot_model.clone()),
+        copilot_model: config.copilot_model.clone(),
         copilot_proxy,
         ai_channels,
         ai_models,
@@ -549,6 +562,13 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
         cfg.clone()
     };
 
+    info!(
+        caption_source = %config.caption_source,
+        hide_system_window = config.hide_system_window,
+        include_microphone = config.include_microphone,
+        "Starting caption watcher"
+    );
+
     // Initialize translation service
     {
         let translation_config = config_to_translation_config(&config);
@@ -620,6 +640,7 @@ fn start_livecaptions_loop(
     let mut stream = match livecaptions::CaptionStream::new() {
         Ok(s) => s,
         Err(e) => {
+            error!(error = %e, "Failed to initialize LiveCaptions stream");
             let _ = app.emit("caption-error", format!("Init failed: {}", e));
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -629,14 +650,17 @@ fn start_livecaptions_loop(
 
     match stream.connect(hide_system_window, hwnd_override) {
         Ok(msg) => {
+            info!("LiveCaptions stream connected successfully");
             let _ = app.emit("caption-status", msg);
             if include_microphone {
                 if let Err(e) = stream.configure_microphone(include_microphone) {
+                    error!(error = %e, "Failed to configure microphone");
                     let _ = app.emit("caption-error", format!("Mic config failed: {}", e));
                 }
             }
         }
         Err(e) => {
+            error!(error = %e, "Failed to connect LiveCaptions stream");
             let _ = app.emit("caption-error", e.to_string());
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -677,6 +701,14 @@ fn start_livecaptions_loop(
                 continue;
             }
 
+            // Log caption with preview (truncate to 100 chars)
+            let preview = if text.len() > 100 {
+                format!("{}...", &text[..100])
+            } else {
+                text.clone()
+            };
+            debug!(caption_preview = %preview, "Received LiveCaptions caption");
+
             let timestamp = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -705,6 +737,7 @@ fn start_teams_caption_loop(
     let mut stream = match teams::TeamsCaptionStream::new() {
         Ok(s) => s,
         Err(e) => {
+            error!(error = %e, "Failed to initialize Teams stream");
             let _ = app.emit("caption-error", format!("Teams init failed: {}", e));
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -719,9 +752,11 @@ fn start_teams_caption_loop(
 
     match stream.connect() {
         Ok(msg) => {
+            info!("Teams caption stream connected successfully");
             let _ = app.emit("caption-status", msg);
         }
         Err(e) => {
+            error!(error = %e, "Failed to connect Teams stream");
             let _ = app.emit("caption-error", e.to_string());
             let mut running = CAPTION_RUNNING.lock().unwrap();
             *running = false;
@@ -762,6 +797,14 @@ fn start_teams_caption_loop(
                 let _ = app.emit("caption-error", text);
                 continue;
             }
+
+            // Log caption with preview (truncate to 100 chars)
+            let preview = if text.len() > 100 {
+                format!("{}...", &text[..100])
+            } else {
+                text.clone()
+            };
+            debug!(user = %user.as_deref().unwrap_or("unknown"), caption_preview = %preview, "Received Teams caption");
 
             let timestamp = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -817,6 +860,8 @@ fn create_session(name: String) -> Result<storage::Session, String> {
     let id = Uuid::new_v4().to_string();
     let created_at = now.as_secs();
 
+    info!(session_id = %id, session_name = %name, "Creating new session");
+
     let session = storage::Session {
         id,
         name,
@@ -845,6 +890,7 @@ fn get_sessions() -> Result<Vec<storage::SessionMetadata>, String> {
 
 #[tauri::command]
 fn delete_session_data(id: String) -> Result<(), String> {
+    info!(session_id = %id, "Deleting session");
     storage::delete_session(&id).map_err(|e| e.to_string())
 }
 
@@ -875,6 +921,24 @@ pub fn run() {
     // Initialize database
     db::init().expect("Failed to initialize database");
 
+    // Initialize logger
+    eprintln!("[DEBUG] About to initialize logger...");
+    let log_level = {
+        let mut config = APP_CONFIG.lock().unwrap();
+        if let Some(loaded) = load_config_from_file() {
+            *config = loaded;
+        }
+        config.log_level.clone()
+    };
+    eprintln!("[DEBUG] Log level from config: {}", log_level);
+
+    if let Err(e) = logger::init_logger(&log_level) {
+        eprintln!("WARNING: Failed to initialize logger: {}", e);
+        eprintln!("Continuing with stderr-only logging");
+    } else {
+        eprintln!("[DEBUG] Logger initialized successfully");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -897,7 +961,8 @@ pub fn run() {
             delete_all_sessions_command,
             start_copilot_auth,
             poll_copilot_token,
-            fetch_copilot_models_command
+            fetch_copilot_models_command,
+            logger::update_log_level_command
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
