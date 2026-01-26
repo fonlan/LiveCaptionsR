@@ -606,6 +606,8 @@ impl TranslationService {
     }
 
     pub async fn fetch_copilot_models(&self, github_token: &str) -> Result<Vec<CopilotModel>> {
+        debug!("Fetching Copilot models list");
+
         let token = self.get_copilot_token(github_token).await
             .map_err(|e| anyhow::anyhow!("Failed to get Copilot token: {}", e))?;
 
@@ -616,6 +618,13 @@ impl TranslationService {
         // Try the official endpoint first
         let url = "https://api.githubcopilot.com/models";
 
+        debug!(
+            method = "GET",
+            url = %url,
+            "Sending Copilot models request"
+        );
+
+        let start = std::time::Instant::now();
         let response = client
             .get(url)
             .header("Authorization", format!("Bearer {}", token))
@@ -626,19 +635,39 @@ impl TranslationService {
             .await
             .map_err(|e| {
                 if self.config.copilot_proxy.is_active() {
-                    anyhow::anyhow!("Network request failed via proxy {}: {} (URL: {})", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e, url)
+                    let err = anyhow::anyhow!("Network request failed via proxy {}: {} (URL: {})", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e, url);
+                    error!("{}", err);
+                    err
                 } else {
-                    anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url)
+                    let err = anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url);
+                    error!("{}", err);
+                    err
                 }
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot models response"
+        );
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "Failed to fetch Copilot models"
+            );
             anyhow::bail!("Failed to fetch models: {} - {}", status, error_text);
         }
 
         let response_text = response.text().await.context("Failed to read models response")?;
+
+        debug!(
+            response_body_len = response_text.len(),
+            "Parsing Copilot models response"
+        );
 
         #[derive(Deserialize, Debug)]
         struct ModelsResponse {
@@ -646,7 +675,10 @@ impl TranslationService {
         }
 
         let res: ModelsResponse = serde_json::from_str(&response_text)
-            .with_context(|| format!("Failed to parse models response. Response: {}", response_text))?;
+            .with_context(|| {
+                error!("Failed to parse models JSON: {}", response_text);
+                format!("Failed to parse models response. Response: {}", response_text)
+            })?;
 
         let mut models_map = std::collections::HashMap::new();
 
@@ -691,6 +723,7 @@ impl TranslationService {
 
         // If no models found, return fallback models
         if models_map.is_empty() {
+            info!("No models found in Copilot API response, using fallback models");
             return Ok(vec![
                 CopilotModel { id: "gpt-4".to_string(), name: "GPT-4".to_string() },
                 CopilotModel { id: "gpt-4o".to_string(), name: "GPT-4o".to_string() },
@@ -701,6 +734,12 @@ impl TranslationService {
         let mut models: Vec<CopilotModel> = models_map.into_values().collect();
         // Sort by ID to ensure stable order
         models.sort_by(|a, b| a.id.cmp(&b.id));
+
+        info!(
+            model_count = models.len(),
+            models = ?models.iter().map(|m| &m.id).collect::<Vec<_>>(),
+            "Successfully fetched Copilot models"
+        );
 
         Ok(models)
     }
