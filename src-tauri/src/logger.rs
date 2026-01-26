@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use tracing::Level;
+use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{
     fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, reload,
 };
@@ -38,8 +39,21 @@ pub fn init_logger(log_level: &str) -> Result<()> {
 
     eprintln!("[DEBUG] Logger: Created directory successfully");
 
-    // Set up file appender with daily rotation
-    let file_appender = tracing_appender::rolling::daily(config_dir, "livecaptions-r.log");
+    // Set up file appender with size-based rotation
+    // 10MB file size limit, keep last 5 rotated files
+    let file_path = config_dir.join("livecaptions-r.log");
+    let file_appender = RollingFileAppenderBase::builder()
+        .filename(file_path.to_string_lossy().to_string())
+        .max_filecount(5)
+        .condition_max_file_size(10 * 1024 * 1024) // 10MB in bytes
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to create rolling file appender: {}", e))?;
+
+    // Use non-blocking writer for better performance
+    let (non_blocking, _guard) = file_appender.get_non_blocking_appender();
+
+    // Store the guard to prevent it from being dropped
+    std::mem::forget(_guard);
 
     eprintln!("[DEBUG] Logger: File appender created");
 
@@ -49,7 +63,7 @@ pub fn init_logger(log_level: &str) -> Result<()> {
 
     // File layer - all logs at configured level
     let file_layer = fmt::layer()
-        .with_writer(file_appender)
+        .with_writer(non_blocking)
         .with_ansi(false)
         .with_target(true)
         .with_filter(filter);
@@ -109,5 +123,65 @@ mod tests {
         assert!(parse_level("invalid").is_err());
         assert!(parse_level("trace").is_err());
         assert!(parse_level("").is_err());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_log_rotation() {
+        // This test verifies that log rotation works correctly
+        // Run manually with: cargo test test_log_rotation -- --ignored
+
+        use std::fs;
+        use tracing::info;
+
+        // Create a temporary directory for testing
+        let test_dir = std::env::temp_dir().join("livecaptions-test-rotation");
+        let _ = fs::remove_dir_all(&test_dir); // Clean up if exists
+        fs::create_dir_all(&test_dir).unwrap();
+
+        // Create appender with small size limit for testing (1KB)
+        let test_file = test_dir.join("test.log");
+        let file_appender = RollingFileAppenderBase::builder()
+            .filename(test_file.to_string_lossy().to_string())
+            .max_filecount(3)
+            .condition_max_file_size(1024) // 1KB for quick rotation
+            .build()
+            .unwrap();
+
+        let (non_blocking, _guard) = file_appender.get_non_blocking_appender();
+
+        let filter = EnvFilter::new("info");
+        let file_layer = fmt::layer()
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .with_filter(filter);
+
+        // Initialize subscriber for this test
+        let _guard = tracing_subscriber::registry()
+            .with(file_layer)
+            .set_default();
+
+        // Write enough logs to trigger rotation
+        for i in 0..100 {
+            info!("Test log message number {} - Adding some extra text to make the line longer and fill up the file faster", i);
+        }
+
+        // Give time for file operations to complete
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Check that rotation happened
+        let entries: Vec<_> = fs::read_dir(&test_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+
+        // Should have multiple files due to rotation
+        assert!(entries.len() > 1, "Expected multiple log files, found {}", entries.len());
+
+        // Verify we don't exceed max_log_files + 1 (current + archived)
+        assert!(entries.len() <= 4, "Expected at most 4 files (current + 3 archived), found {}", entries.len());
+
+        // Clean up
+        let _ = fs::remove_dir_all(&test_dir);
     }
 }
