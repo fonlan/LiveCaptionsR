@@ -702,8 +702,8 @@ fn start_livecaptions_loop(
             }
 
             // Log caption with preview (truncate to 100 chars)
-            let preview = if text.len() > 100 {
-                format!("{}...", &text[..100])
+            let preview = if text.chars().count() > 100 {
+                format!("{}...", text.chars().take(100).collect::<String>())
             } else {
                 text.clone()
             };
@@ -799,8 +799,8 @@ fn start_teams_caption_loop(
             }
 
             // Log caption with preview (truncate to 100 chars)
-            let preview = if text.len() > 100 {
-                format!("{}...", &text[..100])
+            let preview = if text.chars().count() > 100 {
+                format!("{}...", text.chars().take(100).collect::<String>())
             } else {
                 text.clone()
             };
@@ -918,6 +918,28 @@ fn get_teams_windows() -> Vec<TeamsWindowInfo> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Install panic hook to catch all panics
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info.location().unwrap_or_else(|| panic_info.location().unwrap());
+        let msg = panic_info.to_string();
+        let backtrace = std::backtrace::Backtrace::capture();
+
+        tracing::error!(
+            panic_msg = %msg,
+            file = location.file(),
+            line = location.line(),
+            column = location.column(),
+            backtrace = %backtrace,
+            "PANIC occurred"
+        );
+
+        // Also print to stderr for immediate visibility
+        eprintln!("!!! PANIC !!!");
+        eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
+        eprintln!("Message: {}", msg);
+        eprintln!("Backtrace:\n{}", backtrace);
+    }));
+
     // Initialize database
     db::init().expect("Failed to initialize database");
 

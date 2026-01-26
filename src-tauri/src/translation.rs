@@ -452,8 +452,8 @@ impl TranslationService {
         };
 
         // Sanitize API key for logging (show only first 4 chars)
-        let api_key_preview = if api_key.len() >= 4 {
-            format!("{}...", &api_key[..4])
+        let api_key_preview = if api_key.chars().count() >= 4 {
+            format!("{}...", api_key.chars().take(4).collect::<String>())
         } else {
             "***".to_string()
         };
@@ -958,8 +958,8 @@ impl TranslationService {
         };
 
         // Sanitize API key for logging (show only first 4 chars)
-        let api_key_preview = if endpoint.api_key.len() >= 4 {
-            format!("{}...", &endpoint.api_key[..4])
+        let api_key_preview = if endpoint.api_key.chars().count() >= 4 {
+            format!("{}...", endpoint.api_key.chars().take(4).collect::<String>())
         } else {
             "***".to_string()
         };

@@ -8,6 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, error, warn};
 use windows::{
     core::*,
     Win32::Foundation::{BOOL, HWND, LPARAM, TRUE},
@@ -350,99 +351,161 @@ impl TeamsWatcher {
         &self,
         window: &IUIAutomationElement,
     ) -> Result<(Option<String>, String, Option<IUIAutomationElement>)> {
+        debug!("Starting get_caption_text");
         unsafe {
-            let walker = self.automation.ControlViewWalker()?;
+            let walker = match self.automation.ControlViewWalker() {
+                Ok(w) => w,
+                Err(e) => {
+                    error!(error = %e, "Failed to get ControlViewWalker");
+                    return Err(anyhow::anyhow!("Failed to get ControlViewWalker: {}", e));
+                }
+            };
 
-            let text_condition = self
+            let text_condition = match self
                 .automation
                 .CreatePropertyCondition(
                     UIA_ControlTypePropertyId,
                     &VARIANT::from(UIA_TextControlTypeId.0 as i32),
                 )
-                .context("Failed to create text condition")?;
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(error = %e, "Failed to create text condition");
+                    return Err(anyhow::anyhow!("Failed to create text condition: {}", e));
+                }
+            };
 
             let start = std::time::Instant::now();
-            let elements = window
-                .FindAll(TreeScope_Descendants, &text_condition)
-                .context("Failed to find text elements")?;
+            let elements = match window.FindAll(TreeScope_Descendants, &text_condition) {
+                Ok(el) => el,
+                Err(e) => {
+                    error!(error = %e, "FindAll failed");
+                    return Err(anyhow::anyhow!("Failed to find text elements: {}", e));
+                }
+            };
             let duration = start.elapsed();
 
-            // Only log significant delays
-            if duration.as_millis() > 100 {
-                eprintln!(
-                    "[Teams Performance] FindAll took {:?} for {} elements",
-                    duration,
-                    elements.Length().unwrap_or(0)
+            let count = match elements.Length() {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(error = %e, "Failed to get elements length");
+                    return Err(anyhow::anyhow!("Failed to get elements length: {}", e));
+                }
+            };
+
+            debug!(duration_ms = duration.as_millis(), element_count = count, "FindAll completed");
+
+            // Safety limit: if we have too many elements, something is wrong
+            const MAX_ELEMENTS: i32 = 5000;
+            if count > MAX_ELEMENTS {
+                warn!(
+                    element_count = count,
+                    max_elements = MAX_ELEMENTS,
+                    "Too many text elements, limiting search"
                 );
             }
 
-            let count = elements.Length().unwrap_or(0);
+            let limited_count = count.min(MAX_ELEMENTS);
 
             // Vector of (ParentRuntimeIdString, Vec<String>)
             // We use RuntimeId string representation to group siblings
             let mut messages: Vec<(String, Vec<String>)> = Vec::new();
             let mut first_container_element: Option<IUIAutomationElement> = None;
 
-            for i in 0..count {
-                if let Ok(text_element) = elements.GetElement(i) {
-                    // Get the text content
-                    let text_content = if let Ok(name) = text_element.CurrentName() {
-                        name.to_string()
-                    } else {
-                        continue;
+            for i in 0..limited_count {
+                // Use catch_unwind to prevent panics from crashing the app
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let text_element = match elements.GetElement(i) {
+                        Ok(el) => el,
+                        Err(_) => return None,
+                    };
+
+                    // Get the text content safely
+                    let text_content = match text_element.CurrentName() {
+                        Ok(name) => {
+                            // Safely convert BSTR to String using lossy conversion
+                            if name.is_empty() {
+                                return None;
+                            }
+                            // Use try/catch to handle any string conversion errors
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                name.to_string()
+                            })).ok()
+                        }
+                        Err(_) => None,
+                    };
+
+                    let text_content = match text_content {
+                        Some(s) => s,
+                        None => return None,
                     };
 
                     if text_content.trim().is_empty() {
-                        continue;
+                        return None;
                     }
 
                     // Walk up to find the parent with ClassName starting with "fui-ChatMessageCompact"
-                    if let Ok(parent) = walker.GetParentElement(&text_element) {
-                        if let Ok(class_name) = parent.CurrentClassName() {
-                            let class_str = class_name.to_string();
-                            if class_str.starts_with("fui-ChatMessageCompact") {
-                                // Found a valid message container!
+                    let parent = match walker.GetParentElement(&text_element) {
+                        Ok(p) => p,
+                        Err(_) => return None,
+                    };
 
-                                // Capture the first valid container we find for future optimized scanning
-                                if first_container_element.is_none() {
-                                    // We might want the parent of this (the ui-box/list) for the stream's caption_parent
-                                    // But storing this element is also useful as a hint
-                                    if let Ok(grandparent) = walker.GetParentElement(&parent) {
-                                        first_container_element = Some(grandparent);
-                                    } else {
-                                        first_container_element = Some(parent.clone());
-                                    }
-                                }
+                    let class_name = match parent.CurrentClassName() {
+                        Ok(name) => {
+                            // Safely convert BSTR to String
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                name.to_string()
+                            })).ok().unwrap_or_default()
+                        }
+                        Err(_) => return None,
+                    };
 
-                                // Group by RuntimeId of the parent (fui-ChatMessageCompact)
-                                // This ensures we group "User" and "Message" together
-                                let runtime_id = if let Ok(_id_arr) = parent.GetRuntimeId() {
-                                    Some(parent.clone())
-                                } else {
-                                    None
-                                };
+                    if !class_name.starts_with("fui-ChatMessageCompact") {
+                        return None;
+                    }
 
-                                let mut added_to_last = false;
-                                if let Some(ref _current_parent) = runtime_id {
-                                    if let Some((last_parent_key, last_texts)) = messages.last_mut()
-                                    {
-                                        let current_id_str = get_runtime_id_string(&parent);
-                                        if *last_parent_key == current_id_str {
-                                            last_texts.push(text_content.clone());
-                                            added_to_last = true;
-                                        }
-                                    }
+                    debug!(
+                        index = i,
+                        text_preview = %text_content.chars().take(50).collect::<String>(),
+                        class_name = %class_name,
+                        "Found text element in message container"
+                    );
 
-                                    if !added_to_last {
-                                        let current_id_str = get_runtime_id_string(&parent);
-                                        messages.push((current_id_str, vec![text_content]));
-                                    }
-                                }
-                            }
+                    // Capture the first valid container we find for future optimized scanning
+                    if first_container_element.is_none() {
+                        // We might want the parent of this (the ui-box/list) for the stream's caption_parent
+                        // But storing this element is also useful as a hint
+                        if let Ok(grandparent) = walker.GetParentElement(&parent) {
+                            first_container_element = Some(grandparent);
+                        } else {
+                            first_container_element = Some(parent.clone());
                         }
                     }
+
+                    // Group by parent element to ensure we group "User" and "Message" together
+                    let current_id_str = get_runtime_id_string(&parent);
+
+                    let mut added_to_last = false;
+                    if let Some((last_parent_key, last_texts)) = messages.last_mut() {
+                        if *last_parent_key == current_id_str {
+                            last_texts.push(text_content.clone());
+                            added_to_last = true;
+                        }
+                    }
+
+                    if !added_to_last {
+                        messages.push((current_id_str, vec![text_content]));
+                    }
+
+                    Some(())
+                }));
+
+                if result.is_err() {
+                    warn!(index = i, "Panicked while processing text element");
                 }
             }
+
+            debug!(message_count = messages.len(), "Finished processing text elements");
 
             // Format messages
             // We take the last few messages (e.g. last 3)
@@ -454,7 +517,14 @@ impl TeamsWatcher {
             let mut result_parts = Vec::new();
             let mut captured_user: Option<String> = None;
 
-            for (_idx, (_current_id_str, texts)) in messages[start_idx..].iter().enumerate() {
+            for (idx, (_current_id_str, texts)) in messages[start_idx..].iter().enumerate() {
+                debug!(
+                    result_idx = idx,
+                    texts_count = texts.len(),
+                    texts_preview = ?texts.iter().take(3).map(|s| s.chars().take(50).collect::<String>()).collect::<Vec<_>>(),
+                    "Processing message group"
+                );
+
                 // Logic for "fui-ChatMessageCompact" container which holds multiple messages (a list)
                 // The structure observed is [User, Content, User, Content, ...]
                 // We want to extract only the Content parts (Odd indices)
@@ -464,6 +534,7 @@ impl TeamsWatcher {
                     // Capture the username from the first pair if we haven't yet
                     if captured_user.is_none() {
                         captured_user = Some(texts[0].clone());
+                        debug!(user = %texts[0], "Captured user");
                     }
 
                     let mut group_contents = Vec::new();
@@ -477,11 +548,13 @@ impl TeamsWatcher {
                     }
 
                     if !group_contents.is_empty() {
+                        debug!(content_count = group_contents.len(), "Adding grouped content");
                         result_parts.push(group_contents.join("  "));
                     }
                 } else if texts.len() == 1 {
                     // Edge case: Just one element? Might be content only or user only.
                     // If it's short, might be ignored, but let's pass it for now.
+                    debug!(text = %texts[0], "Adding single element (edge case)");
                     result_parts.push(texts[0].clone());
                 }
             }
@@ -580,26 +653,34 @@ impl TeamsCaptionStream {
         // Use the cached parent if available, otherwise use the window
         let search_target = self.caption_parent.as_ref().unwrap_or(window_ref);
 
+        debug!("Calling get_caption_text");
         let result = self.watcher.get_caption_text(search_target);
 
         match result {
             Ok((user, text, first_element)) => {
                 self.error_count = 0;
+                debug!(user = ?user, text_len = text.len(), has_text = !text.is_empty(), "Got caption result");
 
                 // If we found text but don't have a cached parent yet, try to find one
                 if !text.is_empty() && self.caption_parent.is_none() {
                     if let Some(element) = first_element {
                         // Try to get the container of the text element
-                        if let Ok(container) = self.watcher.get_caption_container(&element) {
-                            eprintln!("[Teams] Found caption container candidate, switching to optimized scan mode.");
-                            self.caption_parent = Some(container);
+                        match self.watcher.get_caption_container(&element) {
+                            Ok(container) => {
+                                debug!("Found caption container candidate, switching to optimized scan mode");
+                                // Clone the COM object to ensure we have a valid reference
+                                self.caption_parent = Some(container);
+                            }
+                            Err(e) => {
+                                debug!(error = %e, "Failed to get caption container");
+                            }
                         }
                     }
                 }
 
                 // If we used a cached parent but got no text, invalidate cache and retry immediately with full window
                 if text.is_empty() && self.caption_parent.is_some() {
-                    eprintln!("[Teams] Cached container yielded no text, invalidating cache.");
+                    debug!("Cached container yielded no text, invalidating cache");
                     self.caption_parent = None;
                     // Recursive call with full window will happen next tick,
                     // or we could retry immediately? Let's return None and let next tick handle it to avoid infinite recursion risk
@@ -607,21 +688,25 @@ impl TeamsCaptionStream {
                 }
 
                 if !text.is_empty() && text != self.last_text {
+                    debug!(text_preview = %text.chars().take(100).collect::<String>(), "New caption detected");
                     self.last_text = text.clone();
                     return Some((user, text));
                 }
             }
             Err(e) => {
+                error!(error = %e, "Failed to get Teams caption text");
                 // If we failed with cached parent, invalidate it
                 if self.caption_parent.is_some() {
+                    debug!("Failed with cached parent, invalidating cache");
                     self.caption_parent = None;
                     return None;
                 }
 
                 self.error_count += 1;
-                eprintln!(
-                    "Warning: Failed to get Teams caption text (attempt {}/5): {}",
-                    self.error_count, e
+                warn!(
+                    error_count = self.error_count,
+                    error = %e,
+                    "Failed to get Teams caption text"
                 );
 
                 if self.error_count > 5 {
@@ -630,8 +715,16 @@ impl TeamsCaptionStream {
                     return Some((None, format!("[ERROR] Lost connection to Teams: {}", e)));
                 }
 
-                if let Ok(new_window) = self.watcher.find_teams_window_uia(self.selected_hwnd) {
-                    self.window = Some(new_window);
+                // Try to find the window again
+                debug!("Attempting to find Teams window again");
+                match self.watcher.find_teams_window_uia(self.selected_hwnd) {
+                    Ok(new_window) => {
+                        self.window = Some(new_window);
+                        debug!("Successfully found Teams window again");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to find Teams window again");
+                    }
                 }
             }
         }
