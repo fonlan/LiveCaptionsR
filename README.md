@@ -131,6 +131,53 @@ Each provider has independent proxy settings:
   - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot).
   - `lib.rs`: Bridges frontend and backend events.
 
+## 🔍 Troubleshooting
+
+### Viewing Logs
+
+LiveCaptionsR maintains detailed logs to help diagnose issues:
+
+**Log Location**: `%APPDATA%\LiveCaptionsR\logs\livecaptions-r.log`
+
+To quickly access the logs directory:
+1. Press `Win+R` to open Run dialog
+2. Type: `%APPDATA%\LiveCaptionsR\logs`
+3. Press Enter
+
+**Log Files**:
+- `livecaptions-r.log` - Current log file
+- `livecaptions-r.log.1` through `.5` - Rotated log files (older logs)
+
+**Changing Log Level**:
+
+For detailed debugging information:
+
+1. Open LiveCaptionsR Settings (gear icon)
+2. Navigate to **General** section
+3. Change **Log Level** to `debug`
+4. The change takes effect immediately (no restart required)
+
+**Available Log Levels**:
+- `error` - Only critical errors
+- `warn` - Warnings and errors
+- `info` - General information (default)
+- `debug` - Detailed diagnostic information
+
+**Common Issues to Check Logs For**:
+- Translation API failures (check for HTTP errors, authentication issues)
+- Caption capture problems (check Windows UI Automation errors)
+- Configuration loading errors
+- Network/proxy connection issues
+
+**Example Log Entries**:
+```
+2024-01-26T12:00:00.123Z INFO  Configuration saved successfully theme=dark provider=google
+2024-01-26T12:00:01.456Z DEBUG Starting translation request provider=google text_len=42
+2024-01-26T12:00:01.789Z ERROR Failed to connect to API endpoint error="connection timeout"
+```
+
+**Note**: Log files automatically rotate when they reach 10MB. The system keeps the last 5 rotated files, so you won't run out of disk space.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
