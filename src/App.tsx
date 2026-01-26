@@ -651,11 +651,13 @@ function App() {
   };
 
 
-  const saveConfig = async (newConfig: AppConfig) => {
+  const saveConfig = async (newConfig: AppConfig, silent = false) => {
     try {
       await invoke("save_config", { config: newConfig });
       setConfig(newConfig);
-      addToast('success', t("toast.configSaved"));
+      if (!silent) {
+        addToast('success', t("toast.configSaved"));
+      }
     } catch (err) {
       console.error("Failed to save config:", err);
       addToast('error', t("toast.configSaveFailed", { error: String(err) }));
@@ -1559,11 +1561,9 @@ function ChannelsTab({ channels, onChange, onAuth }: { channels: AIChannel[]; on
                   className="endpoint-name-input"
                   placeholder={t("settings.channels.namePlaceholder")}
                 />
-                {channels.length > 1 && (
-                    <button className="btn-remove-endpoint" onClick={() => removeChannel(channel.id)} title={t("settings.ai.removeEndpoint")}>
-                    <IconMinus />
-                    </button>
-                )}
+                <button className="btn-remove-endpoint" onClick={() => removeChannel(channel.id)} title={t("settings.ai.removeEndpoint")}>
+                  <IconMinus />
+                </button>
              </div>
              
              <div className="form-group">
@@ -1682,11 +1682,9 @@ function ModelsTab({ models, channels, onChange, addToast }: { models: AIModel[]
             <div key={model.id} className="endpoint-card">
                <div className="endpoint-header">
                   <span style={{ fontWeight: 500 }}>{model.name}</span>
-                  {models.length > 1 && (
-                      <button className="btn-remove-endpoint" onClick={() => removeModel(model.id)} title={t("settings.ai.removeEndpoint")}>
-                        <IconMinus />
-                      </button>
-                  )}
+                  <button className="btn-remove-endpoint" onClick={() => removeModel(model.id)} title={t("settings.ai.removeEndpoint")}>
+                    <IconMinus />
+                  </button>
                </div>
                
                <div className="form-group">
@@ -1753,10 +1751,11 @@ function ModelsTab({ models, channels, onChange, addToast }: { models: AIModel[]
 }
 
 // --- Settings Form ---
-function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config: AppConfig; onSave: (c: AppConfig) => void; onStartCopilotAuth: (id: string) => void; addToast: (type: 'success' | 'error', msg: string) => void }) {
+function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config: AppConfig; onSave: (c: AppConfig, silent?: boolean) => void; onStartCopilotAuth: (id: string) => void; addToast: (type: 'success' | 'error', msg: string) => void }) {
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'channels' | 'models' | 'summary'>('general');
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     setFormData(config);
@@ -1768,13 +1767,41 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
     }
   }, [formData.language, i18n]);
 
+  // Debounced auto-save function
+  const autoSave = useRef((newConfig: AppConfig, immediate = false) => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    if (immediate) {
+      onSave(newConfig, true);
+    } else {
+      saveTimeoutRef.current = setTimeout(() => {
+        onSave(newConfig, true);
+      }, 500); // 500ms debounce
+    }
+  }).current;
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const renderGeneralTab = () => (
     <div className="tab-panel">
        <div className="form-group">
         <label>{t("settings.general.captionSource")}</label>
         <select
           value={formData.caption_source || 'livecaptions'}
-          onChange={e => setFormData(prev => ({ ...prev, caption_source: e.target.value }))}
+          onChange={e => {
+            const newConfig = { ...formData, caption_source: e.target.value };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
         >
           <option value="livecaptions">{t("settings.general.captionSourceLiveCaptions")}</option>
           <option value="teams">{t("settings.general.captionSourceTeams")}</option>
@@ -1790,7 +1817,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
         <label>{t("settings.general.language")}</label>
         <select
           value={formData.language || 'en'}
-          onChange={e => setFormData(prev => ({ ...prev, language: e.target.value }))}
+          onChange={e => {
+            const newConfig = { ...formData, language: e.target.value };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
         >
           <option value="en">English</option>
           <option value="zh-CN">简体中文</option>
@@ -1803,11 +1834,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           value={formData.log_level || 'info'}
           onChange={async e => {
             const newLevel = e.target.value;
-            const updatedConfig = { ...formData, log_level: newLevel };
-            setFormData(updatedConfig);
+            const newConfig = { ...formData, log_level: newLevel };
+            setFormData(newConfig);
             try {
               await invoke("update_log_level_command", { level: newLevel });
-              await onSave(updatedConfig);
+              autoSave(newConfig, true);
             } catch (err) {
               console.error("Failed to update log level:", err);
               addToast('error', t("toast.logLevelUpdateFailed", { error: String(err) }));
@@ -1828,7 +1859,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
         <label>{t("settings.general.theme")}</label>
         <select
           value={formData.theme || 'dark'}
-          onChange={e => setFormData(prev => ({ ...prev, theme: e.target.value }))}
+          onChange={e => {
+            const newConfig = { ...formData, theme: e.target.value };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
         >
           <option value="dark">{t("settings.general.themeDark")}</option>
           <option value="light">{t("settings.general.themeLight")}</option>
@@ -1846,7 +1881,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           max="1.0"
           step="0.05"
           value={formData.opacity ?? 1.0}
-          onChange={e => setFormData(prev => ({ ...prev, opacity: parseFloat(e.target.value) }))}
+          onChange={e => {
+            const newConfig = { ...formData, opacity: parseFloat(e.target.value) };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
           style={{ width: '100%', accentColor: 'var(--primary)', cursor: 'pointer' }}
         />
       </div>
@@ -1855,7 +1894,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
         <>
           <div className="form-group checkbox-group">
             <label className="switch">
-              <input type="checkbox" checked={formData.hide_system_window} onChange={e => setFormData(prev => ({ ...prev, hide_system_window: e.target.checked }))} />
+              <input type="checkbox" checked={formData.hide_system_window} onChange={e => {
+                const newConfig = { ...formData, hide_system_window: e.target.checked };
+                setFormData(newConfig);
+                autoSave(newConfig);
+              }} />
               <span className="slider round"></span>
             </label>
             <span>{t("settings.general.hideSystemWindow")}</span>
@@ -1863,7 +1906,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
 
           <div className="form-group checkbox-group">
             <label className="switch">
-              <input type="checkbox" checked={formData.include_microphone} onChange={e => setFormData(prev => ({ ...prev, include_microphone: e.target.checked }))} />
+              <input type="checkbox" checked={formData.include_microphone} onChange={e => {
+                const newConfig = { ...formData, include_microphone: e.target.checked };
+                setFormData(newConfig);
+                autoSave(newConfig);
+              }} />
               <span className="slider round"></span>
             </label>
             <span>{t("settings.general.includeMicrophone")}</span>
@@ -1878,9 +1925,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
             checked={formData.always_on_top}
             onChange={async e => {
               const checked = e.target.checked;
-              setFormData(prev => ({ ...prev, always_on_top: checked }));
+              const newConfig = { ...formData, always_on_top: checked };
+              setFormData(newConfig);
               try {
                 await invoke("set_always_on_top", { alwaysOnTop: checked });
+                autoSave(newConfig);
               } catch (err) {
                 console.error("Failed to set always on top:", err);
               }
@@ -1900,7 +1949,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           <input
             type="checkbox"
             checked={formData.translation_enabled !== false}
-            onChange={e => setFormData(prev => ({ ...prev, translation_enabled: e.target.checked }))}
+            onChange={e => {
+              const newConfig = { ...formData, translation_enabled: e.target.checked };
+              setFormData(newConfig);
+              autoSave(newConfig);
+            }}
           />
           <span className="slider round"></span>
         </label>
@@ -1918,7 +1971,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           max="10"
           step="1"
           value={formData.max_concurrent_translations ?? 2}
-          onChange={e => setFormData(prev => ({ ...prev, max_concurrent_translations: parseInt(e.target.value) }))}
+          onChange={e => {
+            const newConfig = { ...formData, max_concurrent_translations: parseInt(e.target.value) };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
           style={{ width: '100%', accentColor: 'var(--primary)', cursor: 'pointer' }}
         />
       </div>
@@ -1928,7 +1985,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           <label>{t("settings.translation.sourceLanguage")}</label>
           <select
             value={formData.source_lang}
-            onChange={e => setFormData(prev => ({ ...prev, source_lang: e.target.value }))}
+            onChange={e => {
+              const newConfig = { ...formData, source_lang: e.target.value };
+              setFormData(newConfig);
+              autoSave(newConfig);
+            }}
           >
             {LANGUAGES.map(lang => (
               <option key={lang.code} value={lang.code}>
@@ -1941,7 +2002,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           <label>{t("settings.translation.targetLanguage")}</label>
           <select
             value={formData.target_lang}
-            onChange={e => setFormData(prev => ({ ...prev, target_lang: e.target.value }))}
+            onChange={e => {
+              const newConfig = { ...formData, target_lang: e.target.value };
+              setFormData(newConfig);
+              autoSave(newConfig);
+            }}
           >
             {LANGUAGES.filter(l => l.code !== 'auto').map(lang => (
               <option key={lang.code} value={lang.code}>
@@ -1956,7 +2021,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
         <label>{t("settings.translation.provider")}</label>
         <select
           value={formData.provider}
-          onChange={e => setFormData(prev => ({ ...prev, provider: e.target.value }))}
+          onChange={e => {
+            const newConfig = { ...formData, provider: e.target.value };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
         >
           <option value="google">{t("settings.translation.google")}</option>
           <option value="microsoft">{t("settings.translation.microsoft")}</option>
@@ -1987,7 +2056,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
                   min="0"
                   max="10"
                   value={formData.openai_context_count ?? 2}
-                  onChange={e => setFormData(prev => ({ ...prev, openai_context_count: parseInt(e.target.value) }))}
+                  onChange={e => {
+                    const newConfig = { ...formData, openai_context_count: parseInt(e.target.value) };
+                    setFormData(newConfig);
+                    autoSave(newConfig);
+                  }}
                   style={{ width: '100%', accentColor: 'var(--primary)', cursor: 'pointer' }}
                 />
               </div>
@@ -2000,7 +2073,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           <div className="divider">{t("settings.translation.googleSettings")}</div>
           <ProxyConfigForm
             proxy={formData.google_proxy}
-            onChange={p => setFormData(prev => ({ ...prev, google_proxy: p }))}
+            onChange={p => {
+              const newConfig = { ...formData, google_proxy: p };
+              setFormData(newConfig);
+              autoSave(newConfig);
+            }}
             label={t("settings.translation.useProxy")}
           />
         </>
@@ -2011,15 +2088,27 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
           <div className="divider">{t("settings.translation.microsoftSettings")}</div>
           <div className="form-group">
             <label>{t("settings.translation.apiKey")}</label>
-            <input type="password" value={formData.microsoft_api_key || ''} onChange={e => setFormData(prev => ({ ...prev, microsoft_api_key: e.target.value }))} />
+            <input type="password" value={formData.microsoft_api_key || ''} onChange={e => {
+              const newConfig = { ...formData, microsoft_api_key: e.target.value };
+              setFormData(newConfig);
+              autoSave(newConfig);
+            }} />
           </div>
           <div className="form-group">
             <label>{t("settings.translation.region")}</label>
-            <input type="text" value={formData.microsoft_region || ''} onChange={e => setFormData(prev => ({ ...prev, microsoft_region: e.target.value }))} />
+            <input type="text" value={formData.microsoft_region || ''} onChange={e => {
+              const newConfig = { ...formData, microsoft_region: e.target.value };
+              setFormData(newConfig);
+              autoSave(newConfig);
+            }} />
           </div>
           <ProxyConfigForm
             proxy={formData.microsoft_proxy}
-            onChange={p => setFormData(prev => ({ ...prev, microsoft_proxy: p }))}
+            onChange={p => {
+              const newConfig = { ...formData, microsoft_proxy: p };
+              setFormData(newConfig);
+              autoSave(newConfig);
+            }}
             label={t("settings.translation.useProxy")}
           />
         </>
@@ -2033,7 +2122,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
         <label>{t("settings.summary.provider")}</label>
         <select
           value={formData.summary_provider}
-          onChange={e => setFormData(prev => ({ ...prev, summary_provider: e.target.value }))}
+          onChange={e => {
+            const newConfig = { ...formData, summary_provider: e.target.value };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
         >
           <option value="">{t("settings.summary.selectProvider")}</option>
           {formData.ai_models.map(model => {
@@ -2051,7 +2144,11 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
         <textarea
           className="summary-prompt-textarea"
           value={formData.summary_prompt || ''}
-          onChange={e => setFormData(prev => ({ ...prev, summary_prompt: e.target.value }))}
+          onChange={e => {
+            const newConfig = { ...formData, summary_prompt: e.target.value };
+            setFormData(newConfig);
+            autoSave(newConfig);
+          }}
           rows={10}
         />
       </div>
@@ -2072,27 +2169,29 @@ function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: { config
         {activeTab === 'general' && renderGeneralTab()}
         {activeTab === 'translation' && renderTranslationTab()}
         {activeTab === 'channels' && (
-            <ChannelsTab 
-                channels={formData.ai_channels} 
-                onChange={channels => setFormData({ ...formData, ai_channels: channels })}
+            <ChannelsTab
+                channels={formData.ai_channels}
+                onChange={channels => {
+                  const newConfig = { ...formData, ai_channels: channels };
+                  setFormData(newConfig);
+                  autoSave(newConfig);
+                }}
                 onAuth={onStartCopilotAuth}
             />
         )}
         {activeTab === 'models' && (
-            <ModelsTab 
+            <ModelsTab
                 models={formData.ai_models}
                 channels={formData.ai_channels}
-                onChange={models => setFormData({ ...formData, ai_models: models })}
+                onChange={models => {
+                  const newConfig = { ...formData, ai_models: models };
+                  setFormData(newConfig);
+                  autoSave(newConfig);
+                }}
                 addToast={addToast}
             />
         )}
         {activeTab === 'summary' && renderSummaryTab()}
-      </div>
-
-      <div className="form-actions" style={{ marginTop: 'auto', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
-        <button className="btn-save" onClick={() => onSave(formData)}>
-          <IconCheck /> {t("settings.save")}
-        </button>
       </div>
     </div>
   );
