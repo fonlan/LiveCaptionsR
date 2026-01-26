@@ -226,7 +226,20 @@ impl TranslationService {
                     target_lang = %target_lang,
                     "Starting translation"
                 );
-                self.translate_google(text, target_lang).await
+                let result = self.translate_google(text, target_lang).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "google",
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "google",
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
             }
             TranslationProvider::Microsoft => {
                 debug!(
@@ -236,7 +249,20 @@ impl TranslationService {
                     target_lang = %target_lang,
                     "Starting translation"
                 );
-                self.translate_microsoft(text, target_lang).await
+                let result = self.translate_microsoft(text, target_lang).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "microsoft",
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "microsoft",
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
             }
             TranslationProvider::OpenAI(endpoint_id) => {
                 debug!(
@@ -249,10 +275,40 @@ impl TranslationService {
                 // Check if this is a Copilot model ID by looking up in ai_models
                 if let Some(model) = self.config.ai_models.iter().find(|m| m.id == *endpoint_id) {
                     if let Some(channel) = self.config.ai_channels.iter().find(|c| c.id == model.channel_id && c.channel_type == "copilot") {
-                        return self.translate_copilot(text, context, target_lang, channel.token.as_deref(), Some(&model.name)).await;
+                        let result = self.translate_copilot(text, context, target_lang, channel.token.as_deref(), Some(&model.name)).await;
+                        match &result {
+                            Ok(translated) => debug!(
+                                provider = "copilot",
+                                model = %model.name,
+                                result_len = translated.len(),
+                                "Translation completed successfully"
+                            ),
+                            Err(e) => error!(
+                                provider = "copilot",
+                                model = %model.name,
+                                error = %e,
+                                "Translation failed"
+                            ),
+                        }
+                        return result;
                     }
                 }
-                self.translate_openai(text, endpoint_id, context, target_lang).await
+                let result = self.translate_openai(text, endpoint_id, context, target_lang).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "openai",
+                        endpoint_id = %endpoint_id,
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "openai",
+                        endpoint_id = %endpoint_id,
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
             }
             TranslationProvider::Copilot => {
                 debug!(
@@ -261,7 +317,20 @@ impl TranslationService {
                     target_lang = %target_lang,
                     "Starting translation"
                 );
-                self.translate_copilot(text, context, target_lang, None, None).await
+                let result = self.translate_copilot(text, context, target_lang, None, None).await;
+                match &result {
+                    Ok(translated) => debug!(
+                        provider = "copilot",
+                        result_len = translated.len(),
+                        "Translation completed successfully"
+                    ),
+                    Err(e) => error!(
+                        provider = "copilot",
+                        error = %e,
+                        "Translation failed"
+                    ),
+                }
+                result
             }
         }
     }
