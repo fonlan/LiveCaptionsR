@@ -31,11 +31,17 @@ pub fn init_logger(log_level: &str) -> Result<()> {
         .join("LiveCaptionsR")
         .join("logs");
 
+    eprintln!("[DEBUG] Logger: config_dir = {:?}", config_dir);
+
     std::fs::create_dir_all(&config_dir)
         .context("Failed to create logs directory")?;
 
+    eprintln!("[DEBUG] Logger: Created directory successfully");
+
     // Set up file appender with daily rotation
     let file_appender = tracing_appender::rolling::daily(config_dir, "livecaptions-r.log");
+
+    eprintln!("[DEBUG] Logger: File appender created");
 
     // Create filter
     let filter = EnvFilter::new(format!("livecaptions_r_lib={}", level));

@@ -884,6 +884,24 @@ pub fn run() {
     // Initialize database
     db::init().expect("Failed to initialize database");
 
+    // Initialize logger
+    eprintln!("[DEBUG] About to initialize logger...");
+    let log_level = {
+        let mut config = APP_CONFIG.lock().unwrap();
+        if let Some(loaded) = load_config_from_file() {
+            *config = loaded;
+        }
+        config.log_level.clone()
+    };
+    eprintln!("[DEBUG] Log level from config: {}", log_level);
+
+    if let Err(e) = logger::init_logger(&log_level) {
+        eprintln!("WARNING: Failed to initialize logger: {}", e);
+        eprintln!("Continuing with stderr-only logging");
+    } else {
+        eprintln!("[DEBUG] Logger initialized successfully");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -906,7 +924,8 @@ pub fn run() {
             delete_all_sessions_command,
             start_copilot_auth,
             poll_copilot_token,
-            fetch_copilot_models_command
+            fetch_copilot_models_command,
+            logger::update_log_level_command
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
