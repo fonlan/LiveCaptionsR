@@ -847,10 +847,13 @@ function App() {
                 // 1. If temp translation exists (user actively translated this) -> SHOW
                 // 2. If historical translation exists (item.translated is not null AND not empty) -> SHOW
                 // 3. If running (live capture), respect config.translation_enabled -> SHOW/HIDE
+                // 4. If card is actively translating (even after stop), keep showing loading animation
                 let shouldShowTranslation = false;
                 if (!!tempTrans) {
                   shouldShowTranslation = true;
                 } else if (item.translated && item.translated.trim().length > 0) {
+                  shouldShowTranslation = true;
+                } else if (displayStatus === 'translating') {
                   shouldShowTranslation = true;
                 } else if (isRunning && config.translation_enabled) {
                    shouldShowTranslation = true;
