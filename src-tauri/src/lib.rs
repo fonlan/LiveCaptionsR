@@ -389,9 +389,6 @@ fn load_config_from_file() -> Option<AppConfig> {
 }
 
 fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
-    // Determine provider and potential Copilot model override
-    let mut copilot_model_override = None;
-
     let provider = if config.provider == "google" {
         TranslationProvider::Google
     } else if config.provider == "microsoft" {
@@ -404,14 +401,10 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     } else {
         // Check if provider string is a Model ID
         if let Some(model) = config.ai_models.iter().find(|m| m.id == config.provider) {
-            if let Some(channel) = config.ai_channels.iter().find(|c| c.id == model.channel_id) {
-                if channel.channel_type == "copilot" {
-                    copilot_model_override = Some(model.name.clone());
-                    TranslationProvider::Copilot
-                } else {
-                    // It's an OpenAI model, treat ID as endpoint ID
-                    TranslationProvider::OpenAI(model.id.clone())
-                }
+            if config.ai_channels.iter().any(|c| c.id == model.channel_id) {
+                // Both Copilot and OpenAI models use the OpenAI provider variant
+                // The translate method will check channel_type to determine which API to use
+                TranslationProvider::OpenAI(model.id.clone())
             } else {
                 TranslationProvider::Google
             }
@@ -485,7 +478,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         openai_endpoints,
         max_concurrent_translations: config.max_concurrent_translations,
         github_token: config.github_token.clone(),
-        copilot_model: copilot_model_override.unwrap_or(config.copilot_model.clone()),
+        copilot_model: config.copilot_model.clone(),
         copilot_proxy,
         ai_channels,
         ai_models,
