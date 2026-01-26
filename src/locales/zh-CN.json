@@ -72,6 +72,12 @@
       "refresh": "刷新",
       "teamsNote": "开始捕获前，请确保 Teams 正在运行并已开启字幕。",
       "language": "语言",
+      "logLevel": "日志级别",
+      "logLevelError": "错误",
+      "logLevelWarn": "警告",
+      "logLevelInfo": "信息",
+      "logLevelDebug": "调试",
+      "logsLocation": "日志位置",
       "theme": "主题",
       "themeDark": "深色",
       "themeLight": "浅色",
@@ -170,7 +176,9 @@
     "configSaved": "配置保存成功",
     "configSaveFailed": "保存配置失败: {{error}}",
     "copySuccess": "已复制到剪贴板",
-    "copyFailed": "复制失败"
+    "copyFailed": "复制失败",
+    "logLevelUpdated": "日志级别已更新为 {{level}}",
+    "logLevelUpdateFailed": "更新日志级别失败: {{error}}"
   },
   "translateSession": {
     "title": "翻译会话",
