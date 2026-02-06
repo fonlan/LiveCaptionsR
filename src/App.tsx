@@ -105,6 +105,8 @@ function App() {
   const lastFullTextRef = useRef<string>("");
   const lastOriginalTextRef = useRef<string>("");
   const lastProcessedCardRef = useRef<SentenceCard | null>(null);
+  const pendingTranslationCardIdRef = useRef<string | null>(null); // Teams mode: card waiting for translation
+  const translationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const idleCountRef = useRef<number>(0);
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
@@ -500,14 +502,88 @@ function App() {
     const unlistenRaw = listen<RawCaption>("caption-raw", async (event) => {
       const fullText = event.payload.text;
       const user = event.payload.user;
-      const latestCaption = getLatestCaption(fullText);
-      setPartialText(latestCaption);
 
       if (isFirstCaptionRef.current) {
         isFirstCaptionRef.current = false;
         lastFullTextRef.current = fullText;
         return;
       }
+
+      // Teams Mode: Delayed translation strategy with Overwrite support & 3s Timeout
+      if (configRef.current.caption_source === 'teams') {
+        if (fullText !== lastFullTextRef.current && fullText.trim()) {
+          // Clear any existing 3s timer
+          if (translationTimerRef.current) {
+            clearTimeout(translationTimerRef.current);
+          }
+
+          const lastCard = lastProcessedCardRef.current;
+          
+          // Helper to trigger translation for a pending card
+          const triggerTranslation = (cardId: string) => {
+             if (!configRef.current.translation_enabled) return;
+             
+             // IMPORTANT: Only now show the loading dots
+             setCards(prev => prev.map(c => 
+               c.id === cardId ? { ...c, status: 'translating' } : c
+             ));
+
+             const card = cardsRef.current.find(c => c.id === cardId);
+             if (card) {
+               performTranslation(cardId, card.original);
+             }
+          };
+
+          // Check if this is an incremental update (continuation) of the last card
+          if (lastCard && shouldOverwrite(lastCard.original, fullText)) {
+            // Update the existing card, but keep status 'success' to hide dots
+            setCards(prev => prev.map(c => 
+              c.id === lastCard.id ? { ...c, original: fullText, status: 'success', translated: null } : c
+            ));
+            
+            pendingTranslationCardIdRef.current = lastCard.id;
+            lastProcessedCardRef.current = { ...lastCard, original: fullText };
+          } else {
+            // NEW message bubble or person
+            // 1. Immediately trigger translation for the PREVIOUS finalized card
+            if (pendingTranslationCardIdRef.current) {
+              triggerTranslation(pendingTranslationCardIdRef.current);
+            }
+
+            // 2. Create NEW card (initially 'success' status to hide dots)
+            const newId = generateId();
+            const timestamp = Math.floor(Date.now() / 1000);
+            const newCard: SentenceCard = {
+              id: newId,
+              original: fullText,
+              translated: null,
+              status: 'success', 
+              user,
+              timestamp
+            };
+
+            setCards(prev => [...prev, newCard].slice(-200));
+            pendingTranslationCardIdRef.current = newId;
+            lastProcessedCardRef.current = newCard;
+          }
+
+          // Start a 3-second timer to trigger translation if no more updates arrive
+          translationTimerRef.current = setTimeout(() => {
+            if (pendingTranslationCardIdRef.current) {
+              triggerTranslation(pendingTranslationCardIdRef.current);
+              pendingTranslationCardIdRef.current = null; // Mark as done
+            }
+          }, 3000);
+
+          setPartialText(fullText);
+          lastFullTextRef.current = fullText;
+        }
+        return;
+      }
+
+      // LiveCaptions Mode: Use auto-segmentation logic
+      const latestCaption = getLatestCaption(fullText);
+      setPartialText(latestCaption);
 
       if (fullText === lastFullTextRef.current) {
         idleCountRef.current++;
@@ -846,10 +922,6 @@ function App() {
                 const displayStatus = tempTrans?.status ?? item.status;
 
                 // Determine if we should show the translation block
-                // 1. If temp translation exists (user actively translated this) -> SHOW
-                // 2. If historical translation exists (item.translated is not null AND not empty) -> SHOW
-                // 3. If running (live capture), respect config.translation_enabled -> SHOW/HIDE
-                // 4. If card is actively translating (even after stop), keep showing loading animation
                 let shouldShowTranslation = false;
                 if (!!tempTrans) {
                   shouldShowTranslation = true;
@@ -857,9 +929,11 @@ function App() {
                   shouldShowTranslation = true;
                 } else if (displayStatus === 'translating') {
                   shouldShowTranslation = true;
-                } else if (isRunning && config.translation_enabled) {
+                } else if (displayStatus === 'error') {
                    shouldShowTranslation = true;
                 }
+                // Removed: isRunning && config.translation_enabled fallback 
+                // to prevent showing dots before actual trigger in Teams mode
 
                 return (
                   <div key={item.id} className={`history-card ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'failed' : ''}`}>

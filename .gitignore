@@ -31,3 +31,4 @@ target/
 AGENTS.md
 CLAUDE.md
 .worktrees/
+.agents/

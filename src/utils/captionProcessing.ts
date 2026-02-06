@@ -86,6 +86,10 @@ export function filterDuplicateSentences(existingSentences: string[], newSentenc
     const lookback = Math.min(existingSentences.length, 10);
     const recentExisting = existingSentences.slice(-lookback);
 
+    // 1. Forward check: Check if newSentences starts with the end of existingSentences
+    // Existing: [A, B, C]
+    // New: [B, C, D]
+    // Match: B, C -> Overlap 2 -> Result: [D]
     for (let i = 0; i < recentExisting.length; i++) {
         // Check if the sequence starting at recentExisting[i] matches the start of newSentences
         if (calculateSimilarity(recentExisting[i], newSentences[0]) > 0.8) {
@@ -96,8 +100,7 @@ export function filterDuplicateSentences(existingSentences: string[], newSentenc
             
             for (let j = 0; j < suffixLength; j++) {
                 if (j >= newSentences.length) {
-                    // New sentences are fully contained in the existing suffix
-                    overlapCount = newSentences.length; // Consume all
+                    overlapCount = newSentences.length; 
                     break; 
                 }
                 
@@ -109,17 +112,46 @@ export function filterDuplicateSentences(existingSentences: string[], newSentenc
             }
             
             if (match) {
-                // We found that newSentences starts with a sequence that already exists at the end of existingSentences
-                
-                // Heuristic: Only filter if it's a SEQUENCE repetition (more than 1 sentence) 
-                // OR if it's a long enough sentence (> 10 chars) to be considered a unique thought rather than a short interjection like "Yes" or "Hello".
                 const isSequence = overlapCount > 1;
                 const isLongSentence = overlapCount === 1 && newSentences[0].length > 10;
                 
                 if (isSequence || isLongSentence) {
                      return newSentences.slice(overlapCount);
                 }
-                // Otherwise, preserve the repetition (e.g. user saying "Hello." twice)
+            }
+        }
+    }
+
+    // 2. Backward check: Check if existingSentences end is contained SOMEWHERE in newSentences
+    // This handles cases where Teams dumps history *before* the current point
+    // Existing: [A, B, C]
+    // New: [A, B, C, D] (Context expanded backwards)
+    // We want to find C in New, and take only D.
+    
+    // We verify using the last few sentences of existing to ensure strong lock
+    const lastExisting = existingSentences[existingSentences.length - 1];
+    if (lastExisting) {
+        // Scan newSentences to find where lastExisting appears
+        for (let i = 0; i < newSentences.length; i++) {
+            if (calculateSimilarity(lastExisting, newSentences[i]) > 0.8) {
+                // Found a potential sync point at New[i]
+                // Verify backwards if possible to be sure
+                // For simplicity, if the last sentence matches, we assume everything before it in New is also history
+                // and everything after it is fresh.
+                
+                // Double check if we have more context to verify
+                let verified = true;
+                if (existingSentences.length >= 2 && i >= 1) {
+                     const secondLast = existingSentences[existingSentences.length - 2];
+                     if (calculateSimilarity(secondLast, newSentences[i - 1]) <= 0.8) {
+                         verified = false;
+                     }
+                }
+                
+                if (verified) {
+                    // Match confirmed. New sentences are only those AFTER index i.
+                    return newSentences.slice(i + 1);
+                }
             }
         }
     }

@@ -48,7 +48,11 @@ fn split_into_sentences(text: &str) -> (Vec<String>, String) {
 
     for i in 0..chars.len() {
         if is_eos_punctuation(text, i) {
-            let sentence: String = chars[start..=i].iter().collect::<String>().trim().to_string();
+            let sentence: String = chars[start..=i]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string();
             if !sentence.is_empty() {
                 sentences.push(sentence);
             }
@@ -378,7 +382,10 @@ impl LiveCaptionsWatcher {
         Ok(())
     }
 
-    pub fn get_caption_text(&self, window: &IUIAutomationElement) -> Result<String> {
+    pub fn get_caption_text(
+        &self,
+        window: &IUIAutomationElement,
+    ) -> Result<(Option<String>, String)> {
         unsafe {
             let text_condition = self
                 .automation
@@ -421,7 +428,17 @@ impl LiveCaptionsWatcher {
                 }
             }
 
-            Ok(texts.join(" "))
+            if texts.is_empty() {
+                return Ok((None, String::new()));
+            }
+
+            if texts.len() > 1 {
+                let user = texts[0].clone();
+                let text = texts[1..].join(" ");
+                Ok((Some(user), text))
+            } else {
+                Ok((None, texts[0].clone()))
+            }
         }
     }
 
@@ -601,6 +618,7 @@ pub struct CaptionStream {
     window: Option<IUIAutomationElement>,
     running: Arc<AtomicBool>,
     last_text: String,
+    last_user: Option<String>,
     window_hidden: bool,
     error_count: u32,
     sent_sentences: VecDeque<String>,
@@ -614,6 +632,7 @@ impl CaptionStream {
             window: None,
             running: Arc::new(AtomicBool::new(false)),
             last_text: String::new(),
+            last_user: None,
             window_hidden: false,
             error_count: 0,
             sent_sentences: VecDeque::with_capacity(20),
@@ -670,7 +689,7 @@ impl CaptionStream {
         }
     }
 
-    pub fn get_next_caption(&mut self) -> Option<String> {
+    pub fn get_next_caption(&mut self) -> Option<(Option<String>, String)> {
         if !self.running.load(Ordering::SeqCst) {
             return None;
         }
@@ -684,13 +703,20 @@ impl CaptionStream {
         };
 
         match result {
-            Ok(text) => {
+            Ok((user, text)) => {
                 if !text.is_empty() {
-                    // eprintln!("[LiveCaptions Raw] {}", text);
+                    // eprintln!("[LiveCaptions Raw] User: {:?}, Text: {}", user, text);
                 }
                 self.error_count = 0;
-                if !text.is_empty() && text != self.last_text {
+
+                // Clear sent sentences buffer if user changes, to avoid cross-user deduplication issues
+                if user != self.last_user {
+                    self.sent_sentences.clear();
+                }
+
+                if !text.is_empty() && (text != self.last_text || user != self.last_user) {
                     self.last_text = text.clone();
+                    self.last_user = user.clone();
 
                     // Sentence-level deduplication for LiveCaptions
                     let (sentences, trailing) = split_into_sentences(&text);
@@ -715,7 +741,7 @@ impl CaptionStream {
                     }
 
                     if !result_parts.is_empty() {
-                        return Some(result_parts.join(" "));
+                        return Some((user, result_parts.join(" ")));
                     }
                 }
             }
@@ -730,7 +756,10 @@ impl CaptionStream {
                     self.restore_window();
                     self.window = None;
                     self.running.store(false, Ordering::SeqCst);
-                    return Some(format!("[ERROR] Lost connection to LiveCaptions: {}", e));
+                    return Some((
+                        None,
+                        format!("[ERROR] Lost connection to LiveCaptions: {}", e),
+                    ));
                 }
 
                 // Try to recover by re-finding the window
