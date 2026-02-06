@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SessionMetadata } from '../types';
 import { IconTrash, IconClock } from './Icons';
@@ -12,7 +12,7 @@ interface SidebarProps {
   isOpen: boolean;
 }
 
-export function Sidebar({ sessions, currentId, onSelect, onDelete, onClearAll, isOpen }: SidebarProps) {
+export const Sidebar = memo(function Sidebar({ sessions, currentId, onSelect, onDelete, onClearAll, isOpen }: SidebarProps) {
   const { t } = useTranslation();
   return (
     <div className={`sidebar ${isOpen ? 'open' : 'closed'}`}>
@@ -72,4 +72,4 @@ export function Sidebar({ sessions, currentId, onSelect, onDelete, onClearAll, i
       </div>
     </div>
   );
-}
+});
