@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { AppConfig, LANGUAGES } from "../../types";
+import { AppConfig, LANGUAGES, LogLevel } from "../../types";
 import { ProxyConfigForm } from "./ProxyConfigForm";
 import { ChannelsTab } from "./ChannelsTab";
 import { ModelsTab } from "./ModelsTab";
@@ -95,8 +95,8 @@ export function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: S
         <select
           value={formData.log_level || 'info'}
           onChange={async e => {
-            const newLevel = e.target.value;
-            const newConfig = { ...formData, log_level: newLevel };
+            const newLevel = e.target.value as LogLevel;
+            const newConfig: AppConfig = { ...formData, log_level: newLevel };
             setFormData(newConfig);
             try {
               await invoke("update_log_level_command", { level: newLevel });

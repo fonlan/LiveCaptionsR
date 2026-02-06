@@ -38,7 +38,19 @@ export function ModelsTab({ models, channels, onChange, addToast }: ModelsTabPro
 
   const handleFetchModels = async (channelId: string) => {
     const channel = channels.find(c => c.id === channelId);
-    if (!channel || !channel.token) {
+    
+    if (!channel) {
+        addToast('error', t("settings.models.toast.channelNotAuth"));
+        return;
+    }
+
+    if (channel.type !== 'copilot') {
+         addToast('error', t("settings.models.toast.channelNotAuth"));
+         return;
+    }
+
+    // Explicit check for token now that we know it is copilot
+    if (!channel.token) {
         addToast('error', t("settings.models.toast.channelNotAuth"));
         return;
     }
@@ -121,8 +133,8 @@ export function ModelsTab({ models, channels, onChange, addToast }: ModelsTabPro
                         <button 
                             className="btn-secondary"
                             onClick={() => handleFetchModels(model.channel_id)}
-                            disabled={isFetching[model.channel_id] || !selectedChannel?.token}
-                            title={!selectedChannel?.token ? t("settings.models.loginFirst") : t("settings.models.fetchTooltip")}
+                            disabled={isFetching[model.channel_id] || (selectedChannel?.type === 'copilot' ? !selectedChannel.token : true)}
+                            title={!(selectedChannel?.type === 'copilot' && selectedChannel.token) ? t("settings.models.loginFirst") : t("settings.models.fetchTooltip")}
                             style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center' }}
                         >
                             {isFetching[model.channel_id] ? <span className="spinner" style={{width: 12, height: 12, borderWidth: 2}}></span> : <IconRetry size={14} />}

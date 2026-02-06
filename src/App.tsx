@@ -17,6 +17,7 @@ import {
   SessionMetadata, 
   TeamsWindowInfo,
   Toast,
+  TranslationStatus,
 } from "./types";
 import { 
   IconCheck, 
@@ -67,7 +68,7 @@ function App() {
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
-  const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: 'translating' | 'success' | 'error' }>>({});
+  const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
   
   // Session State
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
@@ -381,7 +382,7 @@ function App() {
       }
 
       const translated = await invoke<string>("translate_text", { text: originalText, context });
-      setCards(prev => prev.map(c => c.id === cardId ? { ...c, translated, retrying: false, status: 'success' as const } : c));
+      setCards(prev => prev.map(c => c.id === cardId ? { ...c, translated, retrying: false, status: 'success' as TranslationStatus } : c));
     } catch (e) {
       console.error("Retry failed:", e);
       setCards(prev => prev.map(c => c.id === cardId ? { ...c, retrying: false } : c));
@@ -412,7 +413,7 @@ function App() {
       setCards(prev => prev.map(c => {
         if (c.id === cardId) {
           if (c.original !== text) return c;
-          return { ...c, translated, status: 'success' as const };
+          return { ...c, translated, status: 'success' as TranslationStatus };
         }
         return c;
       }));
@@ -421,7 +422,7 @@ function App() {
       setCards(prev => prev.map(c => {
         if (c.id === cardId) {
           if (c.original !== text) return c;
-          return { ...c, translated: null, status: 'error' as const };
+          return { ...c, translated: null, status: 'error' as TranslationStatus };
         }
         return c;
       }));
@@ -476,15 +477,15 @@ function App() {
     // Check if translation is enabled
     if (configRef.current.translation_enabled === false) {
       // Just leave it as null/translating until finalized? 
-      // Actually if translation is disabled, we should just mark it as success but with null translation
-      // to indicate "processing done, no translation needed"
-      setCards(prev => prev.map(c => {
-        if (c.id === newId) {
-          return { ...c, translated: null, status: 'success' as const };
-        }
-        return c;
-      }));
-      return;
+    // Actually if translation is disabled, we should just mark it as success but with null translation
+    // to indicate "processing done, no translation needed"
+    setCards(prev => prev.map(c => {
+      if (c.id === newId) {
+        return { ...c, translated: null, status: 'success' as TranslationStatus };
+      }
+      return c;
+    }));
+    return;
     }
 
     // Start translation for the NEW card
@@ -762,7 +763,7 @@ function App() {
     setTempTranslations({});
 
     // Initialize all cards as 'translating'
-    const initialTranslations: Record<string, { translated: string; status: 'translating' | 'success' | 'error' }> = {};
+    const initialTranslations: Record<string, { translated: string; status: TranslationStatus }> = {};
     cards.forEach(card => {
       initialTranslations[card.id] = { translated: '', status: 'translating' };
     });

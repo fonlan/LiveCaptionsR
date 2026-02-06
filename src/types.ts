@@ -6,11 +6,13 @@ export interface RawCaption {
   timestamp: number;
 }
 
+export type TranslationStatus = 'translating' | 'success' | 'error';
+
 export interface SentenceCard {
   id: string;
   original: string;
   translated: string | null;
-  status?: 'translating' | 'success' | 'error';
+  status?: TranslationStatus;
   user?: string;
   retrying?: boolean;
   timestamp: number; // Added timestamp
@@ -36,9 +38,11 @@ export interface TeamsWindowInfo {
   title: string;
 }
 
+export type ToastType = 'success' | 'error';
+
 export interface Toast {
   id: string;
-  type: 'success' | 'error';
+  type: ToastType;
   message: string;
 }
 
@@ -51,18 +55,24 @@ export interface ProxyConfig {
 
 export type AIChannelType = 'openai' | 'copilot';
 
-export interface AIChannel {
+export interface BaseChannel {
   id: string;
-  type: AIChannelType;
   name: string;
-  // OpenAI
-  api_key?: string;
-  base_url?: string;
-  // Copilot
-  token?: string;
-  // Shared
   proxy: ProxyConfig;
 }
+
+export interface OpenAIChannel extends BaseChannel {
+  type: 'openai';
+  api_key: string;
+  base_url: string;
+}
+
+export interface CopilotChannel extends BaseChannel {
+  type: 'copilot';
+  token?: string;
+}
+
+export type AIChannel = OpenAIChannel | CopilotChannel;
 
 export interface AIModel {
   id: string; // generated ID
@@ -75,10 +85,13 @@ export interface CopilotModel {
   name: string;
 }
 
+export type ProviderType = 'google' | 'microsoft' | string;
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
+
 export interface AppConfig {
   caption_source: string;
   selected_teams_hwnd: number | null;
-  provider: string;
+  provider: ProviderType;
   source_lang: string;
   target_lang: string;
   theme: string;
@@ -98,7 +111,7 @@ export interface AppConfig {
   language: string;
   translation_enabled: boolean;
   max_concurrent_translations: number;
-  log_level: string; // "error" | "warn" | "info" | "debug"
+  log_level: LogLevel;
 }
 
 export const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };

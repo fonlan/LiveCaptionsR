@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { IconPlus, IconMinus } from "../Icons";
-import { AIChannel, AIChannelType } from "../../types";
+import { AIChannel, AIChannelType, OpenAIChannel, CopilotChannel } from "../../types";
 import { generateId } from "../../utils/textUtils";
 import { ProxyConfigForm } from "./ProxyConfigForm";
 
@@ -26,7 +26,35 @@ export function ChannelsTab({ channels, onChange, onAuth }: ChannelsTabProps) {
   };
 
   const updateChannel = (id: string, updates: Partial<AIChannel>) => {
-    onChange(channels.map(c => c.id === id ? { ...c, ...updates } : c));
+    const updatedChannels = channels.map(c => {
+      if (c.id !== id) return c;
+
+      // Handle type switching
+      if ('type' in updates && updates.type && updates.type !== c.type) {
+         if (updates.type === 'openai') {
+             return {
+                 id: c.id,
+                 name: c.name,
+                 proxy: c.proxy,
+                 type: 'openai',
+                 api_key: '',
+                 base_url: 'https://api.openai.com/v1',
+             } as OpenAIChannel;
+         } else {
+             return {
+                 id: c.id,
+                 name: c.name,
+                 proxy: c.proxy,
+                 type: 'copilot'
+             } as CopilotChannel;
+         }
+      }
+
+      // Normal update - use any cast to avoid Partial<Union> issues
+      return { ...c, ...updates } as any as AIChannel;
+    });
+    
+    onChange(updatedChannels);
   };
 
   const removeChannel = (id: string) => {
