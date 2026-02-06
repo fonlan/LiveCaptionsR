@@ -628,7 +628,7 @@ impl TranslationService {
             method = "POST",
             url = %url,
             model = %model,
-            request_body = %serde_json::to_string_pretty(&request).unwrap_or_default(),
+            message_count = request.messages.len(),
             "Sending Copilot API request"
         );
 
@@ -969,7 +969,7 @@ impl TranslationService {
             url = %url,
             api_key = %api_key_preview,
             model = %endpoint.model,
-            request_body = %serde_json::to_string_pretty(&request).unwrap_or_default(),
+            message_count = request.messages.len(),
             "Sending OpenAI API request"
         );
 
@@ -1003,7 +1003,7 @@ impl TranslationService {
         let response_text = response.text().await.context("Failed to read response body")?;
 
         debug!(
-            response_body = %response_text,
+            response_body_preview = %response_text.chars().take(200).collect::<String>(),
             "OpenAI API response body"
         );
 

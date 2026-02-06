@@ -1,21 +1,25 @@
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
-use std::sync::mpsc::{channel, Sender};
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::mpsc::{channel, Receiver};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
 mod db;
+mod error;
 mod livecaptions;
 mod logger;
+mod state;
 mod storage;
 mod teams;
 mod translation;
 
+use error::AppError;
+use state::AppState;
 use teams::TeamsWindowInfo;
-
-use translation::{OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationProvider, TranslationService, CopilotModel};
+use translation::{
+    CopilotModel, OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationProvider,
+    TranslationService,
+};
 
 // Simple raw caption event - just the text from LiveCaptions
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -199,17 +203,10 @@ impl Default for AppConfig {
     }
 }
 
-static CAPTION_RUNNING: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
-
-static APP_CONFIG: Lazy<Mutex<AppConfig>> = Lazy::new(|| Mutex::new(AppConfig::default()));
-
-static TRANSLATION_SERVICE: Lazy<Mutex<Option<TranslationService>>> = Lazy::new(|| Mutex::new(None));
-
-enum CaptionThreadCommand {
+#[derive(Debug, Clone)]
+pub enum CaptionThreadCommand {
     ToggleVisibility,
 }
-
-static CAPTION_COMMAND_SENDER: Lazy<Mutex<Option<Sender<CaptionThreadCommand>>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DeviceAuthResponse {
@@ -228,7 +225,7 @@ struct TokenResponse {
 const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98"; // GitHub CLI Client ID
 
 #[tauri::command]
-async fn start_copilot_auth() -> Result<DeviceAuthResponse, String> {
+async fn start_copilot_auth() -> Result<DeviceAuthResponse, AppError> {
     let client = reqwest::Client::new();
     let res = client
         .post("https://github.com/login/device/code")
@@ -238,15 +235,14 @@ async fn start_copilot_auth() -> Result<DeviceAuthResponse, String> {
             ("scope", "read:user copilot"), // Request copilot scope
         ])
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
-    let data: DeviceAuthResponse = res.json().await.map_err(|e| e.to_string())?;
+    let data: DeviceAuthResponse = res.json().await?;
     Ok(data)
 }
 
 #[tauri::command]
-async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String, String> {
+async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String, AppError> {
     let client = reqwest::Client::new();
     let interval_duration = std::time::Duration::from_secs(interval.max(5));
     let start_time = std::time::Instant::now();
@@ -254,7 +250,7 @@ async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String
 
     loop {
         if start_time.elapsed() > timeout {
-            return Err("Authentication timed out".to_string());
+            return Err(AppError::Runtime("Authentication timed out".to_string()));
         }
 
         tokio::time::sleep(interval_duration).await;
@@ -268,12 +264,11 @@ async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ])
             .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        
+            .await?;
+
         // Handle raw response to check for errors
-        let text = res.text().await.map_err(|e| e.to_string())?;
-        
+        let text = res.text().await?;
+
         // Try parsing success
         if let Ok(token_res) = serde_json::from_str::<TokenResponse>(&text) {
             return Ok(token_res.access_token);
@@ -283,28 +278,33 @@ async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String
         if text.contains("authorization_pending") {
             continue;
         } else if text.contains("slow_down") {
-             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-             continue;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
         } else if text.contains("expired_token") {
-            return Err("Device code expired".to_string());
+            return Err(AppError::Runtime("Device code expired".to_string()));
         } else if text.contains("access_denied") {
-            return Err("Access denied by user".to_string());
+            return Err(AppError::Runtime("Access denied by user".to_string()));
         } else {
-             // Unknown error, return it
-             return Err(format!("Auth failed: {}", text));
+            // Unknown error, return it
+            return Err(AppError::Runtime(format!("Auth failed: {}", text)));
         }
     }
 }
 
 #[tauri::command]
-async fn fetch_copilot_models_command(token: String) -> Result<Vec<CopilotModel>, String> {
-    let svc = get_or_init_translation_service()?;
-    svc.fetch_copilot_models(&token).await.map_err(|e| e.to_string())
+async fn fetch_copilot_models_command(
+    token: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<CopilotModel>, AppError> {
+    let svc = get_or_init_translation_service(&state)?;
+    svc.fetch_copilot_models(&token)
+        .await
+        .map_err(AppError::Anyhow)
 }
 
 #[tauri::command]
-fn get_config() -> AppConfig {
-    let mut config = APP_CONFIG.lock().unwrap();
+fn get_config(state: State<'_, AppState>) -> AppConfig {
+    let mut config = state.config.lock().unwrap();
     // Load from file if not yet loaded (first call)
     if let Some(loaded) = load_config_from_file() {
         *config = loaded;
@@ -313,7 +313,7 @@ fn get_config() -> AppConfig {
 }
 
 #[tauri::command]
-fn save_config(app: AppHandle, config: AppConfig) -> Result<String, String> {
+async fn save_config(app: AppHandle, config: AppConfig, state: State<'_, AppState>) -> Result<String, AppError> {
     info!(
         theme = %config.theme,
         provider = %config.provider,
@@ -328,14 +328,14 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<String, String> {
 
     // Update in-memory config
     {
-        let mut current = APP_CONFIG.lock().unwrap();
+        let mut current = state.config.lock().unwrap();
         *current = config.clone();
     }
 
     // Recreate translation service with new config
     {
         let translation_config = config_to_translation_config(&config);
-        let mut service = TRANSLATION_SERVICE.lock().unwrap();
+        let mut service = state.translation_service.lock().unwrap();
         match TranslationService::new(translation_config) {
             Ok(s) => *service = Some(s),
             Err(e) => eprintln!("Warning: Failed to update translation service: {}", e),
@@ -351,20 +351,21 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn set_always_on_top(app: AppHandle, always_on_top: bool) -> Result<(), String> {
+fn set_always_on_top(app: AppHandle, always_on_top: bool, state: State<'_, AppState>) -> Result<(), AppError> {
     if let Some(window) = app.get_webview_window("main") {
-        window.set_always_on_top(always_on_top)
-            .map_err(|e| e.to_string())?;
-        
+        window
+            .set_always_on_top(always_on_top)
+            .map_err(|e| AppError::Runtime(e.to_string()))?;
+
         {
-            let mut config = APP_CONFIG.lock().unwrap();
+            let mut config = state.config.lock().unwrap();
             config.always_on_top = always_on_top;
             let _ = save_config_to_file(&config);
         }
-        
+
         Ok(())
     } else {
-        Err("Main window not found".to_string())
+        Err(AppError::Runtime("Main window not found".to_string()))
     }
 }
 
@@ -396,12 +397,19 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     } else if config.provider == "copilot" {
         TranslationProvider::Copilot
     } else if config.provider.starts_with("openai:") {
-        let endpoint_id = config.provider.strip_prefix("openai:").unwrap_or("default");
+        let endpoint_id = config
+            .provider
+            .strip_prefix("openai:")
+            .unwrap_or("default");
         TranslationProvider::OpenAI(endpoint_id.to_string())
     } else {
         // Check if provider string is a Model ID
         if let Some(model) = config.ai_models.iter().find(|m| m.id == config.provider) {
-            if config.ai_channels.iter().any(|c| c.id == model.channel_id) {
+            if config
+                .ai_channels
+                .iter()
+                .any(|c| c.id == model.channel_id)
+            {
                 // Both Copilot and OpenAI models use the OpenAI provider variant
                 // The translate method will check channel_type to determine which API to use
                 TranslationProvider::OpenAI(model.id.clone())
@@ -414,27 +422,33 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     };
 
     // Convert AI Models (OpenAI type) to OpenAIEndpoints
-    let openai_endpoints = config.ai_models.iter().filter_map(|m| {
-        let channel = config.ai_channels.iter().find(|c| c.id == m.channel_id)?;
-        if channel.channel_type == "openai" {
-            Some(OpenAIEndpoint {
-                id: m.id.clone(),
-                name: m.name.clone(), // Use model name as endpoint name for logs
-                api_key: channel.api_key.clone().unwrap_or_default(),
-                base_url: channel.base_url.clone().unwrap_or_default(),
-                model: m.name.clone(),
-                proxy: ProxyConfig {
-                    url: channel.proxy.url.clone(),
-                    enabled: channel.proxy.enabled,
-                },
-            })
-        } else {
-            None
-        }
-    }).collect();
+    let openai_endpoints = config
+        .ai_models
+        .iter()
+        .filter_map(|m| {
+            let channel = config.ai_channels.iter().find(|c| c.id == m.channel_id)?;
+            if channel.channel_type == "openai" {
+                Some(OpenAIEndpoint {
+                    id: m.id.clone(),
+                    name: m.name.clone(), // Use model name as endpoint name for logs
+                    api_key: channel.api_key.clone().unwrap_or_default(),
+                    base_url: channel.base_url.clone().unwrap_or_default(),
+                    model: m.name.clone(),
+                    proxy: ProxyConfig {
+                        url: channel.proxy.url.clone(),
+                        enabled: channel.proxy.enabled,
+                    },
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Find Copilot proxy from any Copilot channel (for fetching models, token, etc.)
-    let copilot_proxy = config.ai_channels.iter()
+    let copilot_proxy = config
+        .ai_channels
+        .iter()
         .find(|c| c.channel_type == "copilot")
         .map(|c| ProxyConfig {
             url: c.proxy.url.clone(),
@@ -443,22 +457,30 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         .unwrap_or_default();
 
     // Convert ai_channels to translation service format
-    let ai_channels = config.ai_channels.iter().map(|c| translation::AIChannel {
-        id: c.id.clone(),
-        channel_type: c.channel_type.clone(),
-        token: c.token.clone(),
-        proxy: translation::ProxyConfig {
-            url: c.proxy.url.clone(),
-            enabled: c.proxy.enabled,
-        },
-    }).collect();
+    let ai_channels = config
+        .ai_channels
+        .iter()
+        .map(|c| translation::AIChannel {
+            id: c.id.clone(),
+            channel_type: c.channel_type.clone(),
+            token: c.token.clone(),
+            proxy: translation::ProxyConfig {
+                url: c.proxy.url.clone(),
+                enabled: c.proxy.enabled,
+            },
+        })
+        .collect();
 
     // Convert ai_models to translation service format
-    let ai_models = config.ai_models.iter().map(|m| translation::AIModel {
-        id: m.id.clone(),
-        name: m.name.clone(),
-        channel_id: m.channel_id.clone(),
-    }).collect();
+    let ai_models = config
+        .ai_models
+        .iter()
+        .map(|m| translation::AIModel {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            channel_id: m.channel_id.clone(),
+        })
+        .collect();
 
     TranslationConfig {
         provider,
@@ -485,10 +507,12 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     }
 }
 
-fn get_or_init_translation_service() -> Result<TranslationService, String> {
+fn get_or_init_translation_service(
+    state: &AppState,
+) -> Result<TranslationService, String> {
     // 1. Try to get existing service (fast path)
     {
-        let guard = TRANSLATION_SERVICE.lock().unwrap();
+        let guard = state.translation_service.lock().unwrap();
         if let Some(service) = &*guard {
             return Ok(service.clone());
         }
@@ -496,7 +520,7 @@ fn get_or_init_translation_service() -> Result<TranslationService, String> {
 
     // 2. Initialize if missing (slow path)
     let config = {
-        let mut cfg = APP_CONFIG.lock().unwrap();
+        let mut cfg = state.config.lock().unwrap();
         // Try to load from file to ensure we have latest persistence
         if let Some(loaded) = load_config_from_file() {
             *cfg = loaded;
@@ -505,8 +529,8 @@ fn get_or_init_translation_service() -> Result<TranslationService, String> {
     };
 
     let translation_config = config_to_translation_config(&config);
-    let mut guard = TRANSLATION_SERVICE.lock().unwrap();
-    
+    let mut guard = state.translation_service.lock().unwrap();
+
     // Double-check in case another thread initialized it while we were getting config
     if let Some(service) = &*guard {
         return Ok(service.clone());
@@ -524,38 +548,56 @@ fn get_or_init_translation_service() -> Result<TranslationService, String> {
 /// Translate a single piece of text - called from frontend
 /// context: Optional list of previous caption texts for OpenAI context-aware translation
 #[tauri::command]
-async fn translate_text(text: String, context: Option<Vec<String>>, target_lang_override: Option<String>, provider_override: Option<String>) -> Result<String, String> {
-    let svc = get_or_init_translation_service()?;
-    
-    match svc.translate(&text, context.as_deref(), target_lang_override.as_deref(), provider_override.as_deref()).await {
+async fn translate_text(
+    text: String,
+    context: Option<Vec<String>>,
+    target_lang_override: Option<String>,
+    provider_override: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
+
+    match svc
+        .translate(
+            &text,
+            context.as_deref(),
+            target_lang_override.as_deref(),
+            provider_override.as_deref(),
+        )
+        .await
+    {
         Ok(translated) => Ok(translated),
-        Err(e) => Err(format!("Translation error: {}", e)),
+        Err(e) => Err(AppError::Runtime(format!("Translation error: {}", e))),
     }
 }
 
 /// Summarize a list of text segments
 #[tauri::command]
-async fn summarize_text(segments: Vec<String>, provider_id: String) -> Result<String, String> {
+async fn summarize_text(
+    segments: Vec<String>,
+    provider_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
     if segments.is_empty() {
         return Ok(String::new());
     }
 
-    let svc = get_or_init_translation_service()?;
+    let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
 
     let full_text = segments.join("\n");
-    
+
     match svc.summarize(&full_text, &provider_id).await {
         Ok(summary) => Ok(summary),
-        Err(e) => Err(format!("Summarization error: {}", e)),
+        Err(e) => Err(AppError::Runtime(format!("Summarization error: {}", e))),
     }
 }
 
 /// Start caption watcher - simplified to only emit raw text
 #[tauri::command]
-async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
+async fn start_caption_watcher(app: AppHandle, state: State<'_, AppState>) -> Result<String, AppError> {
     // Load config
     let config = {
-        let mut cfg = APP_CONFIG.lock().unwrap();
+        let mut cfg = state.config.lock().unwrap();
         if let Some(loaded) = load_config_from_file() {
             *cfg = loaded;
         }
@@ -572,18 +614,18 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
     // Initialize translation service
     {
         let translation_config = config_to_translation_config(&config);
-        let mut service = TRANSLATION_SERVICE.lock().unwrap();
+        let mut service = state.translation_service.lock().unwrap();
         match TranslationService::new(translation_config) {
             Ok(s) => *service = Some(s),
-            Err(e) => return Err(format!("Translation init failed: {}", e)),
+            Err(e) => return Err(AppError::Runtime(format!("Translation init failed: {}", e))),
         }
     }
 
     // Check if already running
     {
-        let mut running = CAPTION_RUNNING.lock().unwrap();
+        let mut running = state.caption_running.lock().unwrap();
         if *running {
-            return Err("Caption watcher already running".to_string());
+            return Err(AppError::Runtime("Caption watcher already running".to_string()));
         }
         *running = true;
     }
@@ -591,7 +633,7 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
     // Create channel for commands
     let (tx, rx) = channel();
     {
-        let mut sender = CAPTION_COMMAND_SENDER.lock().unwrap();
+        let mut sender = state.caption_command_sender.lock().unwrap();
         *sender = Some(tx);
     }
 
@@ -621,7 +663,13 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
         };
 
         std::thread::spawn(move || {
-            start_livecaptions_loop(app_clone, rx, hide_system_window, include_microphone, hwnd_override);
+            start_livecaptions_loop(
+                app_clone,
+                rx,
+                hide_system_window,
+                include_microphone,
+                hwnd_override,
+            );
         });
         Ok("LiveCaptions watcher started".to_string())
     }
@@ -630,7 +678,7 @@ async fn start_caption_watcher(app: AppHandle) -> Result<String, String> {
 /// LiveCaptions caption polling loop
 fn start_livecaptions_loop(
     app: AppHandle,
-    rx: std::sync::mpsc::Receiver<CaptionThreadCommand>,
+    rx: Receiver<CaptionThreadCommand>,
     hide_system_window: bool,
     include_microphone: bool,
     hwnd_override: Option<isize>,
@@ -642,7 +690,8 @@ fn start_livecaptions_loop(
         Err(e) => {
             error!(error = %e, "Failed to initialize LiveCaptions stream");
             let _ = app.emit("caption-error", format!("Init failed: {}", e));
-            let mut running = CAPTION_RUNNING.lock().unwrap();
+            let state = app.state::<AppState>();
+            let mut running = state.caption_running.lock().unwrap();
             *running = false;
             return;
         }
@@ -662,7 +711,8 @@ fn start_livecaptions_loop(
         Err(e) => {
             error!(error = %e, "Failed to connect LiveCaptions stream");
             let _ = app.emit("caption-error", e.to_string());
-            let mut running = CAPTION_RUNNING.lock().unwrap();
+            let state = app.state::<AppState>();
+            let mut running = state.caption_running.lock().unwrap();
             *running = false;
             return;
         }
@@ -672,7 +722,8 @@ fn start_livecaptions_loop(
 
     while stream.is_running() {
         {
-            let running = CAPTION_RUNNING.lock().unwrap();
+            let state = app.state::<AppState>();
+            let running = state.caption_running.lock().unwrap();
             if !*running {
                 stream.stop();
                 break;
@@ -689,7 +740,7 @@ fn start_livecaptions_loop(
             }
         }
 
-        if let Some(text) = stream.get_next_caption() {
+        if let Some((user, text)) = stream.get_next_caption() {
             if text == last_text {
                 std::thread::sleep(stream.poll_interval());
                 continue;
@@ -707,21 +758,26 @@ fn start_livecaptions_loop(
             } else {
                 text.clone()
             };
-            debug!(caption_preview = %preview, "Received LiveCaptions caption");
+            debug!(user = ?user, caption_preview = %preview, "Received LiveCaptions caption");
 
             let timestamp = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
 
-            let caption = RawCaption { text, user: None, timestamp };
+            let caption = RawCaption {
+                text,
+                user,
+                timestamp,
+            };
             let _ = app.emit("caption-raw", caption);
         }
 
         std::thread::sleep(stream.poll_interval());
     }
 
-    let mut running = CAPTION_RUNNING.lock().unwrap();
+    let state = app.state::<AppState>();
+    let mut running = state.caption_running.lock().unwrap();
     *running = false;
     let _ = app.emit("caption-status", "Stopped");
 }
@@ -729,7 +785,7 @@ fn start_livecaptions_loop(
 /// Teams caption polling loop
 fn start_teams_caption_loop(
     app: AppHandle,
-    rx: std::sync::mpsc::Receiver<CaptionThreadCommand>,
+    rx: Receiver<CaptionThreadCommand>,
     selected_hwnd: Option<isize>,
 ) {
     use std::time::SystemTime;
@@ -739,7 +795,8 @@ fn start_teams_caption_loop(
         Err(e) => {
             error!(error = %e, "Failed to initialize Teams stream");
             let _ = app.emit("caption-error", format!("Teams init failed: {}", e));
-            let mut running = CAPTION_RUNNING.lock().unwrap();
+            let state = app.state::<AppState>();
+            let mut running = state.caption_running.lock().unwrap();
             *running = false;
             return;
         }
@@ -758,7 +815,8 @@ fn start_teams_caption_loop(
         Err(e) => {
             error!(error = %e, "Failed to connect Teams stream");
             let _ = app.emit("caption-error", e.to_string());
-            let mut running = CAPTION_RUNNING.lock().unwrap();
+            let state = app.state::<AppState>();
+            let mut running = state.caption_running.lock().unwrap();
             *running = false;
             return;
         }
@@ -768,7 +826,8 @@ fn start_teams_caption_loop(
 
     while stream.is_running() {
         {
-            let running = CAPTION_RUNNING.lock().unwrap();
+            let state = app.state::<AppState>();
+            let running = state.caption_running.lock().unwrap();
             if !*running {
                 stream.stop();
                 break;
@@ -811,50 +870,54 @@ fn start_teams_caption_loop(
                 .unwrap_or_default()
                 .as_secs();
 
-            let caption = RawCaption { text, user, timestamp };
+            let caption = RawCaption {
+                text,
+                user,
+                timestamp,
+            };
             let _ = app.emit("caption-raw", caption);
         }
 
         std::thread::sleep(stream.poll_interval());
     }
 
-    let mut running = CAPTION_RUNNING.lock().unwrap();
+    let state = app.state::<AppState>();
+    let mut running = state.caption_running.lock().unwrap();
     *running = false;
     let _ = app.emit("caption-status", "Stopped");
 }
 
 #[tauri::command]
-fn stop_caption_watcher() -> Result<String, String> {
+fn stop_caption_watcher(state: State<'_, AppState>) -> Result<String, AppError> {
     // Get current caption source before stopping
     let caption_source = {
-        let config = APP_CONFIG.lock().unwrap();
+        let config = state.config.lock().unwrap();
         config.caption_source.clone()
     };
-    
-    let mut running = CAPTION_RUNNING.lock().unwrap();
+
+    let mut running = state.caption_running.lock().unwrap();
     *running = false;
-    
+
     // Only close LiveCaptions if that was the source
     if caption_source != "teams" {
         if let Err(e) = livecaptions::close_livecaptions() {
             eprintln!("Warning: Failed to close LiveCaptions: {}", e);
         }
     }
-    
+
     Ok("Stopping caption watcher...".to_string())
 }
 
 #[tauri::command]
-fn is_watcher_running() -> bool {
-    let running = CAPTION_RUNNING.lock().unwrap();
+fn is_watcher_running(state: State<'_, AppState>) -> bool {
+    let running = state.caption_running.lock().unwrap();
     *running
 }
-
 
 // --- Session Management Commands ---
 
 #[tauri::command]
-fn create_session(name: String) -> Result<storage::Session, String> {
+fn create_session(name: String) -> Result<storage::Session, AppError> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let id = Uuid::new_v4().to_string();
@@ -869,44 +932,45 @@ fn create_session(name: String) -> Result<storage::Session, String> {
         cards: Vec::new(),
     };
 
-    storage::save_session(&session).map_err(|e| e.to_string())?;
+    storage::save_session(&session).map_err(AppError::Anyhow)?;
     Ok(session)
 }
 
 #[tauri::command]
-fn save_session_data(session: storage::Session) -> Result<(), String> {
-    storage::save_session(&session).map_err(|e| e.to_string())
+fn save_session_data(session: storage::Session) -> Result<(), AppError> {
+    storage::save_session(&session).map_err(AppError::Anyhow)
 }
 
 #[tauri::command]
-fn load_session_data(id: String) -> Result<storage::Session, String> {
-    storage::load_session(&id).map_err(|e| e.to_string())
+fn load_session_data(id: String) -> Result<storage::Session, AppError> {
+    storage::load_session(&id).map_err(AppError::Anyhow)
 }
 
 #[tauri::command]
-fn get_sessions() -> Result<Vec<storage::SessionMetadata>, String> {
-    storage::list_sessions().map_err(|e| e.to_string())
+fn get_sessions() -> Result<Vec<storage::SessionMetadata>, AppError> {
+    storage::list_sessions().map_err(AppError::Anyhow)
 }
 
 #[tauri::command]
-fn delete_session_data(id: String) -> Result<(), String> {
+fn delete_session_data(id: String) -> Result<(), AppError> {
     info!(session_id = %id, "Deleting session");
-    storage::delete_session(&id).map_err(|e| e.to_string())
+    storage::delete_session(&id).map_err(AppError::Anyhow)
 }
 
 #[tauri::command]
-fn delete_all_sessions_command() -> Result<(), String> {
-    storage::delete_all_sessions().map_err(|e| e.to_string())
+fn delete_all_sessions_command() -> Result<(), AppError> {
+    storage::delete_all_sessions().map_err(AppError::Anyhow)
 }
 
 #[tauri::command]
-fn toggle_livecaptions_visibility() -> Result<(), String> {
-    let sender = CAPTION_COMMAND_SENDER.lock().unwrap();
+fn toggle_livecaptions_visibility(state: State<'_, AppState>) -> Result<(), AppError> {
+    let sender = state.caption_command_sender.lock().unwrap();
     if let Some(tx) = &*sender {
-        tx.send(CaptionThreadCommand::ToggleVisibility).map_err(|e| e.to_string())?;
+        tx.send(CaptionThreadCommand::ToggleVisibility)
+            .map_err(|e| AppError::Runtime(e.to_string()))?;
         Ok(())
     } else {
-        Err("Caption watcher not running".to_string())
+        Err(AppError::Runtime("Caption watcher not running".to_string()))
     }
 }
 
@@ -920,7 +984,9 @@ fn get_teams_windows() -> Vec<TeamsWindowInfo> {
 pub fn run() {
     // Install panic hook to catch all panics
     std::panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info.location().unwrap_or_else(|| panic_info.location().unwrap());
+        let location = panic_info
+            .location()
+            .unwrap_or_else(|| panic_info.location().unwrap());
         let msg = panic_info.to_string();
         let backtrace = std::backtrace::Backtrace::capture();
 
@@ -935,7 +1001,12 @@ pub fn run() {
 
         // Also print to stderr for immediate visibility
         eprintln!("!!! PANIC !!!");
-        eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
+        eprintln!(
+            "Location: {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        );
         eprintln!("Message: {}", msg);
         eprintln!("Backtrace:\n{}", backtrace);
     }));
@@ -943,27 +1014,27 @@ pub fn run() {
     // Initialize database
     db::init().expect("Failed to initialize database");
 
+    // Initialize state
+    let state = AppState::default();
+
     // Initialize logger
-    eprintln!("[DEBUG] About to initialize logger...");
     let log_level = {
-        let mut config = APP_CONFIG.lock().unwrap();
+        let mut config = state.config.lock().unwrap();
         if let Some(loaded) = load_config_from_file() {
             *config = loaded;
         }
         config.log_level.clone()
     };
-    eprintln!("[DEBUG] Log level from config: {}", log_level);
 
     if let Err(e) = logger::init_logger(&log_level) {
         eprintln!("WARNING: Failed to initialize logger: {}", e);
         eprintln!("Continuing with stderr-only logging");
-    } else {
-        eprintln!("[DEBUG] Logger initialized successfully");
     }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
@@ -992,17 +1063,19 @@ pub fn run() {
         .run(|app_handle, event| match event {
             tauri::RunEvent::Ready => {
                 // Restore always_on_top on startup
-                if let Some(config) = load_config_from_file() {
-                    if config.always_on_top {
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.set_always_on_top(true);
-                        }
+                // Access state to get config
+                let state = app_handle.state::<AppState>();
+                let config = state.config.lock().unwrap();
+                if config.always_on_top {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.set_always_on_top(true);
                     }
                 }
             }
             tauri::RunEvent::ExitRequested { .. } => {
                 // Ensure LiveCaptions is closed on exit
-                let mut running = CAPTION_RUNNING.lock().unwrap();
+                let state = app_handle.state::<AppState>();
+                let mut running = state.caption_running.lock().unwrap();
                 *running = false;
                 let _ = livecaptions::close_livecaptions();
             }

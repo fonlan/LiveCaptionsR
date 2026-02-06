@@ -1,10 +1,11 @@
+use crate::error::AppError;
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use tracing::Level;
 use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{
-    fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, reload,
+    fmt, layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Layer,
 };
 
 type ReloadHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
@@ -32,12 +33,7 @@ pub fn init_logger(log_level: &str) -> Result<()> {
         .join("LiveCaptionsR")
         .join("logs");
 
-    eprintln!("[DEBUG] Logger: config_dir = {:?}", config_dir);
-
-    std::fs::create_dir_all(&config_dir)
-        .context("Failed to create logs directory")?;
-
-    eprintln!("[DEBUG] Logger: Created directory successfully");
+    std::fs::create_dir_all(&config_dir).context("Failed to create logs directory")?;
 
     // Set up file appender with size-based rotation
     // 10MB file size limit, keep last 5 rotated files
@@ -54,8 +50,6 @@ pub fn init_logger(log_level: &str) -> Result<()> {
 
     // Store the guard to prevent it from being dropped
     std::mem::forget(_guard);
-
-    eprintln!("[DEBUG] Logger: File appender created");
 
     // Create filter
     let filter = EnvFilter::new(format!("livecaptions_r_lib={}", level));
@@ -91,25 +85,27 @@ pub fn init_logger(log_level: &str) -> Result<()> {
 
 /// Update log level at runtime (Tauri command)
 #[tauri::command]
-pub fn update_log_level_command(level: String) -> Result<(), String> {
-    let parsed_level = parse_level(&level).map_err(|e| e.to_string())?;
+pub fn update_log_level_command(level: String) -> Result<(), AppError> {
+    let parsed_level = parse_level(&level).map_err(|e| AppError::Runtime(e.to_string()))?;
 
     let handle = RELOAD_HANDLE.lock().unwrap();
     if let Some(reload_handle) = &*handle {
         let new_filter = EnvFilter::new(format!("livecaptions_r_lib={}", parsed_level));
-        reload_handle.reload(new_filter).map_err(|e| e.to_string())?;
+        reload_handle
+            .reload(new_filter)
+            .map_err(|e| AppError::Runtime(e.to_string()))?;
         tracing::info!("Log level updated to {}", level);
         Ok(())
     } else {
-        Err("Logger not initialized".to_string())
+        Err(AppError::Runtime("Logger not initialized".to_string()))
     }
 }
 
 /// Open log directory in file explorer (Tauri command)
 #[tauri::command]
-pub fn open_log_directory() -> Result<(), String> {
+pub fn open_log_directory() -> Result<(), AppError> {
     let log_dir = dirs::config_dir()
-        .ok_or_else(|| "Could not find config directory".to_string())?
+        .ok_or_else(|| AppError::Runtime("Could not find config directory".to_string()))?
         .join("LiveCaptionsR")
         .join("logs");
 
@@ -118,7 +114,7 @@ pub fn open_log_directory() -> Result<(), String> {
         std::process::Command::new("explorer")
             .arg(&log_dir)
             .spawn()
-            .map_err(|e| format!("Failed to open explorer: {}", e))?;
+            .map_err(|e| AppError::Runtime(format!("Failed to open explorer: {}", e)))?;
     }
 
     #[cfg(target_os = "macos")]
@@ -126,7 +122,7 @@ pub fn open_log_directory() -> Result<(), String> {
         std::process::Command::new("open")
             .arg(&log_dir)
             .spawn()
-            .map_err(|e| format!("Failed to open finder: {}", e))?;
+            .map_err(|e| AppError::Runtime(format!("Failed to open finder: {}", e)))?;
     }
 
     #[cfg(target_os = "linux")]
@@ -134,7 +130,7 @@ pub fn open_log_directory() -> Result<(), String> {
         std::process::Command::new("xdg-open")
             .arg(&log_dir)
             .spawn()
-            .map_err(|e| format!("Failed to open file manager: {}", e))?;
+            .map_err(|e| AppError::Runtime(format!("Failed to open file manager: {}", e)))?;
     }
 
     Ok(())
@@ -211,10 +207,18 @@ mod tests {
             .collect();
 
         // Should have multiple files due to rotation
-        assert!(entries.len() > 1, "Expected multiple log files, found {}", entries.len());
+        assert!(
+            entries.len() > 1,
+            "Expected multiple log files, found {}",
+            entries.len()
+        );
 
         // Verify we don't exceed max_log_files + 1 (current + archived)
-        assert!(entries.len() <= 4, "Expected at most 4 files (current + 3 archived), found {}", entries.len());
+        assert!(
+            entries.len() <= 4,
+            "Expected at most 4 files (current + 3 archived), found {}",
+            entries.len()
+        );
 
         // Clean up
         let _ = fs::remove_dir_all(&test_dir);
