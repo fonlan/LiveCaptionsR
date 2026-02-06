@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import "./App.css";
+import "./App.legacy.css";
 import { 
   AppConfig, 
   DEFAULT_CONFIG, 
@@ -814,26 +815,26 @@ function App() {
   const handleWindowClose = () => appWindow.close();
 
   return (
-    <div className="app-container">
+    <div className="flex flex-col h-screen overflow-hidden bg-background font-sans text-text-primary">
       {/* Custom Titlebar */}
-      <div className="custom-titlebar">
-        <div className="titlebar-drag" data-tauri-drag-region>
-          <span className="titlebar-title" data-tauri-drag-region>{t("app.title")}</span>
+      <div data-tauri-drag-region className="h-8 bg-panel flex justify-between items-center select-none border-b border-border z-50">
+        <div className="flex-1 h-full flex items-center pl-3" data-tauri-drag-region>
+          <span className="text-xs font-semibold text-text-secondary tracking-[0.5px]">LiveCaptions</span>
         </div>
-        <div className="titlebar-controls">
-          <button className="titlebar-btn" onClick={handleWindowMinimize} title={t("titlebar.minimize")}>
+        <div className="flex h-full">
+          <button onClick={handleWindowMinimize} className="w-[46px] h-full bg-transparent border-none text-text-muted flex justify-center items-center cursor-pointer transition-all duration-200 hover:bg-white/5 hover:text-text-primary" title={t("titlebar.minimize")}>
             <IconWindowMinimize />
           </button>
-          <button className="titlebar-btn" onClick={handleWindowMaximize} title={t("titlebar.maximize")}>
+          <button onClick={handleWindowMaximize} className="w-[46px] h-full bg-transparent border-none text-text-muted flex justify-center items-center cursor-pointer transition-all duration-200 hover:bg-white/5 hover:text-text-primary" title={t("titlebar.maximize")}>
             <IconWindowMaximize />
           </button>
-          <button className="titlebar-btn titlebar-btn-close" onClick={handleWindowClose} title={t("titlebar.close")}>
+          <button onClick={handleWindowClose} className="w-[46px] h-full bg-transparent border-none text-text-muted flex justify-center items-center cursor-pointer transition-all duration-200 hover:bg-error hover:text-white" title={t("titlebar.close")}>
             <IconWindowClose />
           </button>
         </div>
       </div>
 
-      <div className="app-content">
+      <div className="flex flex-row flex-1 overflow-hidden relative">
         <Sidebar 
           sessions={sessions}
           currentId={activeSessionId}
@@ -843,219 +844,169 @@ function App() {
           isOpen={isSidebarOpen} 
         />
 
-      <div className="history-area">
-        <div className="history-header">
-          <div className="history-header-left">
-            <button
-              className="btn-icon"
-              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              title={isSidebarOpen ? t("sidebar.closeTooltip") : t("sidebar.openTooltip")}
-              style={{ marginRight: '8px' }}
-            >
-              <IconList />
-            </button>
-            <span className="history-label">
-              <span className={`label-icon ${isRunning ? 'active' : ''}`}>●</span>
-              {isRenaming ? (
-                  <input
-                    autoFocus
-                    className="session-name-input"
-                    value={renameValue}
-                    onChange={e => setRenameValue(e.target.value)}
-                    onBlur={() => { handleRenameSession(renameValue); setIsRenaming(false); }}
-                    onKeyDown={e => {
-                        if (e.key === 'Enter') { handleRenameSession(renameValue); setIsRenaming(false); }
-                        if (e.key === 'Escape') setIsRenaming(false);
-                    }}
-                    onClick={e => e.stopPropagation()}
-                  />
-                  ) : (
-                  <span
-                    onClick={() => {
-                        if (activeSessionId) {
-                            setRenameValue(activeSessionName);
-                            setIsRenaming(true);
-                        }
-                    }}
-                    title={activeSessionId ? t("sidebar.renameTooltip") : ""}
-                    style={{ cursor: activeSessionId ? 'text' : 'default', borderBottom: activeSessionId ? '1px dashed var(--text-muted)' : 'none' }}
-                  >
-                    {activeSessionName || t("session.noSession")}
-                  </span>
-              )}
-              <span style={{opacity: 0.5, marginLeft: 8}}>({cards.length})</span>
-            </span>
-          </div>
-          <div className="history-header-right">
-            <CopyButton cards={cards} addToast={addToast} />
-            <button
-              className="btn-icon"
-              onClick={() => setIsTranslateModalOpen(true)}
-              title="Translate Session"
-              disabled={cards.length === 0}
-              style={{ 
-                color: cards.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
-                cursor: cards.length > 0 ? 'pointer' : 'not-allowed'
-              }}
-            >
-              <IconLanguages />
-            </button>
-          </div>
-        </div>
-
-        <div className="history-scroll" ref={scrollContainerRef}>
-          {cards.length === 0 && !partialText ? (
-            <div className="history-empty">
-                {activeSessionId ? t("session.waitingForSpeech") : t("session.selectOrStart")}
+        <div className="flex-1 overflow-hidden flex flex-col relative">
+          <div className="h-[60px] px-4 flex justify-between items-center border-b border-border bg-panel">
+            <div className="flex items-center">
+              <button
+                className="bg-transparent border-none text-text-secondary cursor-pointer p-2 rounded-full transition-all flex items-center justify-center hover:bg-card-hover hover:text-text-primary mr-2"
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                title={isSidebarOpen ? t("sidebar.closeTooltip") : t("sidebar.openTooltip")}
+              >
+                <IconList />
+              </button>
+              <span className="text-[13px] font-semibold text-text-secondary uppercase tracking-[0.5px] flex items-center gap-2">
+                <span className={`text-[10px] text-text-muted transition-colors duration-300 ${isRunning ? 'text-success drop-shadow-[0_0_8px_rgba(16,185,129,1)] animate-pulse' : ''}`}>●</span>
+                {isRenaming ? (
+                    <input
+                      autoFocus
+                      className="bg-transparent border-b border-primary text-text-primary font-semibold p-1 outline-none"
+                      value={renameValue}
+                      onChange={e => setRenameValue(e.target.value)}
+                      onBlur={() => { handleRenameSession(renameValue); setIsRenaming(false); }}
+                      onKeyDown={e => {
+                          if (e.key === 'Enter') { handleRenameSession(renameValue); setIsRenaming(false); }
+                          if (e.key === 'Escape') setIsRenaming(false);
+                      }}
+                      onClick={e => e.stopPropagation()}
+                    />
+                    ) : (
+                    <span
+                      onClick={() => {
+                          if (activeSessionId) {
+                              setRenameValue(activeSessionName);
+                              setIsRenaming(true);
+                          }
+                      }}
+                      title={activeSessionId ? t("sidebar.renameTooltip") : ""}
+                      className={`transition-colors ${activeSessionId ? 'cursor-text border-b border-dashed border-text-muted hover:text-text-primary' : 'cursor-default'}`}
+                    >
+                      {activeSessionName || t("session.noSession")}
+                    </span>
+                )}
+                <span className="opacity-50 ml-2">({cards.length})</span>
+              </span>
             </div>
-          ) : (
-            <>
-              {cards.map((item) => {
-                // Check tempTranslations first for historical session translations
-                const tempTrans = tempTranslations[item.id];
-                const displayTranslated = tempTrans?.translated ?? item.translated;
-                const displayStatus = tempTrans?.status ?? item.status;
-
-                // Determine if we should show the translation block
-                let shouldShowTranslation = false;
-                if (!!tempTrans) {
-                  shouldShowTranslation = true;
-                } else if (item.translated && item.translated.trim().length > 0) {
-                  shouldShowTranslation = true;
-                } else if (displayStatus === 'translating') {
-                  shouldShowTranslation = true;
-                } else if (displayStatus === 'error') {
-                   shouldShowTranslation = true;
-                }
-                // Removed: isRunning && config.translation_enabled fallback 
-                // to prevent showing dots before actual trigger in Teams mode
-
-                return (
-                  <div key={item.id} className={`history-card ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'failed' : ''}`}>
-                    {item.user && (
-                        <div className="card-user">
-                            <IconUser />
-                            <span>{item.user}</span>
-                        </div>
-                    )}
-                    <div className="card-original">{item.original}</div>
-                    {shouldShowTranslation && (
-                      <>
-                        {displayStatus === 'translating' ? (
-                          <div className="typing-dots">
-                            <span>.</span><span>.</span><span>.</span>
-                          </div>
-                        ) : displayTranslated ? (
-                          <div className="card-translated">{displayTranslated}</div>
-                        ) : (
-                          <div className="card-failed">
-                            <span className="failed-text">{t("translation.failed")}</span>
-                            <button
-                              className="btn-retry"
-                              onClick={() => retryTranslation(item.id, item.original)}
-                              disabled={item.retrying}
-                              title={t("translation.retry")}
-                            >
-                              {item.retrying ? <span className="spinner" /> : <IconRetry />}
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    )}
-                    {item.timestamp && (
-                        <div style={{
-                            position: 'absolute',
-                            bottom: '4px',
-                            right: '8px',
-                            fontSize: '10px',
-                            color: 'var(--text-muted)',
-                            opacity: 0.7
-                        }}>
-                            {new Date(item.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
-                        </div>
-                    )}
-                  </div>
-                );
-              })}
-              {partialText && (!cards.length || cards[cards.length - 1].original !== partialText) && (
-                <div className="history-card partial">
-                  <div className="card-original">{partialText}</div>
-                  <div className="card-translating">...</div>
-                </div>
-              )}
-            </>
-          )}
-          <div ref={historyEndRef} />
-        </div>
-
-        <footer className="control-bar">
-            <div className="status-indicator">
-            <div className={`status-dot ${isRunning ? 'active' : 'inactive'}`} />
-            <span className={`status-text ${status.startsWith('Error') ? 'error' : ''}`} title={status}>{status}</span>
-            </div>
-            <div className="controls-center">
-            <button
-                className="btn-visibility"
-                onClick={toggleVisibility}
-                disabled={!isRunning}
-                title={isWindowVisible ? t("controls.hideWindow") : t("controls.showWindow")}
-                style={{ 
-                    marginRight: '12px',
-                    height: '40px',
-                    width: '40px',
-                    borderRadius: '20px',
-                    border: 'none',
-                    background: 'var(--bg-secondary)',
-                    color: !isRunning ? 'var(--text-muted)' : (isWindowVisible ? 'var(--text-primary)' : 'var(--text-muted)'),
-                    cursor: isRunning ? 'pointer' : 'not-allowed',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'all 0.2s',
-                    opacity: isRunning ? 1 : 0.5
-                }}
-            >
-                {isWindowVisible ? <IconEye /> : <IconEyeOff />}
-            </button>
-            <button className={`fab-main ${isRunning ? 'stop' : 'start'}`} onClick={toggleWatcher}>
-                {isRunning ? <IconSquare /> : <IconPlay />}
-                <span>{isRunning ? t("controls.stop") : t("controls.start")}</span>
-            </button>
-            <button
-                className="btn-summary"
-                onClick={handleSummarize}
+            <div className="flex items-center gap-2">
+              <CopyButton cards={cards} addToast={addToast} />
+              <button
+                className={`bg-transparent border-none text-text-muted cursor-not-allowed p-2 rounded-full transition-all flex items-center justify-center ${cards.length > 0 ? 'cursor-pointer text-text-secondary hover:bg-card-hover hover:text-text-primary' : ''}`}
+                onClick={() => setIsTranslateModalOpen(true)}
+                title="Translate Session"
                 disabled={cards.length === 0}
-                title={t("controls.summarize")}
-                style={{ 
-                marginLeft: '12px',
-                height: '40px',
-                width: '40px',
-                borderRadius: '20px',
-                border: 'none',
-                background: 'var(--bg-secondary)',
-                color: cards.length > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
-                cursor: cards.length > 0 ? 'pointer' : 'not-allowed',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.2s'
-                }}
-            >
-                <IconFileText />
-            </button>
+              >
+                <IconLanguages />
+              </button>
             </div>
-            <div className="controls-right">
-            {appVersion && <span className="app-version">v{appVersion}</span>}
-            <button className="btn-icon settings-btn" onClick={() => setIsSettingsOpen(true)} title={t("controls.settings")}>
-                <IconSettings />
-            </button>
-            </div>
-        </footer>
-      </div>{/* End history-area */}
-      </div>{/* End app-content */}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 scroll-smooth" ref={scrollContainerRef}>
+            {cards.length === 0 && !partialText ? (
+              <div className="text-center mt-10 text-text-muted italic">
+                  {activeSessionId ? t("session.waitingForSpeech") : t("session.selectOrStart")}
+              </div>
+            ) : (
+              <>
+                {cards.map((item) => {
+                  const tempTrans = tempTranslations[item.id];
+                  const displayTranslated = tempTrans?.translated ?? item.translated;
+                  const displayStatus = tempTrans?.status ?? item.status;
+                  let shouldShowTranslation = !!tempTrans || (item.translated && item.translated.trim().length > 0) || displayStatus === 'translating' || displayStatus === 'error';
+
+                  return (
+                    <div key={item.id} className={`bg-card rounded-lg p-3 border border-transparent transition-all animate-slide-in relative hover:bg-card-hover hover:border-border ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''}`}>
+                      {item.user && (
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">
+                              <IconUser />
+                              <span>{item.user}</span>
+                          </div>
+                      )}
+                      <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4]">{item.original}</div>
+                      {shouldShowTranslation && (
+                        <>
+                          {displayStatus === 'translating' ? (
+                            <div className="flex gap-1 py-2 text-primary text-2xl leading-[12px] items-center">
+                              <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-[typing_1.4s_infinite_ease-in-out_both_-0.32s]"></span>
+                              <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-[typing_1.4s_infinite_ease-in-out_both_-0.16s]"></span>
+                              <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-[typing_1.4s_infinite_ease-in-out_both]"></span>
+                            </div>
+                          ) : displayTranslated ? (
+                            <div className="text-base text-text-primary font-medium leading-normal">{displayTranslated}</div>
+                          ) : (
+                            <div className="flex items-center justify-between mt-1">
+                              <span className="text-[13px] text-error">{t("translation.failed")}</span>
+                              <button
+                                className="bg-transparent border-none text-text-secondary cursor-pointer p-1 hover:text-primary disabled:opacity-50"
+                                onClick={() => retryTranslation(item.id, item.original)}
+                                disabled={item.retrying}
+                                title={t("translation.retry")}
+                              >
+                                {item.retrying ? <span className="block w-4 h-4 border-2 border-white/10 border-t-current rounded-full animate-spin" /> : <IconRetry />}
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {item.timestamp && (
+                          <div className="absolute bottom-1 right-2 text-[10px] text-text-muted opacity-70">
+                              {new Date(item.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                          </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {partialText && (!cards.length || cards[cards.length - 1].original !== partialText) && (
+                  <div className="bg-primary-dim rounded-lg p-3 border-l-[3px] border-primary transition-all animate-slide-in relative">
+                    <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4]">{partialText}</div>
+                    <div className="text-base text-primary animate-pulse">...</div>
+                  </div>
+                )}
+              </>
+            )}
+            <div ref={historyEndRef} />
+          </div>
+
+          <footer className="h-[60px] bg-panel border-t border-border flex items-center justify-between px-6 relative z-10">
+              <div className="flex items-center gap-2 max-w-[calc(50%-80px)] pr-4">
+                <div className={`w-2 h-2 rounded-full shrink-0 ${isRunning ? 'bg-success shadow-[0_0_10px_var(--success)]' : 'bg-text-muted'}`} />
+                <span className={`text-[11px] text-text-secondary truncate leading-[1.2] line-clamp-2 hover:line-clamp-none hover:overflow-visible hover:bg-panel hover:z-[100] hover:shadow-lg hover:p-1 hover:rounded ${status.startsWith('Error') ? 'text-error' : ''}`} title={status}>{status}</span>
+              </div>
+              <div className="flex items-center justify-center absolute left-1/2 -translate-x-1/2 pointer-events-none [&>*]:pointer-events-auto">
+              <button
+                  className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 mr-3 ${!isRunning ? 'text-text-muted cursor-not-allowed opacity-50' : (isWindowVisible ? 'text-text-primary' : 'text-text-muted')} ${isRunning ? 'cursor-pointer opacity-100 hover:brightness-110' : ''}`}
+                  onClick={toggleVisibility}
+                  disabled={!isRunning}
+                  title={isWindowVisible ? t("controls.hideWindow") : t("controls.showWindow")}
+              >
+                  {isWindowVisible ? <IconEye /> : <IconEyeOff />}
+              </button>
+              <button 
+                className={`h-10 px-5 rounded-[20px] border-none flex items-center gap-2.5 font-bold tracking-[0.5px] cursor-pointer transition-all duration-200 shadow-md hover:-translate-y-0.5 hover:shadow-[0_0_20px_var(--primary-glow)] ${isRunning ? 'bg-bg-secondary border border-error text-error hover:bg-error/10' : 'bg-primary text-black'}`} 
+                onClick={toggleWatcher}
+              >
+                  {isRunning ? <IconSquare /> : <IconPlay />}
+                  <span>{isRunning ? t("controls.stop") : t("controls.start")}</span>
+              </button>
+              <button
+                  className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 ml-3 ${cards.length === 0 ? 'text-text-muted cursor-not-allowed' : 'text-text-primary cursor-pointer hover:brightness-110'}`}
+                  onClick={handleSummarize}
+                  disabled={cards.length === 0}
+                  title={t("controls.summarize")}
+              >
+                  <IconFileText />
+              </button>
+              </div>
+              <div className="w-[120px] flex justify-end items-center gap-3">
+              {appVersion && <span className="text-[11px] text-text-muted">v{appVersion}</span>}
+              <button className="bg-transparent border-none text-text-secondary cursor-pointer p-2 rounded-full transition-all flex items-center justify-center hover:bg-card-hover hover:text-text-primary" onClick={() => setIsSettingsOpen(true)} title={t("controls.settings")}>
+                  <IconSettings />
+              </button>
+              </div>
+          </footer>
+        </div>
+      </div>
 
       <div 
-        className={`settings-overlay ${isSettingsOpen ? 'open' : ''}`} 
+        className={`fixed inset-0 bg-black/60 backdrop-blur-[4px] z-[100] transition-opacity duration-300 flex justify-end ${isSettingsOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`} 
         onMouseDown={() => { overlayMouseDownRef.current = true; }}
         onMouseUp={() => { 
           if (overlayMouseDownRef.current) {
@@ -1064,14 +1015,14 @@ function App() {
           overlayMouseDownRef.current = false;
         }}
       >
-        <div className="settings-drawer" onMouseDown={e => e.stopPropagation()} onMouseUp={e => e.stopPropagation()}>
-          <header className="settings-header">
-            <h2>{t("settings.title")}</h2>
-            <button className="btn-icon" onClick={() => setIsSettingsOpen(false)}>
+        <div className={`w-[600px] bg-panel h-full shadow-[-5px_0_25px_rgba(0,0,0,0.5)] flex flex-col transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSettingsOpen ? 'translate-x-0' : 'translate-x-full'}`} onMouseDown={e => e.stopPropagation()} onMouseUp={e => e.stopPropagation()}>
+          <header className="px-6 py-2 border-b border-border flex justify-between items-center">
+            <h2 className="m-0 text-lg font-semibold">{t("settings.title")}</h2>
+            <button className="bg-transparent border-none text-text-secondary cursor-pointer p-2 rounded-full transition-all flex items-center justify-center hover:bg-card-hover hover:text-text-primary" onClick={() => setIsSettingsOpen(false)}>
               <IconX />
             </button>
           </header>
-          <div className="settings-content">
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col">
             <SettingsForm config={config} onSave={saveConfig} onStartCopilotAuth={(id) => { setAuthChannelId(id); setDeviceAuthOpen(true); }} addToast={addToast} />
           </div>
         </div>
@@ -1120,10 +1071,10 @@ function App() {
       />
 
       {/* Toast Container */}
-      <div className="toast-container">
+      <div className="fixed bottom-[100px] right-6 flex flex-col gap-2 z-[200] pointer-events-none">
         {toasts.map(toast => (
-          <div key={toast.id} className={`toast toast-${toast.type}`}>
-            {toast.type === 'success' ? <IconCheck /> : <IconX />}
+          <div key={toast.id} className={`flex items-center gap-2.5 px-4 py-3 rounded-lg text-sm font-medium shadow-lg animate-toast-in pointer-events-auto max-w-[450px] whitespace-pre-wrap break-words ${toast.type === 'error' ? 'bg-error text-white' : 'bg-success text-white'}`}>
+            {toast.type === 'success' ? <IconCheck className="w-[18px] h-[18px] shrink-0" /> : <IconX className="w-[18px] h-[18px] shrink-0" />}
             <span>{toast.message}</span>
           </div>
         ))}
