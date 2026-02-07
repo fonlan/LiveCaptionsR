@@ -1,6 +1,7 @@
 use crate::db;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Session {
@@ -38,30 +39,80 @@ pub fn save_session(session: &Session) -> anyhow::Result<()> {
         params![session.id, session.name, session.created_at as i64],
     )?;
 
-    // Replace cards strategy: Delete all and re-insert
-    // This handles edits/deletions on the frontend side
-    tx.execute(
-        "DELETE FROM session_cards WHERE session_id = ?1",
-        params![session.id],
-    )?;
+    // Incremental card persistence strategy:
+    // 1) Load existing cards for this session
+    // 2) Upsert only new/changed cards
+    // 3) Delete cards removed from frontend state
+    let mut existing_cards: HashMap<String, SessionCard> = HashMap::new();
+    {
+        let mut load_stmt = tx.prepare(
+            "SELECT id, original, translated, status, user, timestamp
+             FROM session_cards
+             WHERE session_id = ?1",
+        )?;
 
-    let mut stmt = tx.prepare(
-        "INSERT INTO session_cards (id, session_id, original, translated, status, user, timestamp) 
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?;
+        let rows = load_stmt.query_map(params![session.id], |row| {
+            Ok(SessionCard {
+                id: row.get(0)?,
+                original: row.get(1)?,
+                translated: row.get(2)?,
+                status: row.get(3)?,
+                user: row.get(4)?,
+                timestamp: row.get::<_, i64>(5)? as u64,
+            })
+        })?;
+
+        for row in rows {
+            let card = row?;
+            existing_cards.insert(card.id.clone(), card);
+        }
+    }
+
+    let mut incoming_ids: HashSet<String> = HashSet::with_capacity(session.cards.len());
 
     for card in &session.cards {
-        stmt.execute(params![
-            card.id,
-            session.id,
-            card.original,
-            card.translated,
-            card.status,
-            card.user,
-            card.timestamp as i64
-        ])?;
+        incoming_ids.insert(card.id.clone());
+
+        let should_upsert = match existing_cards.get(&card.id) {
+            None => true,
+            Some(existing) => {
+                existing.original != card.original
+                    || existing.translated != card.translated
+                    || existing.status != card.status
+                    || existing.user != card.user
+                    || existing.timestamp != card.timestamp
+            }
+        };
+
+        if should_upsert {
+            tx.execute(
+                "INSERT INTO session_cards (id, session_id, original, translated, status, user, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                   session_id = excluded.session_id,
+                   original = excluded.original,
+                   translated = excluded.translated,
+                   status = excluded.status,
+                   user = excluded.user,
+                   timestamp = excluded.timestamp",
+                params![
+                    card.id,
+                    session.id,
+                    card.original,
+                    card.translated,
+                    card.status,
+                    card.user,
+                    card.timestamp as i64
+                ],
+            )?;
+        }
     }
-    drop(stmt);
+
+    for existing_id in existing_cards.keys() {
+        if !incoming_ids.contains(existing_id) {
+            tx.execute("DELETE FROM session_cards WHERE id = ?1", params![existing_id])?;
+        }
+    }
 
     tx.commit()?;
     Ok(())

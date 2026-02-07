@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -719,6 +720,9 @@ fn start_livecaptions_loop(
     }
 
     let mut last_text = String::new();
+    let base_interval = stream.poll_interval();
+    let max_backoff_interval = Duration::from_millis(250);
+    let mut idle_polls: u32 = 0;
 
     while stream.is_running() {
         {
@@ -740,46 +744,75 @@ fn start_livecaptions_loop(
             }
         }
 
+        let mut had_activity = false;
+
         if let Some((user, text)) = stream.get_next_caption() {
             if text == last_text {
-                std::thread::sleep(stream.poll_interval());
-                continue;
-            }
-            last_text = text.clone();
-
-            if text.starts_with("[ERROR]") {
-                let _ = app.emit("caption-error", text);
-                continue;
-            }
-
-            // Log caption with preview (truncate to 100 chars)
-            let preview = if text.chars().count() > 100 {
-                format!("{}...", text.chars().take(100).collect::<String>())
+                // No effective update, keep backing off progressively
             } else {
-                text.clone()
-            };
-            debug!(user = ?user, caption_preview = %preview, "Received LiveCaptions caption");
+                last_text = text.clone();
 
-            let timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+                if text.starts_with("[ERROR]") {
+                    let _ = app.emit("caption-error", text);
+                    had_activity = true;
+                } else {
+                    // Log caption with preview (truncate to 100 chars)
+                    let preview = if text.chars().count() > 100 {
+                        format!("{}...", text.chars().take(100).collect::<String>())
+                    } else {
+                        text.clone()
+                    };
+                    debug!(user = ?user, caption_preview = %preview, "Received LiveCaptions caption");
 
-            let caption = RawCaption {
-                text,
-                user,
-                timestamp,
-            };
-            let _ = app.emit("caption-raw", caption);
+                    let timestamp = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    let caption = RawCaption {
+                        text,
+                        user,
+                        timestamp,
+                    };
+                    let _ = app.emit("caption-raw", caption);
+                    had_activity = true;
+                }
+            }
         }
 
-        std::thread::sleep(stream.poll_interval());
+        if had_activity {
+            idle_polls = 0;
+        } else {
+            idle_polls = idle_polls.saturating_add(1);
+        }
+
+        std::thread::sleep(adaptive_poll_interval(
+            base_interval,
+            idle_polls,
+            max_backoff_interval,
+        ));
     }
 
     let state = app.state::<AppState>();
     let mut running = state.caption_running.lock().unwrap();
     *running = false;
     let _ = app.emit("caption-status", "Stopped");
+}
+
+fn adaptive_poll_interval(base: Duration, idle_polls: u32, max_interval: Duration) -> Duration {
+    if idle_polls <= 8 {
+        return base;
+    }
+
+    let step = ((idle_polls - 8) / 15).min(4);
+    let factor = 1 + step;
+    let scaled = base.checked_mul(factor).unwrap_or(max_interval);
+
+    if scaled > max_interval {
+        max_interval
+    } else {
+        scaled
+    }
 }
 
 /// Teams caption polling loop
@@ -823,6 +856,9 @@ fn start_teams_caption_loop(
     }
 
     let mut last_text = String::new();
+    let base_interval = stream.poll_interval();
+    let max_backoff_interval = Duration::from_millis(450);
+    let mut idle_polls: u32 = 0;
 
     while stream.is_running() {
         {
@@ -845,40 +881,53 @@ fn start_teams_caption_loop(
             }
         }
 
+        let mut had_activity = false;
+
         if let Some((user, text)) = stream.get_next_caption() {
             if text == last_text {
-                std::thread::sleep(stream.poll_interval());
-                continue;
-            }
-            last_text = text.clone();
-
-            if text.starts_with("[ERROR]") {
-                let _ = app.emit("caption-error", text);
-                continue;
-            }
-
-            // Log caption with preview (truncate to 100 chars)
-            let preview = if text.chars().count() > 100 {
-                format!("{}...", text.chars().take(100).collect::<String>())
+                // No effective update, keep backing off progressively
             } else {
-                text.clone()
-            };
-            debug!(user = %user.as_deref().unwrap_or("unknown"), caption_preview = %preview, "Received Teams caption");
+                last_text = text.clone();
 
-            let timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+                if text.starts_with("[ERROR]") {
+                    let _ = app.emit("caption-error", text);
+                    had_activity = true;
+                } else {
+                    // Log caption with preview (truncate to 100 chars)
+                    let preview = if text.chars().count() > 100 {
+                        format!("{}...", text.chars().take(100).collect::<String>())
+                    } else {
+                        text.clone()
+                    };
+                    debug!(user = %user.as_deref().unwrap_or("unknown"), caption_preview = %preview, "Received Teams caption");
 
-            let caption = RawCaption {
-                text,
-                user,
-                timestamp,
-            };
-            let _ = app.emit("caption-raw", caption);
+                    let timestamp = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    let caption = RawCaption {
+                        text,
+                        user,
+                        timestamp,
+                    };
+                    let _ = app.emit("caption-raw", caption);
+                    had_activity = true;
+                }
+            }
         }
 
-        std::thread::sleep(stream.poll_interval());
+        if had_activity {
+            idle_polls = 0;
+        } else {
+            idle_polls = idle_polls.saturating_add(1);
+        }
+
+        std::thread::sleep(adaptive_poll_interval(
+            base_interval,
+            idle_polls,
+            max_backoff_interval,
+        ));
     }
 
     let state = app.state::<AppState>();

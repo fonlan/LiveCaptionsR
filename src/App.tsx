@@ -26,7 +26,6 @@ import {
   IconList,
   IconLanguages,
   IconPlay, 
-  IconRetry, 
   IconSettings, 
   IconSquare, 
   IconX,
@@ -35,9 +34,9 @@ import {
   IconWindowClose,
   IconEye,
   IconEyeOff,
-  IconUser,
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
+import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
 import { SettingsForm } from "./components/settings/SettingsForm";
 import { SummaryModal } from "./components/modals/SummaryModal";
@@ -54,6 +53,7 @@ import { getNewSentences } from "./utils/captionProcessing";
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
 const MAX_SYNC_INTERVAL = 20;
+const MAX_TRANSLATION_BATCH_SIZE = 10;
 
 // --- Main App Component ---
 
@@ -80,10 +80,12 @@ function App() {
   const [renameValue, setRenameValue] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
-   const [cards, setCards] = useState<SentenceCard[]>([]);
-   const [partialText, setPartialText] = useState<string>("");
-   const [toasts, setToasts] = useState<Toast[]>([]);
-   const [autoFollow, setAutoFollow] = useState<boolean>(true);
+  const [cards, setCards] = useState<SentenceCard[]>([]);
+  const [partialText, setPartialText] = useState<string>("");
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [autoFollow, setAutoFollow] = useState<boolean>(true);
+  const [listScrollTop, setListScrollTop] = useState(0);
+  const [listViewportHeight, setListViewportHeight] = useState(0);
    
    // Teams Modal State
   const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
@@ -330,10 +332,15 @@ function App() {
     const container = scrollContainerRef.current;
     if (!container) return;
 
+    setListViewportHeight(container.clientHeight);
+
     const handleScroll = () => {
       const { scrollTop, scrollHeight, clientHeight } = container;
       const distanceToBottom = scrollHeight - scrollTop - clientHeight;
       const threshold = 100; // pixels from bottom to consider "at bottom"
+
+      setListScrollTop(scrollTop);
+      setListViewportHeight(prev => (prev === clientHeight ? prev : clientHeight));
 
       if (distanceToBottom <= threshold) {
         // User is near/at bottom, enable auto-follow
@@ -344,9 +351,19 @@ function App() {
       }
     };
 
+    const handleResize = () => {
+      const nextHeight = container.clientHeight;
+      setListViewportHeight(prev => (prev === nextHeight ? prev : nextHeight));
+    };
+
     container.addEventListener('scroll', handleScroll);
+    window.addEventListener('resize', handleResize);
+
+    handleScroll();
+
     return () => {
       container.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', handleResize);
     };
   }, []);
 
@@ -770,42 +787,52 @@ function App() {
     });
     setTempTranslations(initialTranslations);
 
-    // Translate each card in parallel (backend handles concurrency limit)
-    const promises = cards.map(async (card, cardIndex) => {
-      try {
-        let context: string[] | null = null;
+    // Translate cards in bounded batches to avoid creating too many pending promises
+    // Backend still applies global concurrency limits via semaphore.
+    const configuredConcurrency = config.max_concurrent_translations > 0
+      ? config.max_concurrent_translations
+      : 2;
+    const batchSize = Math.max(1, Math.min(configuredConcurrency, MAX_TRANSLATION_BATCH_SIZE));
 
-        // Use override provider or config provider for context logic checks
-        const effectiveProvider = providerOverride || config.provider;
+    for (let batchStart = 0; batchStart < cards.length; batchStart += batchSize) {
+      const batchCards = cards.slice(batchStart, batchStart + batchSize);
 
-        // Include context for AI models (not Google/Microsoft)
-        const isAIModel = effectiveProvider !== 'google' && effectiveProvider !== 'microsoft';
-        if (isAIModel && config.openai_context_count > 0 && cardIndex > 0) {
-          const startIdx = Math.max(0, cardIndex - config.openai_context_count);
-          context = cards.slice(startIdx, cardIndex).map(c => c.original);
+      await Promise.all(batchCards.map(async (card, batchOffset) => {
+        const cardIndex = batchStart + batchOffset;
+
+        try {
+          let context: string[] | null = null;
+
+          // Use override provider or config provider for context logic checks
+          const effectiveProvider = providerOverride || config.provider;
+
+          // Include context for AI models (not Google/Microsoft)
+          const isAIModel = effectiveProvider !== 'google' && effectiveProvider !== 'microsoft';
+          if (isAIModel && config.openai_context_count > 0 && cardIndex > 0) {
+            const startIdx = Math.max(0, cardIndex - config.openai_context_count);
+            context = cards.slice(startIdx, cardIndex).map(c => c.original);
+          }
+
+          const translated = await invoke<string>("translate_text", {
+            text: card.original,
+            context,
+            targetLangOverride: targetLang,
+            providerOverride
+          });
+
+          setTempTranslations(prev => ({
+            ...prev,
+            [card.id]: { translated, status: 'success' }
+          }));
+        } catch (e) {
+          console.error(`Translation failed for card ${card.id}:`, e);
+          setTempTranslations(prev => ({
+            ...prev,
+            [card.id]: { translated: '', status: 'error' }
+          }));
         }
-
-        const translated = await invoke<string>("translate_text", {
-          text: card.original,
-          context,
-          targetLangOverride: targetLang,
-          providerOverride
-        });
-
-        setTempTranslations(prev => ({
-          ...prev,
-          [card.id]: { translated, status: 'success' }
-        }));
-      } catch (e) {
-        console.error(`Translation failed for card ${card.id}:`, e);
-        setTempTranslations(prev => ({
-          ...prev,
-          [card.id]: { translated: '', status: 'error' }
-        }));
-      }
-    });
-
-    await Promise.all(promises);
+      }));
+    }
   };
 
   const appWindow = getCurrentWindow();
@@ -900,68 +927,15 @@ function App() {
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 scroll-smooth" ref={scrollContainerRef}>
-            {cards.length === 0 && !partialText ? (
-              <div className="text-center mt-10 text-text-muted italic">
-                  {activeSessionId ? t("session.waitingForSpeech") : t("session.selectOrStart")}
-              </div>
-            ) : (
-              <>
-                {cards.map((item) => {
-                  const tempTrans = tempTranslations[item.id];
-                  const displayTranslated = tempTrans?.translated ?? item.translated;
-                  const displayStatus = tempTrans?.status ?? item.status;
-                  let shouldShowTranslation = !!tempTrans || (item.translated && item.translated.trim().length > 0) || displayStatus === 'translating' || displayStatus === 'error';
-
-                  return (
-                    <div key={item.id} className={`bg-card rounded-lg p-3 border border-transparent transition-all animate-slide-in relative hover:bg-card-hover hover:border-border ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''}`}>
-                      {item.user && (
-                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">
-                              <IconUser />
-                              <span>{item.user}</span>
-                          </div>
-                      )}
-                      <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4]">{item.original}</div>
-                      {shouldShowTranslation && (
-                        <>
-                          {displayStatus === 'translating' ? (
-                            <div className="flex gap-1 py-2 text-primary text-2xl leading-[12px] items-center">
-                              <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-[typing_1.4s_infinite_ease-in-out_both_-0.32s]"></span>
-                              <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-[typing_1.4s_infinite_ease-in-out_both_-0.16s]"></span>
-                              <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-[typing_1.4s_infinite_ease-in-out_both]"></span>
-                            </div>
-                          ) : displayTranslated ? (
-                            <div className="text-base text-text-primary font-medium leading-normal">{displayTranslated}</div>
-                          ) : (
-                            <div className="flex items-center justify-between mt-1">
-                              <span className="text-[13px] text-error">{t("translation.failed")}</span>
-                              <button
-                                className="bg-transparent border-none text-text-secondary cursor-pointer p-1 hover:text-primary disabled:opacity-50"
-                                onClick={() => retryTranslation(item.id, item.original)}
-                                disabled={item.retrying}
-                                title={t("translation.retry")}
-                              >
-                                {item.retrying ? <span className="block w-4 h-4 border-2 border-white/10 border-t-current rounded-full animate-spin" /> : <IconRetry />}
-                              </button>
-                            </div>
-                          )}
-                        </>
-                      )}
-                      {item.timestamp && (
-                          <div className="absolute bottom-1 right-2 text-[10px] text-text-muted opacity-70">
-                              {new Date(item.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
-                          </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {partialText && (!cards.length || cards[cards.length - 1].original !== partialText) && (
-                  <div className="bg-primary-dim rounded-lg p-3 border-l-[3px] border-primary transition-all animate-slide-in relative">
-                    <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4]">{partialText}</div>
-                    <div className="text-base text-primary animate-pulse">...</div>
-                  </div>
-                )}
-              </>
-            )}
+            <CaptionsList
+              cards={cards}
+              hasActiveSession={!!activeSessionId}
+              onRetryTranslation={retryTranslation}
+              partialText={partialText}
+              scrollTop={listScrollTop}
+              viewportHeight={listViewportHeight}
+              tempTranslations={tempTranslations}
+            />
             <div ref={historyEndRef} />
           </div>
 

@@ -3,10 +3,14 @@
 use anyhow::{Context, Result};
 use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info};
+
+const TRANSLATION_CACHE_TTL_SECS: u64 = 60;
+const TRANSLATION_CACHE_MAX_ENTRIES: usize = 1024;
 
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -157,6 +161,10 @@ pub struct TranslationService {
     semaphore: Arc<Semaphore>,
     // Map PersistentToken -> (ShortLivedToken, Expiry)
     copilot_tokens: Arc<Mutex<HashMap<String, (String, u64)>>>,
+    // Map proxy cache key -> reqwest Client
+    client_cache: Arc<Mutex<HashMap<String, Client>>>,
+    // Map hashed translation key -> (translated text, expiry)
+    translation_cache: Arc<Mutex<HashMap<u64, (String, u64)>>>,
 }
 
 impl TranslationService {
@@ -177,6 +185,8 @@ impl TranslationService {
             config,
             semaphore: Arc::new(Semaphore::new(max_permits)),
             copilot_tokens: Arc::new(Mutex::new(HashMap::new())),
+            client_cache: Arc::new(Mutex::new(HashMap::new())),
+            translation_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -201,6 +211,119 @@ impl TranslationService {
         }
     }
 
+    fn now_unix_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    fn provider_cache_tag(provider: &TranslationProvider) -> String {
+        match provider {
+            TranslationProvider::Google => "google".to_string(),
+            TranslationProvider::Microsoft => "microsoft".to_string(),
+            TranslationProvider::OpenAI(id) => format!("openai:{}", id),
+            TranslationProvider::Copilot => "copilot".to_string(),
+        }
+    }
+
+    fn proxy_cache_key(proxy_config: &ProxyConfig) -> String {
+        if proxy_config.is_active() {
+            let url = proxy_config
+                .url
+                .as_ref()
+                .map(|u| u.trim())
+                .unwrap_or_default();
+            format!("proxy:{}", url)
+        } else {
+            "direct".to_string()
+        }
+    }
+
+    fn get_or_create_client(&self, proxy_config: &ProxyConfig) -> Result<Client> {
+        let key = Self::proxy_cache_key(proxy_config);
+
+        {
+            let guard = self
+                .client_cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("HTTP client cache lock poisoned"))?;
+            if let Some(client) = guard.get(&key) {
+                return Ok(client.clone());
+            }
+        }
+
+        let client = build_client(proxy_config)?;
+
+        let mut guard = self
+            .client_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("HTTP client cache lock poisoned"))?;
+
+        let entry = guard.entry(key).or_insert_with(|| client.clone());
+        Ok(entry.clone())
+    }
+
+    fn build_translation_cache_key(
+        &self,
+        provider: &TranslationProvider,
+        target_lang: &str,
+        text: &str,
+        context: Option<&[String]>,
+    ) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        Self::provider_cache_tag(provider).hash(&mut hasher);
+        self.config.source_lang.hash(&mut hasher);
+        target_lang.hash(&mut hasher);
+        text.hash(&mut hasher);
+
+        if let Some(ctx) = context {
+            for segment in ctx {
+                segment.hash(&mut hasher);
+                0x1Fu8.hash(&mut hasher);
+            }
+        }
+
+        hasher.finish()
+    }
+
+    fn get_cached_translation(&self, cache_key: u64) -> Result<Option<String>> {
+        let now = Self::now_unix_secs();
+        let mut guard = self
+            .translation_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Translation cache lock poisoned"))?;
+
+        if let Some((value, expiry)) = guard.get(&cache_key) {
+            if *expiry > now {
+                return Ok(Some(value.clone()));
+            }
+        }
+
+        guard.remove(&cache_key);
+        Ok(None)
+    }
+
+    fn put_cached_translation(&self, cache_key: u64, translated: String) -> Result<()> {
+        let now = Self::now_unix_secs();
+        let mut guard = self
+            .translation_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Translation cache lock poisoned"))?;
+
+        guard.retain(|_, (_, expiry)| *expiry > now);
+
+        if guard.len() >= TRANSLATION_CACHE_MAX_ENTRIES && !guard.contains_key(&cache_key) {
+            if let Some(oldest_key) = guard.keys().next().copied() {
+                guard.remove(&oldest_key);
+            }
+        }
+
+        guard.insert(cache_key, (translated, now + TRANSLATION_CACHE_TTL_SECS));
+        Ok(())
+    }
+
     pub async fn translate(&self, text: &str, context: Option<&[String]>, target_lang_override: Option<&str>, provider_override: Option<&str>) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
@@ -217,7 +340,17 @@ impl TranslationService {
             self.config.provider.clone()
         };
 
-        match &provider {
+        let cache_key = self.build_translation_cache_key(&provider, target_lang, text, context);
+        if let Some(cached) = self.get_cached_translation(cache_key)? {
+            debug!(
+                provider = %Self::provider_cache_tag(&provider),
+                text_len = text.len(),
+                "Translation cache hit"
+            );
+            return Ok(cached);
+        }
+
+        let result = match &provider {
             TranslationProvider::Google => {
                 debug!(
                     provider = "google",
@@ -332,7 +465,13 @@ impl TranslationService {
                 }
                 result
             }
+        };
+
+        if let Ok(translated) = &result {
+            let _ = self.put_cached_translation(cache_key, translated.clone());
         }
+
+        result
     }
 
     fn get_lang_name(code: &str) -> String {
@@ -357,7 +496,7 @@ impl TranslationService {
     }
 
     async fn translate_google(&self, text: &str, target_lang: &str) -> Result<String> {
-        let client = build_client(&self.config.google_proxy)?;
+        let client = self.get_or_create_client(&self.config.google_proxy)?;
 
         let url = format!(
             "https://translate.googleapis.com/translate_a/single?client=gtx&sl={}&tl={}&dt=t&q={}",
@@ -425,7 +564,7 @@ impl TranslationService {
     }
 
     async fn translate_microsoft(&self, text: &str, target_lang: &str) -> Result<String> {
-        let client = build_client(&self.config.microsoft_proxy)?;
+        let client = self.get_or_create_client(&self.config.microsoft_proxy)?;
 
         let api_key = self
             .config
@@ -550,7 +689,7 @@ impl TranslationService {
 
         // Fetch new token using proxy if configured
         debug!("Fetching new Copilot token from GitHub");
-        let client = build_client(&self.config.copilot_proxy)?;
+        let client = self.get_or_create_client(&self.config.copilot_proxy)?;
         let start = std::time::Instant::now();
         let res = client
             .get("https://api.github.com/copilot_internal/v2/token")
@@ -610,7 +749,7 @@ impl TranslationService {
     async fn send_copilot_request(&self, system_prompt: &str, user_content: &str, github_token: &str, model_override: Option<&str>) -> Result<String> {
         let token = self.get_copilot_token(github_token).await?;
 
-        let client = build_client(&self.config.copilot_proxy)?;
+        let client = self.get_or_create_client(&self.config.copilot_proxy)?;
         let url = "https://api.githubcopilot.com/chat/completions";
 
         let model = model_override.unwrap_or(&self.config.copilot_model);
@@ -681,7 +820,7 @@ impl TranslationService {
             .map_err(|e| anyhow::anyhow!("Failed to get Copilot token: {}", e))?;
 
         // Use proxy if configured
-        let client = build_client(&self.config.copilot_proxy)
+        let client = self.get_or_create_client(&self.config.copilot_proxy)
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 
         // Try the official endpoint first
@@ -939,7 +1078,7 @@ impl TranslationService {
             anyhow::bail!("OpenAI API key not configured for endpoint '{}'", endpoint.name);
         }
 
-        let client = build_client(&endpoint.proxy)?;
+        let client = self.get_or_create_client(&endpoint.proxy)?;
         let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
 
         let request = ChatRequest {
@@ -1128,4 +1267,3 @@ mod tests {
         assert_eq!(TranslationService::clean_thinking_content(multiline), "Result\n\nFinal");
     }
 }
-

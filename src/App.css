@@ -108,3 +108,8 @@
     @apply bg-background text-text-primary font-sans antialiased h-screen overflow-hidden select-none m-0 p-0;
   }
 }
+
+.caption-virtual-item {
+  content-visibility: auto;
+  contain-intrinsic-size: 110px;
+}
