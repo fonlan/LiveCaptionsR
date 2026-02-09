@@ -55,6 +55,8 @@ import { getNewSentences } from "./utils/captionProcessing";
 const MAX_IDLE_INTERVAL = 10;
 const MAX_SYNC_INTERVAL = 20;
 const MAX_TRANSLATION_BATCH_SIZE = 10;
+const SMOOTH_SCROLL_MAX_ITEMS = 180;
+const STICK_TO_BOTTOM_EPSILON = 4;
 
 type TranslationResultEvent = {
   request_id: string;
@@ -449,7 +451,17 @@ function App() {
     cardsRef.current = cards;
     cardIndexRef.current = cardsState.indexById;
     if (autoFollow) {
-      historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      const container = scrollContainerRef.current;
+      const distanceToBottom = container
+        ? container.scrollHeight - container.scrollTop - container.clientHeight
+        : Number.POSITIVE_INFINITY;
+      const shouldUseSmooth =
+        cards.length <= SMOOTH_SCROLL_MAX_ITEMS &&
+        distanceToBottom <= STICK_TO_BOTTOM_EPSILON;
+
+      historyEndRef.current?.scrollIntoView({
+        behavior: shouldUseSmooth ? "smooth" : "auto",
+      });
     }
   }, [cards, cardsState.indexById, partialText, autoFollow]);
 
@@ -1236,7 +1248,7 @@ function App() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 scroll-smooth" ref={scrollContainerRef}>
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3" ref={scrollContainerRef}>
             <CaptionsList
               cards={cards}
               hasActiveSession={!!activeSessionId}

@@ -4,9 +4,9 @@ import { IconRetry, IconUser } from "./Icons";
 import { SentenceCard, TranslationStatus } from "../types";
 
 type TempTranslation = { translated: string; status: TranslationStatus };
-const VIRTUALIZATION_THRESHOLD = 180;
 const ITEM_ESTIMATED_HEIGHT = 110;
 const OVERSCAN_ITEMS = 6;
+const STABLE_RENDER_THRESHOLD = 400;
 
 function lowerBound(offsets: number[], target: number): number {
   let low = 0;
@@ -52,6 +52,7 @@ interface CaptionsListProps {
 
 interface CaptionCardItemProps {
   card: SentenceCard;
+  isVirtualized?: boolean;
   onRetryTranslation: (cardId: string, originalText: string) => void;
   onMeasuredHeight?: (cardId: string, height: number) => void;
   tempTranslation?: TempTranslation;
@@ -59,6 +60,7 @@ interface CaptionCardItemProps {
 
 const CaptionCardItem = memo(function CaptionCardItem({
   card,
+  isVirtualized,
   onRetryTranslation,
   onMeasuredHeight,
   tempTranslation,
@@ -74,6 +76,10 @@ const CaptionCardItem = memo(function CaptionCardItem({
     || displayStatus === "translating"
     || displayStatus === "error";
 
+  const motionClass = isVirtualized
+    ? "transition-colors"
+    : "transition-all animate-slide-in";
+
   useLayoutEffect(() => {
     if (!onMeasuredHeight) return;
 
@@ -88,23 +94,10 @@ const CaptionCardItem = memo(function CaptionCardItem({
     };
 
     reportHeight();
-
-    if (typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
-      reportHeight();
-    });
-    observer.observe(node);
-
-    return () => {
-      observer.disconnect();
-    };
   }, [card.id, card.original, card.retrying, displayStatus, displayTranslated, onMeasuredHeight]);
 
   return (
-    <div ref={itemRef} className={`caption-virtual-item bg-card rounded-lg p-3 border border-transparent transition-all animate-slide-in relative hover:bg-card-hover hover:border-border ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''}`}>
+    <div ref={itemRef} className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''}`}>
       {card.user && (
         <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">
           <IconUser />
@@ -158,21 +151,8 @@ export const CaptionsList = memo(function CaptionsList({
   const { t } = useTranslation();
   const measuredHeightsRef = useRef<Record<string, number>>({});
   const [heightVersion, setHeightVersion] = useState(0);
-  const [averageItemHeight, setAverageItemHeight] = useState(ITEM_ESTIMATED_HEIGHT);
-  const shouldVirtualize = cards.length > VIRTUALIZATION_THRESHOLD && viewportHeight > 0;
+  const shouldVirtualize = cards.length > STABLE_RENDER_THRESHOLD && viewportHeight > 0;
   const totalItems = cards.length;
-
-  const recomputeAverageHeight = useCallback(() => {
-    const values = Object.values(measuredHeightsRef.current);
-    if (values.length === 0) {
-      setAverageItemHeight(ITEM_ESTIMATED_HEIGHT);
-      return;
-    }
-
-    const sum = values.reduce((acc, value) => acc + value, 0);
-    const nextAvg = Math.max(40, Math.round(sum / values.length));
-    setAverageItemHeight(prev => (prev === nextAvg ? prev : nextAvg));
-  }, []);
 
   const handleMeasuredHeight = useCallback((cardId: string, height: number) => {
     const previous = measuredHeightsRef.current[cardId];
@@ -183,10 +163,6 @@ export const CaptionsList = memo(function CaptionsList({
     measuredHeightsRef.current[cardId] = height;
     setHeightVersion(prev => prev + 1);
   }, []);
-
-  useEffect(() => {
-    recomputeAverageHeight();
-  }, [heightVersion, recomputeAverageHeight]);
 
   useEffect(() => {
     const validIds = new Set(cards.map(card => card.id));
@@ -211,11 +187,11 @@ export const CaptionsList = memo(function CaptionsList({
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       const measured = measuredHeightsRef.current[card.id];
-      offsets[i + 1] = offsets[i] + (measured ?? averageItemHeight);
+      offsets[i + 1] = offsets[i] + (measured ?? ITEM_ESTIMATED_HEIGHT);
     }
 
     return offsets;
-  }, [averageItemHeight, cards, heightVersion]);
+  }, [cards, heightVersion]);
 
   const viewportBottom = scrollTop + viewportHeight;
   const startBaseIndex = shouldVirtualize
@@ -253,7 +229,8 @@ export const CaptionsList = memo(function CaptionsList({
         <CaptionCardItem
           key={item.id}
           card={item}
-          onMeasuredHeight={handleMeasuredHeight}
+          isVirtualized={shouldVirtualize}
+          onMeasuredHeight={shouldVirtualize ? handleMeasuredHeight : undefined}
           tempTranslation={tempTranslations[item.id]}
           onRetryTranslation={onRetryTranslation}
         />

@@ -110,6 +110,6 @@
 }
 
 .caption-virtual-item {
-  content-visibility: auto;
-  contain-intrinsic-size: 110px;
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
 }
