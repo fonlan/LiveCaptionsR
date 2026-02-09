@@ -178,11 +178,14 @@
     "copySuccess": "已复制到剪贴板",
     "copyFailed": "复制失败",
     "logLevelUpdated": "日志级别已更新为 {{level}}",
-    "logLevelUpdateFailed": "更新日志级别失败: {{error}}"
+    "logLevelUpdateFailed": "更新日志级别失败: {{error}}",
+    "sessionTranslationComplete": "会话翻译完成（{{completed}}/{{total}}）"
   },
   "translateSession": {
     "title": "翻译会话",
     "targetLanguage": "目标语言",
+    "translating": "翻译中...",
+    "progressTitle": "会话翻译进度：{{completed}}/{{total}}",
     "translate": "翻译",
     "cancel": "取消",
     "tooltip": "翻译会话"

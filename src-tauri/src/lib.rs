@@ -30,6 +30,17 @@ pub struct RawCaption {
     pub timestamp: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TranslationResultEvent {
+    pub request_id: String,
+    pub card_id: String,
+    pub original_text: String,
+    pub translated: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+    pub is_retry: bool,
+}
+
 /// Proxy configuration for frontend
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ProxyConfigDTO {
@@ -572,19 +583,71 @@ async fn translate_text(
     }
 }
 
-/// Summarize a list of text segments
 #[tauri::command]
-async fn summarize_text(
-    segments: Vec<String>,
+async fn translate_text_async(
+    request_id: String,
+    card_id: String,
+    text: String,
+    context: Option<Vec<String>>,
+    target_lang_override: Option<String>,
+    provider_override: Option<String>,
+    is_retry: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
+
+    tokio::spawn(async move {
+        let event = match svc
+            .translate(
+                &text,
+                context.as_deref(),
+                target_lang_override.as_deref(),
+                provider_override.as_deref(),
+            )
+            .await
+        {
+            Ok(translated) => TranslationResultEvent {
+                request_id,
+                card_id,
+                original_text: text,
+                translated: Some(translated),
+                status: "success".to_string(),
+                error: None,
+                is_retry,
+            },
+            Err(e) => TranslationResultEvent {
+                request_id,
+                card_id,
+                original_text: text,
+                translated: None,
+                status: "error".to_string(),
+                error: Some(e.to_string()),
+                is_retry,
+            },
+        };
+
+        if let Err(e) = app.emit("translation-result", event) {
+            error!("Failed to emit translation-result event: {}", e);
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn summarize_session_by_id(
+    session_id: String,
     provider_id: String,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
+    let segments = storage::load_session_original_segments(&session_id).map_err(AppError::Anyhow)?;
+
     if segments.is_empty() {
         return Ok(String::new());
     }
 
     let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
-
     let full_text = segments.join("\n");
 
     match svc.summarize(&full_text, &provider_id).await {
@@ -1093,7 +1156,8 @@ pub fn run() {
             toggle_livecaptions_visibility,
             get_teams_windows,
             translate_text,
-            summarize_text,
+            translate_text_async,
+            summarize_session_by_id,
             set_always_on_top,
             create_session,
             save_session_data,

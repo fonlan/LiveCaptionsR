@@ -160,6 +160,26 @@ pub fn load_session(id: &str) -> anyhow::Result<Session> {
     })
 }
 
+pub fn load_session_original_segments(id: &str) -> anyhow::Result<Vec<String>> {
+    let conn = db::get_connection()?;
+
+    let mut stmt = conn.prepare(
+        "SELECT original
+         FROM session_cards
+         WHERE session_id = ?1
+         ORDER BY timestamp ASC",
+    )?;
+
+    let rows = stmt.query_map(params![id], |row| row.get::<_, String>(0))?;
+
+    let mut segments = Vec::new();
+    for row in rows {
+        segments.push(row?);
+    }
+
+    Ok(segments)
+}
+
 pub fn list_sessions() -> anyhow::Result<Vec<SessionMetadata>> {
     let conn = db::get_connection()?;
 

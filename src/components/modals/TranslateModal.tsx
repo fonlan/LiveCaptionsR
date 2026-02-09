@@ -9,6 +9,7 @@ interface TranslateModalProps {
   onTranslate: (targetLang: string, providerOverride?: string) => void;
   currentTargetLang: string;
   config: AppConfig;
+  isTranslating?: boolean;
 }
 
 export function TranslateModal({
@@ -16,7 +17,8 @@ export function TranslateModal({
   onClose,
   onTranslate,
   currentTargetLang,
-  config
+  config,
+  isTranslating = false,
 }: TranslateModalProps) {
   const { t } = useTranslation();
   const [selectedLang, setSelectedLang] = useState<string>(currentTargetLang);
@@ -31,6 +33,7 @@ export function TranslateModal({
   }, [isOpen, currentTargetLang, config]);
 
   const handleTranslate = () => {
+    if (isTranslating) return;
     onTranslate(selectedLang, selectedProvider);
     onClose();
   };
@@ -60,6 +63,7 @@ export function TranslateModal({
             <select
               value={selectedProvider}
               onChange={e => setSelectedProvider(e.target.value)}
+              disabled={isTranslating}
               style={{
                 width: '100%',
                 padding: '10px 12px',
@@ -89,6 +93,7 @@ export function TranslateModal({
             <select
               value={selectedLang}
               onChange={e => setSelectedLang(e.target.value)}
+              disabled={isTranslating}
               style={{
                 width: '100%',
                 padding: '10px 12px',
@@ -113,6 +118,7 @@ export function TranslateModal({
             <button
               className="btn-save"
               onClick={handleTranslate}
+              disabled={isTranslating}
               style={{
                 flex: 1,
                 padding: '10px 16px',
@@ -128,7 +134,7 @@ export function TranslateModal({
               onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
               onMouseLeave={e => e.currentTarget.style.opacity = '1'}
             >
-              {t("translateSession.translate")}
+              {isTranslating ? t("translateSession.translating") : t("translateSession.translate")}
             </button>
             <button
               onClick={onClose}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useReducer, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { getVersion } from "@tauri-apps/api/app";
@@ -56,6 +56,122 @@ const MAX_IDLE_INTERVAL = 10;
 const MAX_SYNC_INTERVAL = 20;
 const MAX_TRANSLATION_BATCH_SIZE = 10;
 
+type TranslationResultEvent = {
+  request_id: string;
+  card_id: string;
+  original_text: string;
+  translated: string | null;
+  status: TranslationStatus | 'error';
+  error?: string | null;
+  is_retry: boolean;
+};
+
+type PendingTranslationRequest = {
+  cardId: string;
+  text: string;
+  isRetry: boolean;
+  mode: 'live' | 'session';
+  batchId?: string;
+};
+
+type CardsState = {
+  cards: SentenceCard[];
+  indexById: Record<string, number>;
+};
+
+type CardPatch = Partial<Pick<SentenceCard, "original" | "translated" | "status" | "retrying" | "user" | "timestamp">>;
+
+type CardsAction =
+  | { type: "reset"; cards: SentenceCard[] }
+  | { type: "append"; card: SentenceCard }
+  | { type: "replace_last"; card: SentenceCard }
+  | { type: "patch"; cardId: string; patch: CardPatch; expectedOriginal?: string };
+
+const EMPTY_CARDS_STATE: CardsState = {
+  cards: [],
+  indexById: {},
+};
+
+const buildCardIndex = (cards: SentenceCard[]): Record<string, number> => {
+  const indexById: Record<string, number> = {};
+  for (let i = 0; i < cards.length; i++) {
+    indexById[cards[i].id] = i;
+  }
+  return indexById;
+};
+
+const cardsReducer = (state: CardsState, action: CardsAction): CardsState => {
+  switch (action.type) {
+    case "reset": {
+      return {
+        cards: action.cards,
+        indexById: buildCardIndex(action.cards),
+      };
+    }
+    case "append": {
+      const nextCards = [...state.cards, action.card];
+      return {
+        cards: nextCards,
+        indexById: {
+          ...state.indexById,
+          [action.card.id]: state.cards.length,
+        },
+      };
+    }
+    case "replace_last": {
+      if (state.cards.length === 0) {
+        return {
+          cards: [action.card],
+          indexById: { [action.card.id]: 0 },
+        };
+      }
+
+      const lastIndex = state.cards.length - 1;
+      const previousId = state.cards[lastIndex].id;
+      const nextCards = state.cards.slice();
+      nextCards[lastIndex] = action.card;
+      const nextIndexById = { ...state.indexById };
+      delete nextIndexById[previousId];
+      nextIndexById[action.card.id] = lastIndex;
+
+      return {
+        cards: nextCards,
+        indexById: nextIndexById,
+      };
+    }
+    case "patch": {
+      const index = state.indexById[action.cardId];
+      if (index === undefined) return state;
+
+      const current = state.cards[index];
+      if (action.expectedOriginal !== undefined && current.original !== action.expectedOriginal) {
+        return state;
+      }
+
+      let changed = false;
+      for (const key in action.patch) {
+        const patchKey = key as keyof CardPatch;
+        if (current[patchKey] !== action.patch[patchKey]) {
+          changed = true;
+          break;
+        }
+      }
+
+      if (!changed) return state;
+
+      const nextCards = state.cards.slice();
+      nextCards[index] = { ...current, ...action.patch };
+
+      return {
+        cards: nextCards,
+        indexById: state.indexById,
+      };
+    }
+    default:
+      return state;
+  }
+};
+
 // --- Main App Component ---
 
 function App() {
@@ -71,6 +187,9 @@ function App() {
   const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
+  const [isSessionTranslating, setIsSessionTranslating] = useState(false);
+  const [sessionTranslationTotal, setSessionTranslationTotal] = useState(0);
+  const [sessionTranslationCompleted, setSessionTranslationCompleted] = useState(0);
   
   // Session State
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
@@ -81,7 +200,8 @@ function App() {
   const [renameValue, setRenameValue] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
-  const [cards, setCards] = useState<SentenceCard[]>([]);
+  const [cardsState, dispatchCards] = useReducer(cardsReducer, EMPTY_CARDS_STATE);
+  const cards = cardsState.cards;
   const [partialText, setPartialText] = useState<string>("");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [autoFollow, setAutoFollow] = useState<boolean>(true);
@@ -98,6 +218,11 @@ function App() {
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
+  const cardIndexRef = useRef<Record<string, number>>({});
+  const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
+  const activeSessionTranslationBatchIdRef = useRef<string | null>(null);
+  const sessionTranslationTotalRef = useRef(0);
+  const sessionTranslationCompletedRef = useRef(0);
   const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -120,6 +245,51 @@ function App() {
     }, 3000);
   };
 
+  const clearPendingSessionRequests = () => {
+    const filtered: Record<string, PendingTranslationRequest> = {};
+    for (const requestId in pendingTranslationRequestsRef.current) {
+      const pending = pendingTranslationRequestsRef.current[requestId];
+      if (pending.mode !== 'session') {
+        filtered[requestId] = pending;
+      }
+    }
+    pendingTranslationRequestsRef.current = filtered;
+  };
+
+  const resetSessionTranslationProgress = () => {
+    activeSessionTranslationBatchIdRef.current = null;
+    sessionTranslationTotalRef.current = 0;
+    sessionTranslationCompletedRef.current = 0;
+    setIsSessionTranslating(false);
+    setSessionTranslationTotal(0);
+    setSessionTranslationCompleted(0);
+  };
+
+  const startSessionTranslationProgress = (batchId: string, total: number) => {
+    activeSessionTranslationBatchIdRef.current = batchId;
+    sessionTranslationTotalRef.current = total;
+    sessionTranslationCompletedRef.current = 0;
+    setIsSessionTranslating(total > 0);
+    setSessionTranslationTotal(total);
+    setSessionTranslationCompleted(0);
+  };
+
+  const markSessionTranslationProgressStep = (batchId: string) => {
+    if (activeSessionTranslationBatchIdRef.current !== batchId) return;
+
+    const total = sessionTranslationTotalRef.current;
+    if (total <= 0) return;
+
+    const next = Math.min(total, sessionTranslationCompletedRef.current + 1);
+    sessionTranslationCompletedRef.current = next;
+    setSessionTranslationCompleted(next);
+
+    if (next >= total) {
+      setIsSessionTranslating(false);
+      addToast('success', t("toast.sessionTranslationComplete", { completed: next, total }));
+    }
+  };
+
   // --- Session Management ---
 
   const refreshSessionList = async () => {
@@ -139,7 +309,7 @@ function App() {
       setActiveSessionId(session.id);
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
-      setCards([]); // Clear cards for new session
+      dispatchCards({ type: "reset", cards: [] }); // Clear cards for new session
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(true);
       lastProcessedCardRef.current = null;
@@ -171,7 +341,7 @@ function App() {
       setActiveSessionId(session.id);
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
-      setCards(session.cards);
+      dispatchCards({ type: "reset", cards: session.cards });
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
       lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
@@ -194,7 +364,7 @@ function App() {
         setActiveSessionId(null);
         setActiveSessionName("");
         setActiveSessionCreatedAt(0);
-        setCards([]);
+        dispatchCards({ type: "reset", cards: [] });
         setTempTranslations({}); // Clear temp translations
         lastProcessedCardRef.current = null;
         setPartialText("");
@@ -218,7 +388,7 @@ function App() {
       setActiveSessionId(null);
       setActiveSessionName("");
       setActiveSessionCreatedAt(0);
-      setCards([]);
+      dispatchCards({ type: "reset", cards: [] });
       setTempTranslations({});
       lastProcessedCardRef.current = null;
       setPartialText("");
@@ -277,10 +447,11 @@ function App() {
 
   useEffect(() => {
     cardsRef.current = cards;
+    cardIndexRef.current = cardsState.indexById;
     if (autoFollow) {
       historyEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [cards, partialText, autoFollow]);
+  }, [cards, cardsState.indexById, partialText, autoFollow]);
 
   // Handle language change from config
   useEffect(() => {
@@ -385,67 +556,71 @@ function App() {
 
   // --- Logic ---
 
-  const retryTranslation = async (cardId: string, originalText: string) => {
-    setCards(prev => prev.map(c => c.id === cardId ? { ...c, retrying: true } : c));
+  const buildTranslationContext = (
+    cardId: string,
+    providerOverride?: string,
+  ): string[] | null => {
+    const currentCards = cardsRef.current;
+    const currentConfig = configRef.current;
+    const effectiveProvider = providerOverride || currentConfig.provider;
+    const isAIModel = effectiveProvider !== 'google' && effectiveProvider !== 'microsoft';
+
+    if (!isAIModel || currentConfig.openai_context_count <= 0) {
+      return null;
+    }
+
+    const cardIndex = cardIndexRef.current[cardId] ?? -1;
+    if (cardIndex >= 0) {
+      const startIdx = Math.max(0, cardIndex - currentConfig.openai_context_count);
+      return currentCards.slice(startIdx, cardIndex).map(c => c.original);
+    }
+
+    const startIdx = Math.max(0, currentCards.length - currentConfig.openai_context_count);
+    return currentCards.slice(startIdx).map(c => c.original);
+  };
+
+  const enqueueTranslation = async (
+    cardId: string,
+    text: string,
+    isRetry: boolean,
+    mode: 'live' | 'session' = 'live',
+    targetLangOverride?: string,
+    providerOverride?: string,
+  ) => {
+    const requestId = generateId();
+    const context = buildTranslationContext(cardId, providerOverride);
+
+    pendingTranslationRequestsRef.current[requestId] = { cardId, text, isRetry, mode };
+
     try {
-      const currentCards = cardsRef.current;
-      const currentConfig = configRef.current;
-      const cardIndex = currentCards.findIndex(c => c.id === cardId);
-      let context: string[] | null = null;
-
-      // Include context for AI models (not Google/Microsoft)
-      const isAIModel = currentConfig.provider !== 'google' && currentConfig.provider !== 'microsoft';
-      if (isAIModel && currentConfig.openai_context_count > 0 && cardIndex > 0) {
-        const startIdx = Math.max(0, cardIndex - currentConfig.openai_context_count);
-        context = currentCards.slice(startIdx, cardIndex).map(c => c.original);
-      }
-
-      const translated = await invoke<string>("translate_text", { text: originalText, context });
-      setCards(prev => prev.map(c => c.id === cardId ? { ...c, translated, retrying: false, status: 'success' as TranslationStatus } : c));
+      await invoke("translate_text_async", {
+        requestId,
+        cardId,
+        text,
+        context,
+        targetLangOverride,
+        providerOverride,
+        isRetry,
+      });
     } catch (e) {
-      console.error("Retry failed:", e);
-      setCards(prev => prev.map(c => c.id === cardId ? { ...c, retrying: false } : c));
+      delete pendingTranslationRequestsRef.current[requestId];
+      console.error("Translation enqueue error:", e);
+      dispatchCards({
+        type: "patch",
+        cardId,
+        patch: { translated: null, status: 'error' as TranslationStatus, retrying: false },
+        expectedOriginal: text,
+      });
     }
   };
 
+  const retryTranslation = async (cardId: string, originalText: string) => {
+    dispatchCards({ type: "patch", cardId, patch: { retrying: true } });
+    await enqueueTranslation(cardId, originalText, true, 'live');
+  };
+
   const performTranslation = async (cardId: string, text: string) => {
-    try {
-      const currentCards = cardsRef.current;
-      const currentConfig = configRef.current;
-
-      let context: string[] | null = null;
-      // Include context for AI models (not Google/Microsoft)
-      const isAIModel = currentConfig.provider !== 'google' && currentConfig.provider !== 'microsoft';
-      if (isAIModel && currentConfig.openai_context_count > 0) {
-        const cardIndex = currentCards.findIndex(c => c.id === cardId);
-        if (cardIndex >= 0) {
-          const startIdx = Math.max(0, cardIndex - currentConfig.openai_context_count);
-          context = currentCards.slice(startIdx, cardIndex).map(c => c.original);
-        } else {
-          const startIdx = Math.max(0, currentCards.length - currentConfig.openai_context_count);
-          context = currentCards.slice(startIdx).map(c => c.original);
-        }
-      }
-
-      const translated = await invoke<string>("translate_text", { text, context });
-
-      setCards(prev => prev.map(c => {
-        if (c.id === cardId) {
-          if (c.original !== text) return c;
-          return { ...c, translated, status: 'success' as TranslationStatus };
-        }
-        return c;
-      }));
-    } catch (e) {
-      console.error("Translation error:", e);
-      setCards(prev => prev.map(c => {
-        if (c.id === cardId) {
-          if (c.original !== text) return c;
-          return { ...c, translated: null, status: 'error' as TranslationStatus };
-        }
-        return c;
-      }));
-    }
+    await enqueueTranslation(cardId, text, false, 'live');
   };
 
   const translateAndDisplay = async (originalText: string, allowDuplicate: boolean = false, user?: string) => {
@@ -483,27 +658,24 @@ function App() {
     syncCountRef.current = 0;
 
 
-    setCards(prev => {
-      if (isOverwrite && prev.length > 0) {
-        // Replace the last card with the NEW card (new ID)
-        // This effectively removes the old card and its pending translation UI state
-        return [...prev.slice(0, -1), newCard];
-      } else {
-        return [...prev, newCard].slice(-200);
-      }
-    });
+    if (isOverwrite && cardsRef.current.length > 0) {
+      // Replace the last card with the NEW card (new ID)
+      // This effectively removes the old card and its pending translation UI state
+      dispatchCards({ type: "replace_last", card: newCard });
+    } else {
+      dispatchCards({ type: "append", card: newCard });
+    }
 
     // Check if translation is enabled
     if (configRef.current.translation_enabled === false) {
       // Just leave it as null/translating until finalized? 
     // Actually if translation is disabled, we should just mark it as success but with null translation
     // to indicate "processing done, no translation needed"
-    setCards(prev => prev.map(c => {
-      if (c.id === newId) {
-        return { ...c, translated: null, status: 'success' as TranslationStatus };
-      }
-      return c;
-    }));
+    dispatchCards({
+      type: "patch",
+      cardId: newId,
+      patch: { translated: null, status: 'success' as TranslationStatus },
+    });
     return;
     }
 
@@ -513,6 +685,75 @@ function App() {
   };
 
   useEffect(() => {
+    const unlistenTranslationResult = listen<TranslationResultEvent>("translation-result", (event) => {
+      const payload = event.payload;
+      const pending = pendingTranslationRequestsRef.current[payload.request_id];
+
+      if (!pending) {
+        return;
+      }
+
+      delete pendingTranslationRequestsRef.current[payload.request_id];
+
+      if (pending.mode === 'session') {
+        if (pending.batchId) {
+          markSessionTranslationProgressStep(pending.batchId);
+        }
+
+        if (payload.status === 'success') {
+          setTempTranslations(prev => ({
+            ...prev,
+            [pending.cardId]: { translated: payload.translated ?? '', status: 'success' },
+          }));
+        } else {
+          setTempTranslations(prev => ({
+            ...prev,
+            [pending.cardId]: { translated: '', status: 'error' },
+          }));
+        }
+        return;
+      }
+
+      if (pending.isRetry) {
+        if (payload.status === 'success') {
+          dispatchCards({
+            type: "patch",
+            cardId: pending.cardId,
+            patch: {
+              translated: payload.translated,
+              retrying: false,
+              status: 'success' as TranslationStatus,
+            },
+            expectedOriginal: pending.text,
+          });
+        } else {
+          dispatchCards({
+            type: "patch",
+            cardId: pending.cardId,
+            patch: { retrying: false },
+            expectedOriginal: pending.text,
+          });
+        }
+        return;
+      }
+
+      if (payload.status === 'success') {
+        dispatchCards({
+          type: "patch",
+          cardId: pending.cardId,
+          patch: { translated: payload.translated, status: 'success' as TranslationStatus },
+          expectedOriginal: pending.text,
+        });
+      } else {
+        dispatchCards({
+          type: "patch",
+          cardId: pending.cardId,
+          patch: { translated: null, status: 'error' as TranslationStatus },
+          expectedOriginal: pending.text,
+        });
+      }
+    });
+
     const unlistenRaw = listen<RawCaption>("caption-raw", async (event) => {
       const fullText = event.payload.text;
       const user = event.payload.user;
@@ -538,11 +779,10 @@ function App() {
              if (!configRef.current.translation_enabled) return;
              
              // IMPORTANT: Only now show the loading dots
-             setCards(prev => prev.map(c => 
-               c.id === cardId ? { ...c, status: 'translating' } : c
-             ));
+             dispatchCards({ type: "patch", cardId, patch: { status: 'translating' } });
 
-             const card = cardsRef.current.find(c => c.id === cardId);
+             const cardIndex = cardIndexRef.current[cardId];
+             const card = cardIndex === undefined ? undefined : cardsRef.current[cardIndex];
              if (card) {
                performTranslation(cardId, card.original);
              }
@@ -551,9 +791,11 @@ function App() {
           // Check if this is an incremental update (continuation) of the last card
           if (lastCard && shouldOverwrite(lastCard.original, fullText)) {
             // Update the existing card, but keep status 'success' to hide dots
-            setCards(prev => prev.map(c => 
-              c.id === lastCard.id ? { ...c, original: fullText, status: 'success', translated: null } : c
-            ));
+            dispatchCards({
+              type: "patch",
+              cardId: lastCard.id,
+              patch: { original: fullText, status: 'success', translated: null },
+            });
             
             pendingTranslationCardIdRef.current = lastCard.id;
             lastProcessedCardRef.current = { ...lastCard, original: fullText };
@@ -576,7 +818,7 @@ function App() {
               timestamp
             };
 
-            setCards(prev => [...prev, newCard].slice(-200));
+            dispatchCards({ type: "append", card: newCard });
             pendingTranslationCardIdRef.current = newId;
             lastProcessedCardRef.current = newCard;
           }
@@ -629,6 +871,7 @@ function App() {
     });
 
     return () => {
+      unlistenTranslationResult.then(f => f());
       unlistenRaw.then(f => f());
       unlistenStatus.then(f => f());
       unlistenError.then(f => f());
@@ -679,8 +922,10 @@ function App() {
       isFirstCaptionRef.current = true;
       setStatus("Starting...");
       try {
-        await invoke("start_caption_watcher");
-        setIsRunning(true);
+      await invoke("start_caption_watcher");
+      setIsRunning(true);
+      pendingTranslationRequestsRef.current = {};
+      resetSessionTranslationProgress();
       } catch (err) {
         setStatus(`Failed to start: ${err}`);
         setIsRunning(false);
@@ -714,6 +959,8 @@ function App() {
       setIsRunning(false);
       setStatus("Stopped");
       setPartialText("");
+      pendingTranslationRequestsRef.current = {};
+      resetSessionTranslationProgress();
       
       // Immediate save and refresh list to show preview
       if (activeSessionId && activeSessionCreatedAt) {
@@ -755,18 +1002,32 @@ function App() {
   };
 
   const handleSummarize = async () => {
-    if (cards.length === 0) return;
+    const summaryProvider = config.summary_provider?.trim();
+    if (!summaryProvider) {
+      addToast('error', t("settings.summary.selectProvider"));
+      return;
+    }
+
+    if (cards.length === 0 || !activeSessionId || !activeSessionCreatedAt) return;
     setIsSummaryOpen(true);
     setIsSummarizing(true);
     setSummaryText("");
 
     try {
-      const segments = cards.map(c => c.original);
-      const result = await invoke<string>("summarize_text", {
-        segments,
-        providerId: config.summary_provider
+      const sessionToSave: Session = {
+        id: activeSessionId,
+        name: activeSessionName,
+        created_at: activeSessionCreatedAt,
+        cards: cardsRef.current,
+      };
+
+      await invoke("save_session_data", { session: sessionToSave });
+
+      const dbResult = await invoke<string>("summarize_session_by_id", {
+        sessionId: activeSessionId,
+        providerId: summaryProvider,
       });
-      setSummaryText(result);
+      setSummaryText(dbResult);
     } catch (err) {
       console.error("Summary error:", err);
       setSummaryText(`Error generating summary: ${err}`);
@@ -777,6 +1038,10 @@ function App() {
 
   const handleTranslateSession = async (targetLang: string, providerOverride?: string) => {
     if (cards.length === 0) return;
+
+    clearPendingSessionRequests();
+    const batchId = generateId();
+    startSessionTranslationProgress(batchId, cards.length);
 
     // Clear previous temp translations
     setTempTranslations({});
@@ -795,38 +1060,44 @@ function App() {
       : 2;
     const batchSize = Math.max(1, Math.min(configuredConcurrency, MAX_TRANSLATION_BATCH_SIZE));
 
+    const effectiveProvider = providerOverride || config.provider;
+    const isAIModel = effectiveProvider !== 'google' && effectiveProvider !== 'microsoft';
+
     for (let batchStart = 0; batchStart < cards.length; batchStart += batchSize) {
       const batchCards = cards.slice(batchStart, batchStart + batchSize);
 
       await Promise.all(batchCards.map(async (card, batchOffset) => {
         const cardIndex = batchStart + batchOffset;
 
+        let context: string[] | null = null;
+        if (isAIModel && config.openai_context_count > 0 && cardIndex > 0) {
+          const startIdx = Math.max(0, cardIndex - config.openai_context_count);
+          context = cards.slice(startIdx, cardIndex).map(c => c.original);
+        }
+
+        const requestId = generateId();
+        pendingTranslationRequestsRef.current[requestId] = {
+          cardId: card.id,
+          text: card.original,
+          isRetry: false,
+          mode: 'session',
+          batchId,
+        };
+
         try {
-          let context: string[] | null = null;
-
-          // Use override provider or config provider for context logic checks
-          const effectiveProvider = providerOverride || config.provider;
-
-          // Include context for AI models (not Google/Microsoft)
-          const isAIModel = effectiveProvider !== 'google' && effectiveProvider !== 'microsoft';
-          if (isAIModel && config.openai_context_count > 0 && cardIndex > 0) {
-            const startIdx = Math.max(0, cardIndex - config.openai_context_count);
-            context = cards.slice(startIdx, cardIndex).map(c => c.original);
-          }
-
-          const translated = await invoke<string>("translate_text", {
+          await invoke("translate_text_async", {
+            requestId,
+            cardId: card.id,
             text: card.original,
             context,
             targetLangOverride: targetLang,
-            providerOverride
+            providerOverride,
+            isRetry: false,
           });
-
-          setTempTranslations(prev => ({
-            ...prev,
-            [card.id]: { translated, status: 'success' }
-          }));
         } catch (e) {
-          console.error(`Translation failed for card ${card.id}:`, e);
+          delete pendingTranslationRequestsRef.current[requestId];
+          console.error(`Translation enqueue failed for card ${card.id}:`, e);
+          markSessionTranslationProgressStep(batchId);
           setTempTranslations(prev => ({
             ...prev,
             [card.id]: { translated: '', status: 'error' }
@@ -854,6 +1125,10 @@ function App() {
   const handleWindowMinimize = () => appWindow.minimize();
   const handleWindowMaximize = () => appWindow.toggleMaximize();
   const handleWindowClose = () => appWindow.close();
+
+  const sessionTranslationProgressPercent = sessionTranslationTotal > 0
+    ? Math.round((sessionTranslationCompleted / sessionTranslationTotal) * 100)
+    : 0;
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background font-sans text-text-primary">
@@ -935,12 +1210,26 @@ function App() {
               </span>
             </div>
             <div className="flex items-center gap-2">
+              {isSessionTranslating && (
+                <span
+                  className="text-xs text-text-secondary px-2 py-1 rounded-md bg-bg-secondary border border-border"
+                  title={t("translateSession.progressTitle", {
+                    completed: sessionTranslationCompleted,
+                    total: sessionTranslationTotal,
+                  })}
+                >
+                  {sessionTranslationCompleted}/{sessionTranslationTotal} ({sessionTranslationProgressPercent}%)
+                </span>
+              )}
               <CopyButton cards={cards} addToast={addToast} />
               <button
-                className={`bg-transparent border-none text-text-muted cursor-not-allowed p-2 rounded-full transition-all flex items-center justify-center ${cards.length > 0 ? 'cursor-pointer text-text-secondary hover:bg-card-hover hover:text-text-primary' : ''}`}
-                onClick={() => setIsTranslateModalOpen(true)}
-                title="Translate Session"
-                disabled={cards.length === 0}
+                className={`bg-transparent border-none text-text-muted cursor-not-allowed p-2 rounded-full transition-all flex items-center justify-center ${(cards.length > 0 && !isSessionTranslating) ? 'cursor-pointer text-text-secondary hover:bg-card-hover hover:text-text-primary' : ''}`}
+                onClick={() => {
+                  if (isSessionTranslating) return;
+                  setIsTranslateModalOpen(true);
+                }}
+                title={t("translateSession.tooltip")}
+                disabled={cards.length === 0 || isSessionTranslating}
               >
                 <IconLanguages />
               </button>
@@ -982,10 +1271,10 @@ function App() {
                   <span>{isRunning ? t("controls.stop") : t("controls.start")}</span>
               </button>
               <button
-                  className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 ml-3 ${cards.length === 0 ? 'text-text-muted cursor-not-allowed' : 'text-text-primary cursor-pointer hover:brightness-110'}`}
+                  className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 ml-3 ${(cards.length === 0 || !config.summary_provider?.trim()) ? 'text-text-muted cursor-not-allowed' : 'text-text-primary cursor-pointer hover:brightness-110'}`}
                   onClick={handleSummarize}
-                  disabled={cards.length === 0}
-                  title={t("controls.summarize")}
+                  disabled={cards.length === 0 || !config.summary_provider?.trim()}
+                  title={config.summary_provider?.trim() ? t("controls.summarize") : t("settings.summary.selectProvider")}
               >
                   <IconFileText />
               </button>
@@ -1069,6 +1358,7 @@ function App() {
         onTranslate={handleTranslateSession}
         currentTargetLang={config.target_lang}
         config={config}
+        isTranslating={isSessionTranslating}
       />
 
       {/* Toast Container */}

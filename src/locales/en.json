@@ -178,11 +178,14 @@
     "copySuccess": "Copied to clipboard",
     "copyFailed": "Failed to copy",
     "logLevelUpdated": "Log level updated to {{level}}",
-    "logLevelUpdateFailed": "Failed to update log level: {{error}}"
+    "logLevelUpdateFailed": "Failed to update log level: {{error}}",
+    "sessionTranslationComplete": "Session translation complete ({{completed}}/{{total}})"
   },
   "translateSession": {
     "title": "Translate Session",
     "targetLanguage": "Target Language",
+    "translating": "Translating...",
+    "progressTitle": "Session translation progress: {{completed}}/{{total}}",
     "translate": "Translate",
     "cancel": "Cancel",
     "tooltip": "Translate Session"
