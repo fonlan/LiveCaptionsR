@@ -9,11 +9,12 @@ import { ModelsTab } from "./ModelsTab";
 interface SettingsFormProps {
   config: AppConfig;
   onSave: (c: AppConfig, silent?: boolean) => void;
+  onConfigChange?: (c: AppConfig) => void;
   onStartCopilotAuth: (id: string) => void;
   addToast: (type: 'success' | 'error', msg: string) => void;
 }
 
-export function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: SettingsFormProps) {
+export function SettingsForm({ config, onSave, onConfigChange, onStartCopilotAuth, addToast }: SettingsFormProps) {
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'channels' | 'models' | 'summary'>('general');
@@ -205,6 +206,7 @@ export function SettingsForm({ config, onSave, onStartCopilotAuth, addToast }: S
               const checked = e.target.checked;
               const newConfig = { ...formData, always_on_top: checked };
               setFormData(newConfig);
+              onConfigChange?.(newConfig);
               try {
                 await invoke("set_always_on_top", { alwaysOnTop: checked });
                 autoSave(newConfig);

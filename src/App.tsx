@@ -32,6 +32,7 @@ import {
   IconWindowMinimize,
   IconWindowMaximize,
   IconWindowClose,
+  IconPin,
   IconEye,
   IconEyeOff,
 } from "./components/Icons";
@@ -837,6 +838,19 @@ function App() {
 
   const appWindow = getCurrentWindow();
 
+  const handleToggleAlwaysOnTop = async () => {
+    const nextAlwaysOnTop = !config.always_on_top;
+    const nextConfig = { ...config, always_on_top: nextAlwaysOnTop };
+
+    try {
+      await invoke("set_always_on_top", { alwaysOnTop: nextAlwaysOnTop });
+      setConfig(nextConfig);
+    } catch (err) {
+      console.error("Failed to toggle always on top:", err);
+      addToast('error', t("toast.configSaveFailed", { error: String(err) }));
+    }
+  };
+
   const handleWindowMinimize = () => appWindow.minimize();
   const handleWindowMaximize = () => appWindow.toggleMaximize();
   const handleWindowClose = () => appWindow.close();
@@ -849,6 +863,13 @@ function App() {
           <span className="text-xs font-semibold text-text-secondary tracking-[0.5px]">LiveCaptions</span>
         </div>
         <div className="flex h-full">
+          <button
+            onClick={handleToggleAlwaysOnTop}
+            className={`w-[46px] h-full bg-transparent border-none flex justify-center items-center cursor-pointer transition-all duration-200 hover:bg-white/5 ${config.always_on_top ? 'text-text-primary bg-white/10' : 'text-text-muted hover:text-text-primary'}`}
+            title={t("settings.general.alwaysOnTop")}
+          >
+            <IconPin />
+          </button>
           <button onClick={handleWindowMinimize} className="w-[46px] h-full bg-transparent border-none text-text-muted flex justify-center items-center cursor-pointer transition-all duration-200 hover:bg-white/5 hover:text-text-primary" title={t("titlebar.minimize")}>
             <IconWindowMinimize />
           </button>
@@ -997,7 +1018,13 @@ function App() {
             </button>
           </header>
           <div className="flex-1 overflow-y-auto p-4 flex flex-col">
-            <SettingsForm config={config} onSave={saveConfig} onStartCopilotAuth={(id) => { setAuthChannelId(id); setDeviceAuthOpen(true); }} addToast={addToast} />
+            <SettingsForm
+              config={config}
+              onSave={saveConfig}
+              onConfigChange={setConfig}
+              onStartCopilotAuth={(id) => { setAuthChannelId(id); setDeviceAuthOpen(true); }}
+              addToast={addToast}
+            />
           </div>
         </div>
       </div>
