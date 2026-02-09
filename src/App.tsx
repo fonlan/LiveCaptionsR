@@ -1,4 +1,4 @@
-import { useState, useEffect, useReducer, useRef } from "react";
+import { useState, useEffect, useReducer, useRef, type WheelEvent as ReactWheelEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { getVersion } from "@tauri-apps/api/app";
@@ -44,19 +44,27 @@ import { SummaryModal } from "./components/modals/SummaryModal";
 import { TranslateModal } from "./components/modals/TranslateModal";
 import { TeamsSelectionModal } from "./components/modals/TeamsSelectionModal";
 import { DeviceAuthModal } from "./components/modals/DeviceAuthModal";
-import { 
+import {
   shouldOverwrite,
   getLatestCaption,
   generateId
 } from "./utils/textUtils";
-import { getNewSentences } from "./utils/captionProcessing";
+import { filterDuplicateSentences, getNewSentences } from "./utils/captionProcessing";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
 const MAX_SYNC_INTERVAL = 20;
 const MAX_TRANSLATION_BATCH_SIZE = 10;
-const SMOOTH_SCROLL_MAX_ITEMS = 180;
 const STICK_TO_BOTTOM_EPSILON = 4;
+const AUTO_FOLLOW_ENABLE_THRESHOLD = 8;
+const AUTO_FOLLOW_DISABLE_THRESHOLD = 120;
+const WHEEL_LINE_HEIGHT_PX = 20;
+const WHEEL_PAGE_RATIO = 0.88;
+const WHEEL_CLASSIC_DELTA_THRESHOLD = 40;
+const WHEEL_MAX_STEP_PX = 92;
+const RECENT_SENTENCE_DEDUP_WINDOW_MS = 45_000;
+const RECENT_SENTENCE_MAX_TRACKED = 800;
+const RECENT_SENTENCE_MIN_LENGTH = 8;
 
 type TranslationResultEvent = {
   request_id: string;
@@ -237,6 +245,12 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
+  const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
+  const autoFollowRef = useRef<boolean>(true);
+  const lastScrollTopRef = useRef<number>(0);
+  const scrollRafRef = useRef<number | null>(null);
+  const queuedScrollTopRef = useRef<number>(0);
+  const queuedViewportHeightRef = useRef<number>(0);
 
 
   const addToast = (type: 'success' | 'error', message: string) => {
@@ -256,6 +270,78 @@ function App() {
       }
     }
     pendingTranslationRequestsRef.current = filtered;
+  };
+
+  const normalizeSentenceForDedup = (text: string): string => {
+    return text
+      .normalize("NFKC")
+      .replace(/\s+/g, " ")
+      .replace(/[.!?。！？,，;；:：]+$/g, "")
+      .trim()
+      .toLowerCase();
+  };
+
+  const shouldSkipRecentSentence = (text: string, user?: string): boolean => {
+    const normalizedText = normalizeSentenceForDedup(text);
+    if (normalizedText.length < RECENT_SENTENCE_MIN_LENGTH) {
+      return false;
+    }
+
+    const now = Date.now();
+    const seenMap = recentSentenceSeenAtRef.current;
+    for (const [key, seenAt] of seenMap) {
+      if (now - seenAt > RECENT_SENTENCE_DEDUP_WINDOW_MS) {
+        seenMap.delete(key);
+      }
+    }
+
+    const normalizedUser = (user || "").trim().toLowerCase();
+    const dedupKey = `${normalizedUser}|${normalizedText}`;
+    const seenAt = seenMap.get(dedupKey);
+    seenMap.set(dedupKey, now);
+
+    while (seenMap.size > RECENT_SENTENCE_MAX_TRACKED) {
+      const oldestKey = seenMap.keys().next().value;
+      if (!oldestKey) break;
+      seenMap.delete(oldestKey);
+    }
+
+    return seenAt !== undefined && now - seenAt < RECENT_SENTENCE_DEDUP_WINDOW_MS;
+  };
+
+  const resetRecentSentenceDedup = () => {
+    recentSentenceSeenAtRef.current.clear();
+  };
+
+  const normalizeWheelDelta = (event: ReactWheelEvent<HTMLDivElement>, container: HTMLDivElement): number => {
+    if (event.deltaMode === 1) {
+      return event.deltaY * WHEEL_LINE_HEIGHT_PX;
+    }
+    if (event.deltaMode === 2) {
+      return event.deltaY * container.clientHeight * WHEEL_PAGE_RATIO;
+    }
+    return event.deltaY;
+  };
+
+  const handleScrollWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (event.ctrlKey) return;
+
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const normalizedDelta = normalizeWheelDelta(event, container);
+    const isClassicWheel =
+      event.deltaMode !== 0 || Math.abs(normalizedDelta) >= WHEEL_CLASSIC_DELTA_THRESHOLD;
+
+    if (!isClassicWheel) return;
+
+    event.preventDefault();
+
+    const appliedDelta = Math.max(-WHEEL_MAX_STEP_PX, Math.min(WHEEL_MAX_STEP_PX, normalizedDelta));
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const nextScrollTop = Math.max(0, Math.min(maxScrollTop, container.scrollTop + appliedDelta));
+
+    container.scrollTo({ top: nextScrollTop, behavior: "auto" });
   };
 
   const resetSessionTranslationProgress = () => {
@@ -315,6 +401,7 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(true);
       lastProcessedCardRef.current = null;
+      resetRecentSentenceDedup();
 
       setPartialText("");
       lastFullTextRef.current = "";
@@ -347,6 +434,7 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
       lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
+      resetRecentSentenceDedup();
 
       setPartialText("");
     } catch (e) {
@@ -369,6 +457,7 @@ function App() {
         dispatchCards({ type: "reset", cards: [] });
         setTempTranslations({}); // Clear temp translations
         lastProcessedCardRef.current = null;
+        resetRecentSentenceDedup();
         setPartialText("");
       }
       addToast('success', t("session.deleted"));
@@ -393,6 +482,7 @@ function App() {
       dispatchCards({ type: "reset", cards: [] });
       setTempTranslations({});
       lastProcessedCardRef.current = null;
+      resetRecentSentenceDedup();
       setPartialText("");
       
       addToast('success', t("session.deleted"));
@@ -452,18 +542,19 @@ function App() {
     cardIndexRef.current = cardsState.indexById;
     if (autoFollow) {
       const container = scrollContainerRef.current;
-      const distanceToBottom = container
-        ? container.scrollHeight - container.scrollTop - container.clientHeight
-        : Number.POSITIVE_INFINITY;
-      const shouldUseSmooth =
-        cards.length <= SMOOTH_SCROLL_MAX_ITEMS &&
-        distanceToBottom <= STICK_TO_BOTTOM_EPSILON;
-
-      historyEndRef.current?.scrollIntoView({
-        behavior: shouldUseSmooth ? "smooth" : "auto",
-      });
+      if (container) {
+        const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        const distanceToBottom = targetTop - container.scrollTop;
+        if (distanceToBottom > STICK_TO_BOTTOM_EPSILON) {
+          container.scrollTo({ top: targetTop, behavior: "auto" });
+        }
+      }
     }
   }, [cards, cardsState.indexById, partialText, autoFollow]);
+
+  useEffect(() => {
+    autoFollowRef.current = autoFollow;
+  }, [autoFollow]);
 
   // Handle language change from config
   useEffect(() => {
@@ -517,21 +608,39 @@ function App() {
     if (!container) return;
 
     setListViewportHeight(container.clientHeight);
+    lastScrollTopRef.current = container.scrollTop;
 
     const handleScroll = () => {
       const { scrollTop, scrollHeight, clientHeight } = container;
       const distanceToBottom = scrollHeight - scrollTop - clientHeight;
-      const threshold = 100; // pixels from bottom to consider "at bottom"
+      const scrollingUp = scrollTop + 2 < lastScrollTopRef.current;
+      lastScrollTopRef.current = scrollTop;
 
-      setListScrollTop(scrollTop);
-      setListViewportHeight(prev => (prev === clientHeight ? prev : clientHeight));
+      queuedScrollTopRef.current = scrollTop;
+      queuedViewportHeightRef.current = clientHeight;
+      if (scrollRafRef.current === null) {
+        scrollRafRef.current = window.requestAnimationFrame(() => {
+          setListScrollTop(queuedScrollTopRef.current);
+          setListViewportHeight(prev => (
+            prev === queuedViewportHeightRef.current ? prev : queuedViewportHeightRef.current
+          ));
+          scrollRafRef.current = null;
+        });
+      }
 
-      if (distanceToBottom <= threshold) {
-        // User is near/at bottom, enable auto-follow
+      if (autoFollowRef.current) {
+        if (scrollingUp && distanceToBottom > AUTO_FOLLOW_ENABLE_THRESHOLD) {
+          autoFollowRef.current = false;
+          setAutoFollow(false);
+          return;
+        }
+        if (distanceToBottom > AUTO_FOLLOW_DISABLE_THRESHOLD) {
+          autoFollowRef.current = false;
+          setAutoFollow(false);
+        }
+      } else if (distanceToBottom <= AUTO_FOLLOW_ENABLE_THRESHOLD) {
+        autoFollowRef.current = true;
         setAutoFollow(true);
-      } else {
-        // User is away from bottom, disable auto-follow
-        setAutoFollow(false);
       }
     };
 
@@ -546,6 +655,9 @@ function App() {
     handleScroll();
 
     return () => {
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+      }
       container.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', handleResize);
     };
@@ -637,6 +749,10 @@ function App() {
 
   const translateAndDisplay = async (originalText: string, allowDuplicate: boolean = false, user?: string) => {
     if (!originalText.trim()) return;
+
+    if (shouldSkipRecentSentence(originalText, user)) {
+      return;
+    }
 
     const lastCard = lastProcessedCardRef.current;
     // Prevent infinite re-translation loop on idle if text hasn't changed
@@ -865,7 +981,14 @@ function App() {
         const newSentences = getNewSentences(fullText, lastFullTextRef.current);
 
         if (newSentences.length > 0) {
-          newSentences.forEach(sentence => { void translateAndDisplay(sentence, true, user); });
+          const recentOriginals = cardsRef.current
+            .slice(-120)
+            .map(card => card.original);
+          const dedupedSentences = filterDuplicateSentences(recentOriginals, newSentences);
+
+          if (dedupedSentences.length > 0) {
+            dedupedSentences.forEach(sentence => { void translateAndDisplay(sentence, true, user); });
+          }
         } else {
           syncCountRef.current++;
           if (syncCountRef.current >= MAX_SYNC_INTERVAL && latestCaption.trim()) {
@@ -1248,7 +1371,12 @@ function App() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3" ref={scrollContainerRef}>
+          <div
+            className="flex-1 overflow-y-auto p-4 flex flex-col"
+            ref={scrollContainerRef}
+            onWheel={handleScrollWheel}
+            style={{ overflowAnchor: 'none' }}
+          >
             <CaptionsList
               cards={cards}
               hasActiveSession={!!activeSessionId}

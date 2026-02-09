@@ -31,40 +31,47 @@ export function splitIntoSentences(text: string): string[] {
 export function getNewSentences(currentText: string, lastText: string): string[] {
     const currentSentences = splitIntoSentences(currentText);
     const lastSentences = splitIntoSentences(lastText);
+    const matchThreshold = 0.8;
 
     if (lastSentences.length === 0) return currentSentences;
     if (currentSentences.length === 0) return [];
 
-    // Find where currentSentences starts in lastSentences (Overlap)
-    // We look for the longest suffix of lastSentences that matches a prefix of currentSentences
-    
-    // Iterate through LastSentences to find the start of CurrentSentences[0]
-    for (let i = 0; i < lastSentences.length; i++) {
-        // Use fuzzy matching for the start of overlap
-        // If similarity > 0.8, consider it a match to account for minor corrections
-        if (calculateSimilarity(lastSentences[i], currentSentences[0]) > 0.8) {
-            // Potential match start
-            // Verify subsequent matches
-            let match = true;
-            let overlapCount = 0;
-            for (let j = 0; j < lastSentences.length - i; j++) {
-                if (j >= currentSentences.length) {
-                    // Current is shorter than the tail of Last? (Rare, but possible if deletions)
-                    break; 
-                }
-                
-                // Compare subsequent sentences with fuzzy matching
-                if (calculateSimilarity(lastSentences[i + j], currentSentences[j]) <= 0.8) {
-                    match = false;
-                    break;
-                }
-                overlapCount++;
+    // Prefer the longest overlap between the suffix of last and prefix of current.
+    // This is resilient when caption providers resend history windows.
+    const maxOverlap = Math.min(lastSentences.length, currentSentences.length);
+    for (let overlap = maxOverlap; overlap >= 1; overlap--) {
+        const lastStart = lastSentences.length - overlap;
+        let isMatch = true;
+        for (let i = 0; i < overlap; i++) {
+            if (calculateSimilarity(lastSentences[lastStart + i], currentSentences[i]) <= matchThreshold) {
+                isMatch = false;
+                break;
             }
-            
-            if (match) {
-                // We found that Current starts at Last[i]
-                // The new sentences are from Current[overlapCount...]
-                return currentSentences.slice(overlapCount);
+        }
+        if (isMatch) {
+            return currentSentences.slice(overlap);
+        }
+    }
+
+    // If current starts with older history (not the latest tail), locate last tail sentence
+    // and treat only sentences after it as new.
+    const lastExisting = lastSentences[lastSentences.length - 1];
+    if (lastExisting) {
+        for (let i = 0; i < currentSentences.length; i++) {
+            if (calculateSimilarity(lastExisting, currentSentences[i]) <= matchThreshold) {
+                continue;
+            }
+
+            let verified = true;
+            if (lastSentences.length >= 2 && i >= 1) {
+                const secondLast = lastSentences[lastSentences.length - 2];
+                if (calculateSimilarity(secondLast, currentSentences[i - 1]) <= matchThreshold) {
+                    verified = false;
+                }
+            }
+
+            if (verified) {
+                return currentSentences.slice(i + 1);
             }
         }
     }

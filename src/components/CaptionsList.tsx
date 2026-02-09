@@ -5,8 +5,9 @@ import { SentenceCard, TranslationStatus } from "../types";
 
 type TempTranslation = { translated: string; status: TranslationStatus };
 const ITEM_ESTIMATED_HEIGHT = 110;
+const CARD_VERTICAL_GAP = 12;
 const OVERSCAN_ITEMS = 6;
-const STABLE_RENDER_THRESHOLD = 400;
+const STABLE_RENDER_THRESHOLD = 700;
 
 function lowerBound(offsets: number[], target: number): number {
   let low = 0;
@@ -77,8 +78,8 @@ const CaptionCardItem = memo(function CaptionCardItem({
     || displayStatus === "error";
 
   const motionClass = isVirtualized
-    ? "transition-colors"
-    : "transition-all animate-slide-in";
+    ? "transition-colors duration-150"
+    : "transition-colors duration-200 animate-slide-in";
 
   useLayoutEffect(() => {
     if (!onMeasuredHeight) return;
@@ -97,7 +98,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
   }, [card.id, card.original, card.retrying, displayStatus, displayTranslated, onMeasuredHeight]);
 
   return (
-    <div ref={itemRef} className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''}`}>
+    <div ref={itemRef} className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''}`}>
       {card.user && (
         <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">
           <IconUser />
@@ -150,6 +151,7 @@ export const CaptionsList = memo(function CaptionsList({
 }: CaptionsListProps) {
   const { t } = useTranslation();
   const measuredHeightsRef = useRef<Record<string, number>>({});
+  const avgMeasuredHeightRef = useRef<number>(ITEM_ESTIMATED_HEIGHT);
   const [heightVersion, setHeightVersion] = useState(0);
   const shouldVirtualize = cards.length > STABLE_RENDER_THRESHOLD && viewportHeight > 0;
   const totalItems = cards.length;
@@ -161,6 +163,14 @@ export const CaptionsList = memo(function CaptionsList({
     }
 
     measuredHeightsRef.current[cardId] = height;
+
+    const measuredValues = Object.values(measuredHeightsRef.current);
+    if (measuredValues.length > 0) {
+      const sum = measuredValues.reduce((acc, value) => acc + value, 0);
+      const avg = Math.round(sum / measuredValues.length);
+      avgMeasuredHeightRef.current = Math.max(72, Math.min(220, avg));
+    }
+
     setHeightVersion(prev => prev + 1);
   }, []);
 
@@ -187,7 +197,8 @@ export const CaptionsList = memo(function CaptionsList({
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       const measured = measuredHeightsRef.current[card.id];
-      offsets[i + 1] = offsets[i] + (measured ?? ITEM_ESTIMATED_HEIGHT);
+      const itemHeight = (measured ?? avgMeasuredHeightRef.current) + CARD_VERTICAL_GAP;
+      offsets[i + 1] = offsets[i] + itemHeight;
     }
 
     return offsets;
@@ -237,7 +248,7 @@ export const CaptionsList = memo(function CaptionsList({
       ))}
       {bottomSpacerHeight > 0 && <div aria-hidden="true" style={{ height: `${bottomSpacerHeight}px` }} />}
       {partialText && (!cards.length || cards[cards.length - 1].original !== partialText) && (
-        <div className="bg-primary-dim rounded-lg p-3 border-l-[3px] border-primary transition-all animate-slide-in relative">
+        <div className="bg-primary-dim rounded-lg p-3 border-l-[3px] border-primary transition-colors duration-200 animate-slide-in relative mb-3">
           <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4]">{partialText}</div>
           <div className="text-base text-primary animate-pulse">...</div>
         </div>

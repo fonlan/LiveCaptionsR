@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -483,6 +483,7 @@ pub struct TeamsCaptionStream {
     last_message: String,
     last_processed_count: usize,
     pending_messages: Vec<(Option<String>, String)>,
+    recent_signatures: VecDeque<String>,
     error_count: u32,
 }
 
@@ -498,8 +499,47 @@ impl TeamsCaptionStream {
             last_message: String::new(),
             last_processed_count: 0,
             pending_messages: Vec::new(),
+            recent_signatures: VecDeque::with_capacity(120),
             error_count: 0,
         })
+    }
+
+    fn build_message_signature(user: Option<&str>, content: &str) -> String {
+        let normalized_user = user.unwrap_or("").trim().to_lowercase();
+        let normalized_content = content
+            .to_lowercase()
+            .replace('\r', " ")
+            .replace('\n', " ")
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+            .trim_end_matches(|c: char| {
+                matches!(
+                    c,
+                    '.' | '!' | '?' | ',' | ';' | ':' | '。' | '！' | '？' | '，' | '；' | '：'
+                )
+            })
+            .to_string();
+
+        format!("{}|{}", normalized_user, normalized_content)
+    }
+
+    fn push_if_new_message(&mut self, user: Option<String>, content: String) {
+        let signature = Self::build_message_signature(user.as_deref(), &content);
+        if signature.is_empty() || signature.ends_with('|') {
+            return;
+        }
+
+        if self.recent_signatures.contains(&signature) {
+            return;
+        }
+
+        self.recent_signatures.push_back(signature);
+        if self.recent_signatures.len() > 120 {
+            self.recent_signatures.pop_front();
+        }
+
+        self.pending_messages.push((user, content));
     }
 
     pub fn set_window(&mut self, hwnd: isize) {
@@ -562,7 +602,7 @@ impl TeamsCaptionStream {
                         if i + 1 < new_slice.len() {
                             let user = new_slice[i].clone();
                             let content = new_slice[i + 1].clone();
-                            self.pending_messages.push((Some(user), content));
+                            self.push_if_new_message(Some(user), content);
                         }
                     }
                     self.last_processed_count = valid_texts.len();
@@ -578,8 +618,12 @@ impl TeamsCaptionStream {
                     let last_content = &valid_texts[len - 1];
 
                     if last_content != &self.last_message && !last_content.is_empty() {
-                        self.last_message = last_content.clone();
-                        return Some((Some(last_user.clone()), last_content.clone()));
+                        self.push_if_new_message(Some(last_user.clone()), last_content.clone());
+                        if !self.pending_messages.is_empty() {
+                            let (user, message) = self.pending_messages.remove(0);
+                            self.last_message = message.clone();
+                            return Some((user, message));
+                        }
                     }
                 }
             }
