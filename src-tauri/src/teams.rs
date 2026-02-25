@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error};
+use tracing::error;
 use windows::{
     core::*,
     Win32::Foundation::{BOOL, HWND, LPARAM, TRUE},
@@ -331,7 +331,6 @@ impl TeamsWatcher {
         &self,
         window: &IUIAutomationElement,
     ) -> Result<(Vec<String>, Option<IUIAutomationElement>)> {
-        debug!("Starting get_caption_text");
         unsafe {
             let walker = match self.automation.ControlViewWalker() {
                 Ok(w) => w,
