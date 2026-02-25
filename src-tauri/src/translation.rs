@@ -23,7 +23,12 @@ pub struct ProxyConfig {
 
 impl ProxyConfig {
     pub fn is_active(&self) -> bool {
-        self.enabled && self.url.as_ref().map(|u| !u.trim().is_empty()).unwrap_or(false)
+        self.enabled
+            && self
+                .url
+                .as_ref()
+                .map(|u| !u.trim().is_empty())
+                .unwrap_or(false)
     }
 }
 
@@ -141,17 +146,15 @@ impl Default for TranslationConfig {
 
 /// Build HTTP client with optional proxy
 fn build_client(proxy_config: &ProxyConfig) -> Result<Client> {
-    let mut builder = Client::builder()
-        .timeout(std::time::Duration::from_secs(30));
-    
+    let mut builder = Client::builder().timeout(std::time::Duration::from_secs(30));
+
     if proxy_config.is_active() {
         if let Some(ref url) = proxy_config.url {
-            let proxy = Proxy::all(url)
-                .context(format!("Invalid proxy URL: {}", url))?;
+            let proxy = Proxy::all(url).context(format!("Invalid proxy URL: {}", url))?;
             builder = builder.proxy(proxy);
         }
     }
-    
+
     builder.build().context("Failed to create HTTP client")
 }
 
@@ -324,13 +327,23 @@ impl TranslationService {
         Ok(())
     }
 
-    pub async fn translate(&self, text: &str, context: Option<&[String]>, target_lang_override: Option<&str>, provider_override: Option<&str>) -> Result<String> {
+    pub async fn translate(
+        &self,
+        text: &str,
+        context: Option<&[String]>,
+        target_lang_override: Option<&str>,
+        provider_override: Option<&str>,
+    ) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
 
         // Acquire permit to limit concurrency
-        let _permit = self.semaphore.acquire().await.context("Failed to acquire translation permit")?;
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .context("Failed to acquire translation permit")?;
 
         let target_lang = target_lang_override.unwrap_or(&self.config.target_lang);
 
@@ -407,8 +420,21 @@ impl TranslationService {
                 );
                 // Check if this is a Copilot model ID by looking up in ai_models
                 if let Some(model) = self.config.ai_models.iter().find(|m| m.id == *endpoint_id) {
-                    if let Some(channel) = self.config.ai_channels.iter().find(|c| c.id == model.channel_id && c.channel_type == "copilot") {
-                        let result = self.translate_copilot(text, context, target_lang, channel.token.as_deref(), Some(&model.name)).await;
+                    if let Some(channel) = self
+                        .config
+                        .ai_channels
+                        .iter()
+                        .find(|c| c.id == model.channel_id && c.channel_type == "copilot")
+                    {
+                        let result = self
+                            .translate_copilot(
+                                text,
+                                context,
+                                target_lang,
+                                channel.token.as_deref(),
+                                Some(&model.name),
+                            )
+                            .await;
                         match &result {
                             Ok(translated) => debug!(
                                 provider = "copilot",
@@ -426,7 +452,9 @@ impl TranslationService {
                         return result;
                     }
                 }
-                let result = self.translate_openai(text, endpoint_id, context, target_lang).await;
+                let result = self
+                    .translate_openai(text, endpoint_id, context, target_lang)
+                    .await;
                 match &result {
                     Ok(translated) => debug!(
                         provider = "openai",
@@ -450,7 +478,9 @@ impl TranslationService {
                     target_lang = %target_lang,
                     "Starting translation"
                 );
-                let result = self.translate_copilot(text, context, target_lang, None, None).await;
+                let result = self
+                    .translate_copilot(text, context, target_lang, None, None)
+                    .await;
                 match &result {
                     Ok(translated) => debug!(
                         provider = "copilot",
@@ -528,24 +558,34 @@ impl TranslationService {
         );
 
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             error!(
                 status = %status,
                 error_body = %error_text,
                 "Google Translate API error"
             );
-            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "Translation failed: {} - {}",
+                status,
+                error_text
+            ));
         }
 
-        let body = response.text().await.context("Failed to read response body")?;
+        let body = response
+            .text()
+            .await
+            .context("Failed to read response body")?;
 
         debug!(
             response_body_preview = %body.chars().take(200).collect::<String>(),
             "Google Translate response body"
         );
 
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .context("Failed to parse Google Translate response")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse Google Translate response")?;
 
         let mut result = String::new();
         if let Some(sentences) = json.get(0).and_then(|v| v.as_array()) {
@@ -645,16 +685,26 @@ impl TranslationService {
         );
 
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             error!(
                 status = %status,
                 error_body = %error_text,
                 "Microsoft Translator API error"
             );
-            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "Translation failed: {} - {}",
+                status,
+                error_text
+            ));
         }
 
-        let response_text = response.text().await.context("Failed to read response body")?;
+        let response_text = response
+            .text()
+            .await
+            .context("Failed to read response body")?;
 
         debug!(
             response_body_preview = %response_text.chars().take(200).collect::<String>(),
@@ -734,19 +784,29 @@ impl TranslationService {
             expires_at: u64,
         }
 
-        let token_data: CopilotTokenRes = res.json().await.context("Failed to parse Copilot token")?;
+        let token_data: CopilotTokenRes =
+            res.json().await.context("Failed to parse Copilot token")?;
 
         // Update cache
         {
             let mut guard = self.copilot_tokens.lock().unwrap();
-            guard.insert(github_token.to_string(), (token_data.token.clone(), token_data.expires_at - 60)); // Buffer 60s
+            guard.insert(
+                github_token.to_string(),
+                (token_data.token.clone(), token_data.expires_at - 60),
+            ); // Buffer 60s
         }
 
         debug!("Successfully obtained new Copilot token");
         Ok(token_data.token)
     }
 
-    async fn send_copilot_request(&self, system_prompt: &str, user_content: &str, github_token: &str, model_override: Option<&str>) -> Result<String> {
+    async fn send_copilot_request(
+        &self,
+        system_prompt: &str,
+        user_content: &str,
+        github_token: &str,
+        model_override: Option<&str>,
+    ) -> Result<String> {
         let token = self.get_copilot_token(github_token).await?;
 
         let client = self.get_or_create_client(&self.config.copilot_proxy)?;
@@ -756,8 +816,14 @@ impl TranslationService {
         let request = ChatRequest {
             model: model.to_string(),
             messages: vec![
-                ChatMessage { role: "system".to_string(), content: system_prompt.to_string() },
-                ChatMessage { role: "user".to_string(), content: user_content.to_string() },
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: user_content.to_string(),
+                },
             ],
             temperature: 0.1,
         };
@@ -792,13 +858,13 @@ impl TranslationService {
         );
 
         if !status.is_success() {
-             let text = response.text().await.unwrap_or_default();
-             error!(
-                 status = %status,
-                 error_body = %text,
-                 "Copilot API error"
-             );
-             anyhow::bail!("Copilot API error {}: {}", status, text);
+            let text = response.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                error_body = %text,
+                "Copilot API error"
+            );
+            anyhow::bail!("Copilot API error {}: {}", status, text);
         }
 
         let result: ChatResponse = response
@@ -816,11 +882,14 @@ impl TranslationService {
     pub async fn fetch_copilot_models(&self, github_token: &str) -> Result<Vec<CopilotModel>> {
         debug!("Fetching Copilot models list");
 
-        let token = self.get_copilot_token(github_token).await
+        let token = self
+            .get_copilot_token(github_token)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get Copilot token: {}", e))?;
 
         // Use proxy if configured
-        let client = self.get_or_create_client(&self.config.copilot_proxy)
+        let client = self
+            .get_or_create_client(&self.config.copilot_proxy)
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 
         // Try the official endpoint first
@@ -843,11 +912,21 @@ impl TranslationService {
             .await
             .map_err(|e| {
                 if self.config.copilot_proxy.is_active() {
-                    let err = anyhow::anyhow!("Network request failed via proxy {}: {} (URL: {})", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e, url);
+                    let err = anyhow::anyhow!(
+                        "Network request failed via proxy {}: {} (URL: {})",
+                        self.config
+                            .copilot_proxy
+                            .url
+                            .as_ref()
+                            .unwrap_or(&"?".to_string()),
+                        e,
+                        url
+                    );
                     error!("{}", err);
                     err
                 } else {
-                    let err = anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url);
+                    let err =
+                        anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url);
                     error!("{}", err);
                     err
                 }
@@ -870,7 +949,10 @@ impl TranslationService {
             anyhow::bail!("Failed to fetch models: {} - {}", status, error_text);
         }
 
-        let response_text = response.text().await.context("Failed to read models response")?;
+        let response_text = response
+            .text()
+            .await
+            .context("Failed to read models response")?;
 
         debug!(
             response_body_len = response_text.len(),
@@ -882,11 +964,13 @@ impl TranslationService {
             data: Vec<serde_json::Value>,
         }
 
-        let res: ModelsResponse = serde_json::from_str(&response_text)
-            .with_context(|| {
-                error!("Failed to parse models JSON: {}", response_text);
-                format!("Failed to parse models response. Response: {}", response_text)
-            })?;
+        let res: ModelsResponse = serde_json::from_str(&response_text).with_context(|| {
+            error!("Failed to parse models JSON: {}", response_text);
+            format!(
+                "Failed to parse models response. Response: {}",
+                response_text
+            )
+        })?;
 
         let mut models_map = std::collections::HashMap::new();
 
@@ -907,7 +991,8 @@ impl TranslationService {
             }
 
             // Check model_picker_enabled=true
-            let model_picker_enabled = m.get("model_picker_enabled")
+            let model_picker_enabled = m
+                .get("model_picker_enabled")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
@@ -920,22 +1005,32 @@ impl TranslationService {
                 None => continue,
             };
 
-            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(&id).to_string();
+            let name = m
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string();
 
             // Insert into map to deduplicate by ID
-            models_map.insert(id.clone(), CopilotModel {
-                id,
-                name,
-            });
+            models_map.insert(id.clone(), CopilotModel { id, name });
         }
 
         // If no models found, return fallback models
         if models_map.is_empty() {
             info!("No models found in Copilot API response, using fallback models");
             return Ok(vec![
-                CopilotModel { id: "gpt-4".to_string(), name: "GPT-4".to_string() },
-                CopilotModel { id: "gpt-4o".to_string(), name: "GPT-4o".to_string() },
-                CopilotModel { id: "gpt-4o-mini".to_string(), name: "GPT-4o Mini".to_string() },
+                CopilotModel {
+                    id: "gpt-4".to_string(),
+                    name: "GPT-4".to_string(),
+                },
+                CopilotModel {
+                    id: "gpt-4o".to_string(),
+                    name: "GPT-4o".to_string(),
+                },
+                CopilotModel {
+                    id: "gpt-4o-mini".to_string(),
+                    name: "GPT-4o Mini".to_string(),
+                },
             ]);
         }
 
@@ -952,8 +1047,16 @@ impl TranslationService {
         Ok(models)
     }
 
-    async fn translate_copilot(&self, text: &str, context: Option<&[String]>, target_lang: &str, github_token: Option<&str>, model_name: Option<&str>) -> Result<String> {
-        let github_token = github_token.or(self.config.github_token.as_deref())
+    async fn translate_copilot(
+        &self,
+        text: &str,
+        context: Option<&[String]>,
+        target_lang: &str,
+        github_token: Option<&str>,
+        model_name: Option<&str>,
+    ) -> Result<String> {
+        let github_token = github_token
+            .or(self.config.github_token.as_deref())
             .context("GitHub Copilot not logged in")?;
         let source_lang_desc = if self.config.source_lang == "auto" {
             "any language".to_string()
@@ -963,7 +1066,7 @@ impl TranslationService {
         let target_lang_name = Self::get_lang_name(target_lang);
 
         let system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
-             format!(
+            format!(
                 "You are a translator. Translate the current sentence from {} to {}. \
                  The previous sentences are provided ONLY for context/disambiguation. \
                  IGNORE the language of the previous sentences. \
@@ -982,21 +1085,32 @@ impl TranslationService {
             if ctx.is_empty() {
                 text.to_string()
             } else {
-                let context_text = ctx.iter()
+                let context_text = ctx
+                    .iter()
                     .enumerate()
                     .map(|(i, s)| format!("{}. {}", i + 1, s))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("Previous sentences for context:\n{}\n\nCurrent sentence to translate:\n{}", context_text, text)
+                format!(
+                    "Previous sentences for context:\n{}\n\nCurrent sentence to translate:\n{}",
+                    context_text, text
+                )
             }
         } else {
             text.to_string()
         };
 
-        self.send_copilot_request(&system_prompt, &user_content, github_token, model_name).await
+        self.send_copilot_request(&system_prompt, &user_content, github_token, model_name)
+            .await
     }
 
-    async fn translate_openai(&self, text: &str, endpoint_id: &str, context: Option<&[String]>, target_lang: &str) -> Result<String> {
+    async fn translate_openai(
+        &self,
+        text: &str,
+        endpoint_id: &str,
+        context: Option<&[String]>,
+        target_lang: &str,
+    ) -> Result<String> {
         let endpoint = self
             .config
             .openai_endpoints
@@ -1005,7 +1119,10 @@ impl TranslationService {
             .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
 
         if endpoint.api_key.trim().is_empty() {
-            anyhow::bail!("OpenAI API key not configured for endpoint '{}'", endpoint.name);
+            anyhow::bail!(
+                "OpenAI API key not configured for endpoint '{}'",
+                endpoint.name
+            );
         }
 
         // Build user content with context if provided
@@ -1014,12 +1131,16 @@ impl TranslationService {
                 text.to_string()
             } else {
                 // Format: context as numbered previous sentences, then current text
-                let context_text = ctx.iter()
+                let context_text = ctx
+                    .iter()
                     .enumerate()
                     .map(|(i, s)| format!("{}. {}", i + 1, s))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("Previous sentences for context:\n{}\n\nCurrent sentence to translate:\n{}", context_text, text)
+                format!(
+                    "Previous sentences for context:\n{}\n\nCurrent sentence to translate:\n{}",
+                    context_text, text
+                )
             }
         } else {
             text.to_string()
@@ -1049,7 +1170,8 @@ impl TranslationService {
             )
         };
 
-        self.send_openai_request(endpoint, &system_prompt, &user_content).await
+        self.send_openai_request(endpoint, &system_prompt, &user_content)
+            .await
     }
 
     /// Remove <think>...</think> blocks from content
@@ -1075,11 +1197,17 @@ impl TranslationService {
         user_content: &str,
     ) -> Result<String> {
         if endpoint.api_key.trim().is_empty() {
-            anyhow::bail!("OpenAI API key not configured for endpoint '{}'", endpoint.name);
+            anyhow::bail!(
+                "OpenAI API key not configured for endpoint '{}'",
+                endpoint.name
+            );
         }
 
         let client = self.get_or_create_client(&endpoint.proxy)?;
-        let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            endpoint.base_url.trim_end_matches('/')
+        );
 
         let request = ChatRequest {
             model: endpoint.model.clone(),
@@ -1098,7 +1226,10 @@ impl TranslationService {
 
         // Sanitize API key for logging (show only first 4 chars)
         let api_key_preview = if endpoint.api_key.chars().count() >= 4 {
-            format!("{}...", endpoint.api_key.chars().take(4).collect::<String>())
+            format!(
+                "{}...",
+                endpoint.api_key.chars().take(4).collect::<String>()
+            )
         } else {
             "***".to_string()
         };
@@ -1130,24 +1261,34 @@ impl TranslationService {
         );
 
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             error!(
                 status = %status,
                 error_body = %error_text,
                 "OpenAI API error"
             );
-            return Err(anyhow::anyhow!("Translation failed: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "Translation failed: {} - {}",
+                status,
+                error_text
+            ));
         }
 
-        let response_text = response.text().await.context("Failed to read response body")?;
+        let response_text = response
+            .text()
+            .await
+            .context("Failed to read response body")?;
 
         debug!(
             response_body_preview = %response_text.chars().take(200).collect::<String>(),
             "OpenAI API response body"
         );
 
-        let result: ChatResponse = serde_json::from_str(&response_text)
-            .context("Failed to parse OpenAI response")?;
+        let result: ChatResponse =
+            serde_json::from_str(&response_text).context("Failed to parse OpenAI response")?;
 
         result
             .choices
@@ -1175,7 +1316,7 @@ impl TranslationService {
                 prompt.replace("{target_lang}", &self.config.target_lang)
             }
         } else {
-             format!(
+            format!(
                 "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
                  \n\n\
                  Please follow these steps:\n\
@@ -1189,16 +1330,32 @@ impl TranslationService {
 
         // Check if provider_id is a Copilot model ID
         if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
-            if let Some(channel) = self.config.ai_channels.iter().find(|c| c.id == model.channel_id && c.channel_type == "copilot") {
-                let github_token = channel.token.as_ref().context("Copilot channel not logged in")?;
-                return self.send_copilot_request(&system_prompt, text, github_token, Some(&model.name)).await;
+            if let Some(channel) = self
+                .config
+                .ai_channels
+                .iter()
+                .find(|c| c.id == model.channel_id && c.channel_type == "copilot")
+            {
+                let github_token = channel
+                    .token
+                    .as_ref()
+                    .context("Copilot channel not logged in")?;
+                return self
+                    .send_copilot_request(&system_prompt, text, github_token, Some(&model.name))
+                    .await;
             }
         }
 
         // Legacy copilot provider
         if provider_id == "copilot" {
-            let github_token = self.config.github_token.as_ref().context("GitHub Copilot not logged in")?;
-            return self.send_copilot_request(&system_prompt, text, github_token, None).await;
+            let github_token = self
+                .config
+                .github_token
+                .as_ref()
+                .context("GitHub Copilot not logged in")?;
+            return self
+                .send_copilot_request(&system_prompt, text, github_token, None)
+                .await;
         }
 
         // OpenAI or compatible model
@@ -1215,7 +1372,8 @@ impl TranslationService {
             .find(|e| e.id == endpoint_id)
             .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
 
-        self.send_openai_request(endpoint, &system_prompt, text).await
+        self.send_openai_request(endpoint, &system_prompt, text)
+            .await
     }
 }
 
@@ -1256,14 +1414,34 @@ mod tests {
     #[test]
     fn test_clean_thinking_content() {
         assert_eq!(TranslationService::clean_thinking_content("Hello"), "Hello");
-        assert_eq!(TranslationService::clean_thinking_content("<think>thinking...</think> Hello"), "Hello");
-        assert_eq!(TranslationService::clean_thinking_content("Hello <think>thinking...</think> World"), "Hello  World");
-        assert_eq!(TranslationService::clean_thinking_content("<think>thinking...</think>"), "");
-        assert_eq!(TranslationService::clean_thinking_content("<think>thinking..."), ""); // Truncated
-        assert_eq!(TranslationService::clean_thinking_content("Start <think>1</think> Mid <think>2</think> End"), "Start  Mid  End");
-        
+        assert_eq!(
+            TranslationService::clean_thinking_content("<think>thinking...</think> Hello"),
+            "Hello"
+        );
+        assert_eq!(
+            TranslationService::clean_thinking_content("Hello <think>thinking...</think> World"),
+            "Hello  World"
+        );
+        assert_eq!(
+            TranslationService::clean_thinking_content("<think>thinking...</think>"),
+            ""
+        );
+        assert_eq!(
+            TranslationService::clean_thinking_content("<think>thinking..."),
+            ""
+        ); // Truncated
+        assert_eq!(
+            TranslationService::clean_thinking_content(
+                "Start <think>1</think> Mid <think>2</think> End"
+            ),
+            "Start  Mid  End"
+        );
+
         // Multiline check
         let multiline = "Result\n<think>\nLine 1\nLine 2\n</think>\nFinal";
-        assert_eq!(TranslationService::clean_thinking_content(multiline), "Result\n\nFinal");
+        assert_eq!(
+            TranslationService::clean_thinking_content(multiline),
+            "Result\n\nFinal"
+        );
     }
 }

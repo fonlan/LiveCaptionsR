@@ -110,7 +110,10 @@ pub fn save_session(session: &Session) -> anyhow::Result<()> {
 
     for existing_id in existing_cards.keys() {
         if !incoming_ids.contains(existing_id) {
-            tx.execute("DELETE FROM session_cards WHERE id = ?1", params![existing_id])?;
+            tx.execute(
+                "DELETE FROM session_cards WHERE id = ?1",
+                params![existing_id],
+            )?;
         }
     }
 

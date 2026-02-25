@@ -325,7 +325,11 @@ fn get_config(state: State<'_, AppState>) -> AppConfig {
 }
 
 #[tauri::command]
-async fn save_config(app: AppHandle, config: AppConfig, state: State<'_, AppState>) -> Result<String, AppError> {
+async fn save_config(
+    app: AppHandle,
+    config: AppConfig,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
     info!(
         theme = %config.theme,
         provider = %config.provider,
@@ -363,7 +367,11 @@ async fn save_config(app: AppHandle, config: AppConfig, state: State<'_, AppStat
 }
 
 #[tauri::command]
-fn set_always_on_top(app: AppHandle, always_on_top: bool, state: State<'_, AppState>) -> Result<(), AppError> {
+fn set_always_on_top(
+    app: AppHandle,
+    always_on_top: bool,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
     if let Some(window) = app.get_webview_window("main") {
         window
             .set_always_on_top(always_on_top)
@@ -394,7 +402,9 @@ fn save_config_to_file(config: &AppConfig) -> anyhow::Result<()> {
 }
 
 fn load_config_from_file() -> Option<AppConfig> {
-    let config_path = dirs::config_dir()?.join("LiveCaptionsR").join("config.json");
+    let config_path = dirs::config_dir()?
+        .join("LiveCaptionsR")
+        .join("config.json");
     let json = std::fs::read_to_string(&config_path).ok()?;
     let config: AppConfig = serde_json::from_str(&json).ok()?;
     info!(path = %config_path.display(), "Configuration loaded from file");
@@ -409,19 +419,12 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     } else if config.provider == "copilot" {
         TranslationProvider::Copilot
     } else if config.provider.starts_with("openai:") {
-        let endpoint_id = config
-            .provider
-            .strip_prefix("openai:")
-            .unwrap_or("default");
+        let endpoint_id = config.provider.strip_prefix("openai:").unwrap_or("default");
         TranslationProvider::OpenAI(endpoint_id.to_string())
     } else {
         // Check if provider string is a Model ID
         if let Some(model) = config.ai_models.iter().find(|m| m.id == config.provider) {
-            if config
-                .ai_channels
-                .iter()
-                .any(|c| c.id == model.channel_id)
-            {
+            if config.ai_channels.iter().any(|c| c.id == model.channel_id) {
                 // Both Copilot and OpenAI models use the OpenAI provider variant
                 // The translate method will check channel_type to determine which API to use
                 TranslationProvider::OpenAI(model.id.clone())
@@ -519,9 +522,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     }
 }
 
-fn get_or_init_translation_service(
-    state: &AppState,
-) -> Result<TranslationService, String> {
+fn get_or_init_translation_service(state: &AppState) -> Result<TranslationService, String> {
     // 1. Try to get existing service (fast path)
     {
         let guard = state.translation_service.lock().unwrap();
@@ -641,7 +642,8 @@ async fn summarize_session_by_id(
     provider_id: String,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
-    let segments = storage::load_session_original_segments(&session_id).map_err(AppError::Anyhow)?;
+    let segments =
+        storage::load_session_original_segments(&session_id).map_err(AppError::Anyhow)?;
 
     if segments.is_empty() {
         return Ok(String::new());
@@ -658,7 +660,10 @@ async fn summarize_session_by_id(
 
 /// Start caption watcher - simplified to only emit raw text
 #[tauri::command]
-async fn start_caption_watcher(app: AppHandle, state: State<'_, AppState>) -> Result<String, AppError> {
+async fn start_caption_watcher(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
     // Load config
     let config = {
         let mut cfg = state.config.lock().unwrap();
@@ -689,7 +694,9 @@ async fn start_caption_watcher(app: AppHandle, state: State<'_, AppState>) -> Re
     {
         let mut running = state.caption_running.lock().unwrap();
         if *running {
-            return Err(AppError::Runtime("Caption watcher already running".to_string()));
+            return Err(AppError::Runtime(
+                "Caption watcher already running".to_string(),
+            ));
         }
         *running = true;
     }
