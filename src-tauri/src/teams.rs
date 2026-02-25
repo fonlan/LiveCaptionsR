@@ -479,8 +479,7 @@ pub struct TeamsCaptionStream {
     caption_parent: Option<IUIAutomationElement>,
     selected_hwnd: Option<isize>,
     running: Arc<AtomicBool>,
-    last_message: String,
-    last_processed_count: usize,
+    last_seen_signature: Option<String>,
     pending_messages: Vec<(Option<String>, String)>,
     recent_signatures: VecDeque<String>,
     error_count: u32,
@@ -495,8 +494,7 @@ impl TeamsCaptionStream {
             caption_parent: None,
             selected_hwnd: None,
             running: Arc::new(AtomicBool::new(false)),
-            last_message: String::new(),
-            last_processed_count: 0,
+            last_seen_signature: None,
             pending_messages: Vec::new(),
             recent_signatures: VecDeque::with_capacity(120),
             error_count: 0,
@@ -566,9 +564,7 @@ impl TeamsCaptionStream {
         }
 
         if !self.pending_messages.is_empty() {
-            let (user, message) = self.pending_messages.remove(0);
-            self.last_message = message.clone();
-            return Some((user, message));
+            return Some(self.pending_messages.remove(0));
         }
 
         let window_ref = self.window.as_ref()?;
@@ -593,37 +589,54 @@ impl TeamsCaptionStream {
                     return None;
                 }
 
-                if valid_texts.len() > self.last_processed_count {
-                    let start = self.last_processed_count;
-                    let new_slice = &valid_texts[start..];
-
-                    for i in (0..new_slice.len()).step_by(2) {
-                        if i + 1 < new_slice.len() {
-                            let user = new_slice[i].clone();
-                            let content = new_slice[i + 1].clone();
-                            self.push_if_new_message(Some(user), content);
-                        }
+                let mut message_pairs: Vec<(String, String)> = Vec::new();
+                for pair in valid_texts.chunks(2) {
+                    if pair.len() < 2 {
+                        continue;
                     }
-                    self.last_processed_count = valid_texts.len();
-
-                    if !self.pending_messages.is_empty() {
-                        let (user, message) = self.pending_messages.remove(0);
-                        self.last_message = message.clone();
-                        return Some((user, message));
+                    let user = pair[0].trim().to_string();
+                    let content = pair[1].trim().to_string();
+                    if content.is_empty() {
+                        continue;
                     }
-                } else if valid_texts.len() >= 2 {
-                    let len = valid_texts.len();
-                    let last_user = &valid_texts[len - 2];
-                    let last_content = &valid_texts[len - 1];
+                    message_pairs.push((user, content));
+                }
 
-                    if last_content != &self.last_message && !last_content.is_empty() {
-                        self.push_if_new_message(Some(last_user.clone()), last_content.clone());
-                        if !self.pending_messages.is_empty() {
-                            let (user, message) = self.pending_messages.remove(0);
-                            self.last_message = message.clone();
-                            return Some((user, message));
-                        }
+                if message_pairs.is_empty() {
+                    return None;
+                }
+
+                let signatures: Vec<String> = message_pairs
+                    .iter()
+                    .map(|(user, content)| {
+                        Self::build_message_signature(Some(user.as_str()), content)
+                    })
+                    .collect();
+
+                const RECOVERY_TAIL_PAIRS: usize = 3;
+                let mut start_index = message_pairs.len().saturating_sub(1);
+
+                if let Some(last_signature) = self.last_seen_signature.as_ref() {
+                    if let Some(anchor_index) = signatures
+                        .iter()
+                        .rposition(|signature| signature == last_signature)
+                    {
+                        start_index = anchor_index.saturating_add(1);
+                    } else {
+                        // The caption list likely got recycled/reordered; only recover from a short tail.
+                        start_index = message_pairs.len().saturating_sub(RECOVERY_TAIL_PAIRS);
                     }
+                }
+
+                for i in start_index..message_pairs.len() {
+                    let (user, content) = &message_pairs[i];
+                    self.push_if_new_message(Some(user.clone()), content.clone());
+                }
+
+                self.last_seen_signature = signatures.last().cloned();
+
+                if !self.pending_messages.is_empty() {
+                    return Some(self.pending_messages.remove(0));
                 }
             }
             Err(e) => {

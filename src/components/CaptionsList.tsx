@@ -59,6 +59,18 @@ interface CaptionCardItemProps {
   tempTranslation?: TempTranslation;
 }
 
+function areCaptionCardItemPropsEqual(
+  prev: Readonly<CaptionCardItemProps>,
+  next: Readonly<CaptionCardItemProps>
+): boolean {
+  return (
+    prev.card === next.card
+    && prev.isVirtualized === next.isVirtualized
+    && prev.onMeasuredHeight === next.onMeasuredHeight
+    && prev.tempTranslation === next.tempTranslation
+  );
+}
+
 const CaptionCardItem = memo(function CaptionCardItem({
   card,
   isVirtualized,
@@ -138,7 +150,26 @@ const CaptionCardItem = memo(function CaptionCardItem({
       )}
     </div>
   );
-});
+}, areCaptionCardItemPropsEqual);
+
+function areCaptionsListPropsEqual(
+  prev: Readonly<CaptionsListProps>,
+  next: Readonly<CaptionsListProps>
+): boolean {
+  if (prev.cards !== next.cards) return false;
+  if (prev.hasActiveSession !== next.hasActiveSession) return false;
+  if (prev.partialText !== next.partialText) return false;
+  if (prev.tempTranslations !== next.tempTranslations) return false;
+
+  const prevVirtualized = prev.cards.length > STABLE_RENDER_THRESHOLD && prev.viewportHeight > 0;
+  const nextVirtualized = next.cards.length > STABLE_RENDER_THRESHOLD && next.viewportHeight > 0;
+
+  if (prevVirtualized || nextVirtualized) {
+    return prev.scrollTop === next.scrollTop && prev.viewportHeight === next.viewportHeight;
+  }
+
+  return true;
+}
 
 export const CaptionsList = memo(function CaptionsList({
   cards,
@@ -255,4 +286,4 @@ export const CaptionsList = memo(function CaptionsList({
       )}
     </>
   );
-});
+}, areCaptionsListPropsEqual);
