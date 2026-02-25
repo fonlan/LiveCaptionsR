@@ -57,7 +57,7 @@ export function ModelsTab({ models, channels, onChange, addToast }: ModelsTabPro
 
     setIsFetching(prev => ({ ...prev, [channelId]: true }));
     try {
-      const result = await invoke<CopilotModel[]>('fetch_copilot_models_command', { token: channel.token });
+      const result = await invoke<CopilotModel[]>('fetch_copilot_models_command', { channelId });
       setFetchedModels(prev => ({ ...prev, [channelId]: result }));
       addToast('success', t("settings.models.toast.fetched", { count: result.length }));
     } catch (e) {

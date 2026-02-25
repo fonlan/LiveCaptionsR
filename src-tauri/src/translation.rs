@@ -433,6 +433,7 @@ impl TranslationService {
                                 target_lang,
                                 channel.token.as_deref(),
                                 Some(&model.name),
+                                Some(&channel.proxy),
                             )
                             .await;
                         match &result {
@@ -479,7 +480,7 @@ impl TranslationService {
                     "Starting translation"
                 );
                 let result = self
-                    .translate_copilot(text, context, target_lang, None, None)
+                    .translate_copilot(text, context, target_lang, None, None, None)
                     .await;
                 match &result {
                     Ok(translated) => debug!(
@@ -721,7 +722,11 @@ impl TranslationService {
             .context("Empty response from Microsoft Translator")
     }
 
-    async fn get_copilot_token(&self, github_token: &str) -> Result<String> {
+    async fn get_copilot_token(
+        &self,
+        github_token: &str,
+        proxy_config: &ProxyConfig,
+    ) -> Result<String> {
         // Check cache
         {
             let guard = self.copilot_tokens.lock().unwrap();
@@ -739,7 +744,7 @@ impl TranslationService {
 
         // Fetch new token using proxy if configured
         debug!("Fetching new Copilot token from GitHub");
-        let client = self.get_or_create_client(&self.config.copilot_proxy)?;
+        let client = self.get_or_create_client(proxy_config)?;
         let start = std::time::Instant::now();
         let res = client
             .get("https://api.github.com/copilot_internal/v2/token")
@@ -750,8 +755,12 @@ impl TranslationService {
             .send()
             .await
             .map_err(|e| {
-                if self.config.copilot_proxy.is_active() {
-                    let err = anyhow::anyhow!("Network request failed via proxy {}: {} (URL: https://api.github.com/copilot_internal/v2/token)", self.config.copilot_proxy.url.as_ref().unwrap_or(&"?".to_string()), e);
+                if proxy_config.is_active() {
+                    let err = anyhow::anyhow!(
+                        "Network request failed via proxy {}: {} (URL: https://api.github.com/copilot_internal/v2/token)",
+                        proxy_config.url.as_deref().unwrap_or("?"),
+                        e
+                    );
                     error!("{}", err);
                     err
                 } else {
@@ -806,10 +815,11 @@ impl TranslationService {
         user_content: &str,
         github_token: &str,
         model_override: Option<&str>,
+        proxy_config: &ProxyConfig,
     ) -> Result<String> {
-        let token = self.get_copilot_token(github_token).await?;
+        let token = self.get_copilot_token(github_token, proxy_config).await?;
 
-        let client = self.get_or_create_client(&self.config.copilot_proxy)?;
+        let client = self.get_or_create_client(proxy_config)?;
         let url = "https://api.githubcopilot.com/chat/completions";
 
         let model = model_override.unwrap_or(&self.config.copilot_model);
@@ -848,6 +858,23 @@ impl TranslationService {
             .json(&request)
             .send()
             .await
+            .map_err(|e| {
+                if proxy_config.is_active() {
+                    let err = anyhow::anyhow!(
+                        "Network request failed via proxy {}: {} (URL: {})",
+                        proxy_config.url.as_deref().unwrap_or("?"),
+                        e,
+                        url
+                    );
+                    error!("{}", err);
+                    err
+                } else {
+                    let err =
+                        anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url);
+                    error!("{}", err);
+                    err
+                }
+            })
             .context("Failed to send request to Copilot")?;
 
         let status = response.status();
@@ -879,17 +906,22 @@ impl TranslationService {
             .context("Empty response from Copilot")
     }
 
-    pub async fn fetch_copilot_models(&self, github_token: &str) -> Result<Vec<CopilotModel>> {
+    pub async fn fetch_copilot_models(
+        &self,
+        github_token: &str,
+        proxy_config: Option<&ProxyConfig>,
+    ) -> Result<Vec<CopilotModel>> {
         debug!("Fetching Copilot models list");
+        let proxy_config = proxy_config.unwrap_or(&self.config.copilot_proxy);
 
         let token = self
-            .get_copilot_token(github_token)
+            .get_copilot_token(github_token, proxy_config)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get Copilot token: {}", e))?;
 
         // Use proxy if configured
         let client = self
-            .get_or_create_client(&self.config.copilot_proxy)
+            .get_or_create_client(proxy_config)
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 
         // Try the official endpoint first
@@ -911,14 +943,10 @@ impl TranslationService {
             .send()
             .await
             .map_err(|e| {
-                if self.config.copilot_proxy.is_active() {
+                if proxy_config.is_active() {
                     let err = anyhow::anyhow!(
                         "Network request failed via proxy {}: {} (URL: {})",
-                        self.config
-                            .copilot_proxy
-                            .url
-                            .as_ref()
-                            .unwrap_or(&"?".to_string()),
+                        proxy_config.url.as_deref().unwrap_or("?"),
                         e,
                         url
                     );
@@ -1047,6 +1075,24 @@ impl TranslationService {
         Ok(models)
     }
 
+    pub async fn fetch_copilot_models_by_channel(
+        &self,
+        channel_id: &str,
+    ) -> Result<Vec<CopilotModel>> {
+        let channel = self
+            .config
+            .ai_channels
+            .iter()
+            .find(|c| c.id == channel_id && c.channel_type == "copilot")
+            .context(format!("Copilot channel '{}' not found", channel_id))?;
+        let token = channel
+            .token
+            .as_deref()
+            .context("Copilot channel not logged in")?;
+
+        self.fetch_copilot_models(token, Some(&channel.proxy)).await
+    }
+
     async fn translate_copilot(
         &self,
         text: &str,
@@ -1054,10 +1100,12 @@ impl TranslationService {
         target_lang: &str,
         github_token: Option<&str>,
         model_name: Option<&str>,
+        proxy_config: Option<&ProxyConfig>,
     ) -> Result<String> {
         let github_token = github_token
             .or(self.config.github_token.as_deref())
             .context("GitHub Copilot not logged in")?;
+        let proxy_config = proxy_config.unwrap_or(&self.config.copilot_proxy);
         let source_lang_desc = if self.config.source_lang == "auto" {
             "any language".to_string()
         } else {
@@ -1100,8 +1148,14 @@ impl TranslationService {
             text.to_string()
         };
 
-        self.send_copilot_request(&system_prompt, &user_content, github_token, model_name)
-            .await
+        self.send_copilot_request(
+            &system_prompt,
+            &user_content,
+            github_token,
+            model_name,
+            proxy_config,
+        )
+        .await
     }
 
     async fn translate_openai(
@@ -1341,7 +1395,13 @@ impl TranslationService {
                     .as_ref()
                     .context("Copilot channel not logged in")?;
                 return self
-                    .send_copilot_request(&system_prompt, text, github_token, Some(&model.name))
+                    .send_copilot_request(
+                        &system_prompt,
+                        text,
+                        github_token,
+                        Some(&model.name),
+                        &channel.proxy,
+                    )
                     .await;
             }
         }
@@ -1354,7 +1414,13 @@ impl TranslationService {
                 .as_ref()
                 .context("GitHub Copilot not logged in")?;
             return self
-                .send_copilot_request(&system_prompt, text, github_token, None)
+                .send_copilot_request(
+                    &system_prompt,
+                    text,
+                    github_token,
+                    None,
+                    &self.config.copilot_proxy,
+                )
                 .await;
         }
 

@@ -305,11 +305,11 @@ async fn poll_copilot_token(device_code: String, interval: u64) -> Result<String
 
 #[tauri::command]
 async fn fetch_copilot_models_command(
-    token: String,
+    channel_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<CopilotModel>, AppError> {
     let svc = get_or_init_translation_service(&state)?;
-    svc.fetch_copilot_models(&token)
+    svc.fetch_copilot_models_by_channel(&channel_id)
         .await
         .map_err(AppError::Anyhow)
 }
