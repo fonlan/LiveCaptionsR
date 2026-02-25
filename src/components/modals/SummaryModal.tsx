@@ -13,6 +13,7 @@ interface SummaryModalProps {
 export function SummaryModal({ isOpen, onClose, text, isLoading }: SummaryModalProps) {
   const { t } = useTranslation();
   const [isCopied, setIsCopied] = useState(false);
+  const hasText = text.trim().length > 0;
 
   useEffect(() => {
     if (isOpen) setIsCopied(false);
@@ -36,7 +37,7 @@ export function SummaryModal({ isOpen, onClose, text, isLoading }: SummaryModalP
         <header className="settings-header">
           <h2>{t("summary.title")}</h2>
           <div style={{ display: 'flex', gap: '8px' }}>
-            {!isLoading && text && (
+            {hasText && (
               <button
                 className="btn-icon"
                 onClick={handleCopy}
@@ -52,15 +53,23 @@ export function SummaryModal({ isOpen, onClose, text, isLoading }: SummaryModalP
           </div>
         </header>
         <div className="settings-content summary-content">
-          {isLoading ? (
+          {isLoading && !hasText ? (
             <div className="summary-loading" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
               <span className="spinner" style={{ display: 'inline-block', marginBottom: '10px' }}></span>
               <div>{t("summary.generating")}</div>
             </div>
           ) : (
-             <div className="summary-text markdown-body" style={{ lineHeight: '1.6', fontSize: '15px', color: 'var(--text-primary)', padding: '0 5px' }}>
-               <Markdown>{text}</Markdown>
-             </div>
+            <>
+              {isLoading && (
+                <div className="summary-loading" style={{ padding: '0 5px 12px', textAlign: 'left', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="spinner" style={{ display: 'inline-block' }}></span>
+                  <span>{t("summary.generating")}</span>
+                </div>
+              )}
+              <div className="summary-text markdown-body" style={{ lineHeight: '1.6', fontSize: '15px', color: 'var(--text-primary)', padding: '0 5px' }}>
+                <Markdown>{text}</Markdown>
+              </div>
+            </>
           )}
         </div>
       </div>

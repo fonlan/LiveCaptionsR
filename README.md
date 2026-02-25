@@ -25,7 +25,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
 - **Session Management**:
   - Save and load caption sessions.
   - Sessions keep full card history during capture (no fixed 200-card cap).
-  - Session summaries using AI (OpenAI or Copilot).
+  - Session summaries using AI (OpenAI or Copilot), streamed in real time.
 
 - **Modern UI**:
   - Dark mode Cyber-noir aesthetic.
@@ -118,7 +118,7 @@ Each provider has independent proxy settings:
 
 - **Hide System LiveCaptions Window**: Keeps the native caption bar hidden while capturing.
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
-- **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot.
+- **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output.
 
 ## 🛠️ Architecture
 
@@ -130,7 +130,7 @@ Each provider has independent proxy settings:
   - `livecaptions.rs`: Manages Windows UI Automation and LiveCaptions process control.
   - `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation.
   - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot).
-  - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`), including session-level summarization from persisted history.
+  - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`, `summary-stream`), including session-level summarization from persisted history.
 
 ## 🔍 Troubleshooting
 

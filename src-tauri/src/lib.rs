@@ -41,6 +41,15 @@ pub struct TranslationResultEvent {
     pub is_retry: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SummaryStreamEvent {
+    pub request_id: String,
+    pub status: String, // "chunk" | "done" | "error"
+    pub chunk: Option<String>,
+    pub full_text: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Proxy configuration for frontend
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ProxyConfigDTO {
@@ -658,6 +667,88 @@ async fn summarize_session_by_id(
     }
 }
 
+#[tauri::command]
+async fn summarize_session_by_id_stream(
+    session_id: String,
+    provider_id: String,
+    request_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let segments =
+        storage::load_session_original_segments(&session_id).map_err(AppError::Anyhow)?;
+
+    if segments.is_empty() {
+        app.emit(
+            "summary-stream",
+            SummaryStreamEvent {
+                request_id,
+                status: "done".to_string(),
+                chunk: None,
+                full_text: Some(String::new()),
+                error: None,
+            },
+        )
+        .map_err(|e| AppError::Runtime(format!("Failed to emit summary-stream event: {}", e)))?;
+        return Ok(());
+    }
+
+    let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
+    let full_text = segments.join("\n");
+    let app_for_task = app.clone();
+    let provider_id_for_task = provider_id.clone();
+    let request_id_for_task = request_id.clone();
+
+    tokio::spawn(async move {
+        let chunk_request_id = request_id_for_task.clone();
+        let result = svc
+            .summarize_stream(&full_text, &provider_id_for_task, move |chunk| {
+                app_for_task
+                    .emit(
+                        "summary-stream",
+                        SummaryStreamEvent {
+                            request_id: chunk_request_id.clone(),
+                            status: "chunk".to_string(),
+                            chunk: Some(chunk.to_string()),
+                            full_text: None,
+                            error: None,
+                        },
+                    )
+                    .map_err(|e| anyhow::anyhow!("Failed to emit summary chunk: {}", e))
+            })
+            .await;
+
+        match result {
+            Ok(summary) => {
+                let _ = app.emit(
+                    "summary-stream",
+                    SummaryStreamEvent {
+                        request_id,
+                        status: "done".to_string(),
+                        chunk: None,
+                        full_text: Some(summary),
+                        error: None,
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "summary-stream",
+                    SummaryStreamEvent {
+                        request_id,
+                        status: "error".to_string(),
+                        chunk: None,
+                        full_text: None,
+                        error: Some(format!("Summarization error: {}", e)),
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
 /// Start caption watcher - simplified to only emit raw text
 #[tauri::command]
 async fn start_caption_watcher(
@@ -1165,6 +1256,7 @@ pub fn run() {
             translate_text,
             translate_text_async,
             summarize_session_by_id,
+            summarize_session_by_id_stream,
             set_always_on_top,
             create_session,
             save_session_data,

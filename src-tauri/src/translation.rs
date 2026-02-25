@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 const TRANSLATION_CACHE_TTL_SECS: u64 = 60;
 const TRANSLATION_CACHE_MAX_ENTRIES: usize = 1024;
+const STREAM_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -809,6 +810,137 @@ impl TranslationService {
         Ok(token_data.token)
     }
 
+    fn parse_stream_delta(payload: &str) -> Result<Option<String>> {
+        let json: serde_json::Value =
+            serde_json::from_str(payload).context("Failed to parse stream payload as JSON")?;
+
+        let Some(choice) = json
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .and_then(|choices| choices.first())
+        else {
+            return Ok(None);
+        };
+
+        let Some(delta_content) = choice.get("delta").and_then(|d| d.get("content")) else {
+            return Ok(None);
+        };
+
+        if let Some(content) = delta_content.as_str() {
+            if content.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(content.to_string()));
+        }
+
+        if let Some(parts) = delta_content.as_array() {
+            let mut content = String::new();
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                    content.push_str(text);
+                }
+            }
+            if content.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(content));
+        }
+
+        Ok(None)
+    }
+
+    fn parse_sse_data_line(line: &str) -> Result<Option<String>> {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with(':')
+            || trimmed.starts_with("event:")
+            || trimmed.starts_with("id:")
+        {
+            return Ok(None);
+        }
+
+        let Some(data) = trimmed.strip_prefix("data:") else {
+            return Ok(None);
+        };
+
+        let payload = data.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            return Ok(None);
+        }
+
+        Self::parse_stream_delta(payload)
+    }
+
+    async fn consume_sse_chat_response<F>(
+        mut response: reqwest::Response,
+        mut on_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        let mut pending = String::new();
+        let mut raw_body = String::new();
+        let mut output = String::new();
+
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(e) => {
+                    if !output.is_empty() {
+                        warn!(
+                            error = %e,
+                            partial_len = output.len(),
+                            "Stream interrupted after partial output; returning partial content"
+                        );
+                        break;
+                    }
+                    return Err(anyhow::Error::new(e)).context("Failed to read stream chunk");
+                }
+            };
+
+            let chunk_text = String::from_utf8_lossy(&chunk);
+            raw_body.push_str(&chunk_text);
+            pending.push_str(&chunk_text);
+
+            while let Some(idx) = pending.find('\n') {
+                let line = pending[..idx].trim_end_matches('\r').to_string();
+                pending = pending[idx + 1..].to_string();
+
+                if let Some(delta) = Self::parse_sse_data_line(&line)? {
+                    on_chunk(&delta)?;
+                    output.push_str(&delta);
+                }
+            }
+        }
+
+        let trailing = pending.trim_end_matches('\r');
+        if !trailing.trim().is_empty() {
+            if let Some(delta) = Self::parse_sse_data_line(trailing)? {
+                on_chunk(&delta)?;
+                output.push_str(&delta);
+            }
+        }
+
+        // Fallback for providers that ignore `stream=true` and return a regular JSON body.
+        if output.is_empty() {
+            let trimmed = raw_body.trim();
+            if !trimmed.is_empty() {
+                if let Ok(result) = serde_json::from_str::<ChatResponse>(trimmed) {
+                    if let Some(content) = result.choices.first().map(|c| c.message.content.clone())
+                    {
+                        if !content.is_empty() {
+                            on_chunk(&content)?;
+                            output.push_str(&content);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(output)
+    }
+
     async fn send_copilot_request(
         &self,
         system_prompt: &str,
@@ -836,6 +968,7 @@ impl TranslationService {
                 },
             ],
             temperature: 0.1,
+            stream: None,
         };
 
         // Log request details at DEBUG level
@@ -855,6 +988,7 @@ impl TranslationService {
             .header("Editor-Version", "vscode/1.85.0")
             .header("Copilot-Integration-Id", "vscode-chat")
             .header("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS))
             .json(&request)
             .send()
             .await
@@ -904,6 +1038,99 @@ impl TranslationService {
             .first()
             .map(|c| Self::clean_thinking_content(&c.message.content))
             .context("Empty response from Copilot")
+    }
+
+    async fn send_copilot_request_stream<F>(
+        &self,
+        system_prompt: &str,
+        user_content: &str,
+        github_token: &str,
+        model_override: Option<&str>,
+        proxy_config: &ProxyConfig,
+        on_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        let token = self.get_copilot_token(github_token, proxy_config).await?;
+
+        let client = self.get_or_create_client(proxy_config)?;
+        let url = "https://api.githubcopilot.com/chat/completions";
+
+        let model = model_override.unwrap_or(&self.config.copilot_model);
+        let request = ChatRequest {
+            model: model.to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: user_content.to_string(),
+                },
+            ],
+            temperature: 0.1,
+            stream: Some(true),
+        };
+
+        debug!(
+            method = "POST",
+            url = %url,
+            model = %model,
+            message_count = request.messages.len(),
+            "Sending Copilot API streaming request"
+        );
+
+        let start = std::time::Instant::now();
+        let response = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("User-Agent", "GitHubCopilot/1.155.0")
+            .header("Editor-Version", "vscode/1.85.0")
+            .header("Copilot-Integration-Id", "vscode-chat")
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                if proxy_config.is_active() {
+                    let err = anyhow::anyhow!(
+                        "Network request failed via proxy {}: {} (URL: {})",
+                        proxy_config.url.as_deref().unwrap_or("?"),
+                        e,
+                        url
+                    );
+                    error!("{}", err);
+                    err
+                } else {
+                    let err =
+                        anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url);
+                    error!("{}", err);
+                    err
+                }
+            })
+            .context("Failed to send streaming request to Copilot")?;
+
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot API streaming response headers"
+        );
+
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                error_body = %text,
+                "Copilot API streaming error"
+            );
+            anyhow::bail!("Copilot API error {}: {}", status, text);
+        }
+
+        let raw = Self::consume_sse_chat_response(response, on_chunk).await?;
+        Ok(Self::clean_thinking_content(&raw))
     }
 
     pub async fn fetch_copilot_models(
@@ -1276,6 +1503,7 @@ impl TranslationService {
                 },
             ],
             temperature: 0.3,
+            stream: None,
         };
 
         // Sanitize API key for logging (show only first 4 chars)
@@ -1302,6 +1530,7 @@ impl TranslationService {
             .post(&url)
             .header("Authorization", format!("Bearer {}", endpoint.api_key))
             .header("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS))
             .json(&request)
             .send()
             .await
@@ -1351,11 +1580,106 @@ impl TranslationService {
             .context("Empty response from OpenAI")
     }
 
-    pub async fn summarize(&self, text: &str, provider_id: &str) -> Result<String> {
-        let system_prompt = if let Some(prompt) = &self.config.summary_prompt {
+    async fn send_openai_request_stream<F>(
+        &self,
+        endpoint: &OpenAIEndpoint,
+        system_prompt: &str,
+        user_content: &str,
+        on_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        if endpoint.api_key.trim().is_empty() {
+            anyhow::bail!(
+                "OpenAI API key not configured for endpoint '{}'",
+                endpoint.name
+            );
+        }
+
+        let client = self.get_or_create_client(&endpoint.proxy)?;
+        let url = format!(
+            "{}/chat/completions",
+            endpoint.base_url.trim_end_matches('/')
+        );
+
+        let request = ChatRequest {
+            model: endpoint.model.clone(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: user_content.to_string(),
+                },
+            ],
+            temperature: 0.3,
+            stream: Some(true),
+        };
+
+        let api_key_preview = if endpoint.api_key.chars().count() >= 4 {
+            format!(
+                "{}...",
+                endpoint.api_key.chars().take(4).collect::<String>()
+            )
+        } else {
+            "***".to_string()
+        };
+
+        debug!(
+            method = "POST",
+            url = %url,
+            api_key = %api_key_preview,
+            model = %endpoint.model,
+            message_count = request.messages.len(),
+            "Sending OpenAI API streaming request"
+        );
+
+        let start = std::time::Instant::now();
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", endpoint.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send streaming request to OpenAI")?;
+
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received OpenAI API streaming response headers"
+        );
+
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "OpenAI API streaming error"
+            );
+            return Err(anyhow::anyhow!(
+                "Translation failed: {} - {}",
+                status,
+                error_text
+            ));
+        }
+
+        let raw = Self::consume_sse_chat_response(response, on_chunk).await?;
+        Ok(Self::clean_thinking_content(&raw))
+    }
+
+    fn build_summary_system_prompt(&self) -> String {
+        if let Some(prompt) = &self.config.summary_prompt {
             if prompt.trim().is_empty() {
                 // Fallback if empty string provided
-                format!(
+                return format!(
                     "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
                      \n\n\
                      Please follow these steps:\n\
@@ -1364,23 +1688,27 @@ impl TranslationService {
                      \n\
                      Output using Markdown formatting.",
                     self.config.target_lang
-                )
+                );
             } else {
                 // Replace {target_lang} placeholder if present
-                prompt.replace("{target_lang}", &self.config.target_lang)
+                return prompt.replace("{target_lang}", &self.config.target_lang);
             }
-        } else {
-            format!(
-                "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
-                 \n\n\
-                 Please follow these steps:\n\
-                 1. Analyze the context to infer and correct any errors or missing information in the transcript.\n\
-                 2. Generate a clear and concise summary of the corrected content in {}.\n\
-                 \n\
-                 Output using Markdown formatting.",
-                self.config.target_lang
-            )
-        };
+        }
+
+        format!(
+            "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \
+             \n\n\
+             Please follow these steps:\n\
+             1. Analyze the context to infer and correct any errors or missing information in the transcript.\n\
+             2. Generate a clear and concise summary of the corrected content in {}.\n\
+             \n\
+             Output using Markdown formatting.",
+            self.config.target_lang
+        )
+    }
+
+    pub async fn summarize(&self, text: &str, provider_id: &str) -> Result<String> {
+        let system_prompt = self.build_summary_system_prompt();
 
         // Check if provider_id is a Copilot model ID
         if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
@@ -1441,6 +1769,79 @@ impl TranslationService {
         self.send_openai_request(endpoint, &system_prompt, text)
             .await
     }
+
+    pub async fn summarize_stream<F>(
+        &self,
+        text: &str,
+        provider_id: &str,
+        on_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        let system_prompt = self.build_summary_system_prompt();
+
+        // Check if provider_id is a Copilot model ID
+        if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
+            if let Some(channel) = self
+                .config
+                .ai_channels
+                .iter()
+                .find(|c| c.id == model.channel_id && c.channel_type == "copilot")
+            {
+                let github_token = channel
+                    .token
+                    .as_ref()
+                    .context("Copilot channel not logged in")?;
+                return self
+                    .send_copilot_request_stream(
+                        &system_prompt,
+                        text,
+                        github_token,
+                        Some(&model.name),
+                        &channel.proxy,
+                        on_chunk,
+                    )
+                    .await;
+            }
+        }
+
+        // Legacy copilot provider
+        if provider_id == "copilot" {
+            let github_token = self
+                .config
+                .github_token
+                .as_ref()
+                .context("GitHub Copilot not logged in")?;
+            return self
+                .send_copilot_request_stream(
+                    &system_prompt,
+                    text,
+                    github_token,
+                    None,
+                    &self.config.copilot_proxy,
+                    on_chunk,
+                )
+                .await;
+        }
+
+        // OpenAI or compatible model
+        let endpoint_id = if provider_id.starts_with("openai:") {
+            provider_id.strip_prefix("openai:").unwrap_or("default")
+        } else {
+            provider_id
+        };
+
+        let endpoint = self
+            .config
+            .openai_endpoints
+            .iter()
+            .find(|e| e.id == endpoint_id)
+            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+
+        self.send_openai_request_stream(endpoint, &system_prompt, text, on_chunk)
+            .await
+    }
 }
 
 // --- OpenAI DTOs (Moved to module level) ---
@@ -1450,6 +1851,8 @@ struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Serialize)]
