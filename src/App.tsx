@@ -1,4 +1,12 @@
-import { useState, useEffect, useReducer, useRef, type WheelEvent as ReactWheelEvent } from "react";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type WheelEvent as ReactWheelEvent
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { getVersion } from "@tauri-apps/api/app";
@@ -39,11 +47,6 @@ import {
 import { Sidebar } from "./components/Sidebar";
 import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
-import { SettingsForm } from "./components/settings/SettingsForm";
-import { SummaryModal } from "./components/modals/SummaryModal";
-import { TranslateModal } from "./components/modals/TranslateModal";
-import { TeamsSelectionModal } from "./components/modals/TeamsSelectionModal";
-import { DeviceAuthModal } from "./components/modals/DeviceAuthModal";
 import {
   shouldOverwrite,
   getLatestCaption,
@@ -67,6 +70,27 @@ const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
+
+const SettingsForm = lazy(async () => {
+  const module = await import("./components/settings/SettingsForm");
+  return { default: module.SettingsForm };
+});
+const SummaryModal = lazy(async () => {
+  const module = await import("./components/modals/SummaryModal");
+  return { default: module.SummaryModal };
+});
+const TranslateModal = lazy(async () => {
+  const module = await import("./components/modals/TranslateModal");
+  return { default: module.TranslateModal };
+});
+const TeamsSelectionModal = lazy(async () => {
+  const module = await import("./components/modals/TeamsSelectionModal");
+  return { default: module.TeamsSelectionModal };
+});
+const DeviceAuthModal = lazy(async () => {
+  const module = await import("./components/modals/DeviceAuthModal");
+  return { default: module.DeviceAuthModal };
+});
 
 type TranslationResultEvent = {
   request_id: string;
@@ -797,7 +821,12 @@ function App() {
     let cancelled = false;
 
     async function init() {
-      const startupBegin = performance.now();
+      const frontendInitBegin = performance.now();
+      const bootMark = (window as Window & { __LCR_BOOT_TS__?: number }).__LCR_BOOT_TS__;
+      const webviewBootMs =
+        typeof bootMark === "number" && Number.isFinite(bootMark)
+          ? Math.max(0, Math.round(frontendInitBegin - bootMark))
+          : null;
       const [versionResult, configResult, runningResult, sessionsResult] = await Promise.allSettled([
         getVersion(),
         invoke<AppConfig>("get_config"),
@@ -843,8 +872,21 @@ function App() {
         console.error("Failed to load sessions:", sessionsResult.reason);
       }
 
-      const startupCostMs = Math.round(performance.now() - startupBegin);
-      console.info(`[startup] init completed in ${startupCostMs}ms`);
+      const frontendInitMs = Math.max(0, Math.round(performance.now() - frontendInitBegin));
+      const perceivedStartupMs = frontendInitMs + (webviewBootMs ?? 0);
+      console.info(
+        `[startup] frontend init completed in ${frontendInitMs}ms (webview_boot_ms=${webviewBootMs ?? "unknown"}, perceived_startup_ms=${perceivedStartupMs})`,
+      );
+      void invoke("log_startup_metric", {
+        frontendInitMs,
+        webviewBootMs,
+        initSource: "frontend",
+        configLoaded: configResult.status === "fulfilled",
+        sessionsLoaded: sessionsResult.status === "fulfilled",
+        watcherStateLoaded: runningResult.status === "fulfilled",
+      }).catch(err => {
+        console.warn("Failed to report startup metric:", err);
+      });
     }
 
     void init();
@@ -1764,59 +1806,77 @@ function App() {
             </button>
           </header>
           <div className="flex-1 overflow-y-auto p-4 flex flex-col">
-            <SettingsForm
-              config={config}
-              onSave={saveConfig}
-              onConfigChange={setConfig}
-              onStartCopilotAuth={(id) => { setAuthChannelId(id); setDeviceAuthOpen(true); }}
-              addToast={addToast}
-            />
+            {isSettingsOpen && (
+              <Suspense fallback={null}>
+                <SettingsForm
+                  config={config}
+                  onSave={saveConfig}
+                  onConfigChange={setConfig}
+                  onStartCopilotAuth={(id) => { setAuthChannelId(id); setDeviceAuthOpen(true); }}
+                  addToast={addToast}
+                />
+              </Suspense>
+            )}
           </div>
         </div>
       </div>
       
       {isDeviceAuthOpen && (
-        <DeviceAuthModal 
-          isOpen={isDeviceAuthOpen}
-          onClose={() => { setDeviceAuthOpen(false); setAuthChannelId(null); }}
-          onSuccess={(token) => {
-            if (authChannelId) {
-                const newConfig = {
-                    ...config,
-                    ai_channels: config.ai_channels.map(c => c.id === authChannelId ? { ...c, token } : c)
-                };
-                saveConfig(newConfig);
-            }
-            setDeviceAuthOpen(false);
-            setAuthChannelId(null);
-          }}
-        />
+        <Suspense fallback={null}>
+          <DeviceAuthModal 
+            isOpen={isDeviceAuthOpen}
+            onClose={() => { setDeviceAuthOpen(false); setAuthChannelId(null); }}
+            onSuccess={(token) => {
+              if (authChannelId) {
+                  const newConfig = {
+                      ...config,
+                      ai_channels: config.ai_channels.map(c => c.id === authChannelId ? { ...c, token } : c)
+                  };
+                  saveConfig(newConfig);
+              }
+              setDeviceAuthOpen(false);
+              setAuthChannelId(null);
+            }}
+          />
+        </Suspense>
       )}
 
-      <TeamsSelectionModal
-        isOpen={isTeamsModalOpen}
-        onClose={() => setIsTeamsModalOpen(false)}
-        onSelect={handleSelectTeamsWindow}
-        windows={teamsWindows}
-        onRefresh={fetchTeamsWindows}
-        isScanning={isScanningTeams}
-      />
+      {isTeamsModalOpen && (
+        <Suspense fallback={null}>
+          <TeamsSelectionModal
+            isOpen={isTeamsModalOpen}
+            onClose={() => setIsTeamsModalOpen(false)}
+            onSelect={handleSelectTeamsWindow}
+            windows={teamsWindows}
+            onRefresh={fetchTeamsWindows}
+            isScanning={isScanningTeams}
+          />
+        </Suspense>
+      )}
 
-      <SummaryModal
-        isOpen={isSummaryOpen}
-        onClose={() => setIsSummaryOpen(false)}
-        text={summaryText}
-        isLoading={isSummarizing}
-      />
+      {isSummaryOpen && (
+        <Suspense fallback={null}>
+          <SummaryModal
+            isOpen={isSummaryOpen}
+            onClose={() => setIsSummaryOpen(false)}
+            text={summaryText}
+            isLoading={isSummarizing}
+          />
+        </Suspense>
+      )}
 
-      <TranslateModal
-        isOpen={isTranslateModalOpen}
-        onClose={() => setIsTranslateModalOpen(false)}
-        onTranslate={handleTranslateSession}
-        currentTargetLang={config.target_lang}
-        config={config}
-        isTranslating={isSessionTranslating}
-      />
+      {isTranslateModalOpen && (
+        <Suspense fallback={null}>
+          <TranslateModal
+            isOpen={isTranslateModalOpen}
+            onClose={() => setIsTranslateModalOpen(false)}
+            onTranslate={handleTranslateSession}
+            currentTargetLang={config.target_lang}
+            config={config}
+            isTranslating={isSessionTranslating}
+          />
+        </Suspense>
+      )}
 
       {/* Toast Container */}
       <div className="fixed bottom-[100px] right-6 flex flex-col gap-2 z-[200] pointer-events-none">

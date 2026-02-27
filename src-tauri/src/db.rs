@@ -1,5 +1,9 @@
+use anyhow::anyhow;
 use rusqlite::Connection;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+static DB_INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 pub fn get_db_path() -> anyhow::Result<PathBuf> {
     let config_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
@@ -12,15 +16,28 @@ pub fn get_db_path() -> anyhow::Result<PathBuf> {
     Ok(config_dir.join("data.db"))
 }
 
-pub fn get_connection() -> anyhow::Result<Connection> {
+fn open_connection() -> anyhow::Result<Connection> {
     let path = get_db_path()?;
     let conn = Connection::open(path)?;
     conn.execute("PRAGMA foreign_keys = ON", [])?;
     Ok(conn)
 }
 
-pub fn init() -> anyhow::Result<()> {
-    let mut conn = get_connection()?;
+fn ensure_initialized() -> anyhow::Result<()> {
+    let init_result = DB_INIT_RESULT.get_or_init(|| init_schema().map_err(|e| e.to_string()));
+    match init_result {
+        Ok(()) => Ok(()),
+        Err(message) => Err(anyhow!(message.clone())),
+    }
+}
+
+pub fn get_connection() -> anyhow::Result<Connection> {
+    ensure_initialized()?;
+    open_connection()
+}
+
+fn init_schema() -> anyhow::Result<()> {
+    let mut conn = open_connection()?;
 
     let current_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 

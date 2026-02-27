@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -1190,8 +1190,38 @@ fn get_teams_windows() -> Vec<TeamsWindowInfo> {
     teams::find_all_teams_windows()
 }
 
+fn duration_to_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+#[tauri::command]
+fn log_startup_metric(
+    frontend_init_ms: u64,
+    webview_boot_ms: Option<u64>,
+    init_source: String,
+    config_loaded: bool,
+    sessions_loaded: bool,
+    watcher_state_loaded: bool,
+) -> Result<(), AppError> {
+    let webview_boot_ms_available = webview_boot_ms.is_some();
+    let webview_boot_ms = webview_boot_ms.unwrap_or_default();
+    info!(
+        frontend_init_ms,
+        webview_boot_ms,
+        webview_boot_ms_available,
+        init_source = %init_source,
+        config_loaded,
+        sessions_loaded,
+        watcher_state_loaded,
+        "[startup] frontend init completed"
+    );
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let native_startup_begin = Instant::now();
+
     // Install panic hook to catch all panics
     std::panic::set_hook(Box::new(|panic_info| {
         let location = panic_info
@@ -1221,13 +1251,11 @@ pub fn run() {
         eprintln!("Backtrace:\n{}", backtrace);
     }));
 
-    // Initialize database
-    db::init().expect("Failed to initialize database");
-
-    // Initialize state
+    let state_init_begin = Instant::now();
     let state = AppState::default();
+    let state_init_ms = duration_to_ms(state_init_begin.elapsed());
 
-    // Initialize logger
+    let config_load_begin = Instant::now();
     let log_level = {
         let mut config = state.config.lock().unwrap();
         if let Some(loaded) = load_config_from_file() {
@@ -1235,13 +1263,17 @@ pub fn run() {
         }
         config.log_level.clone()
     };
+    let config_load_ms = duration_to_ms(config_load_begin.elapsed());
 
+    let logger_init_begin = Instant::now();
     if let Err(e) = logger::init_logger(&log_level) {
         eprintln!("WARNING: Failed to initialize logger: {}", e);
         eprintln!("Continuing with stderr-only logging");
     }
+    let logger_init_ms = duration_to_ms(logger_init_begin.elapsed());
 
-    tauri::Builder::default()
+    let build_begin = Instant::now();
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
@@ -1267,30 +1299,46 @@ pub fn run() {
             start_copilot_auth,
             poll_copilot_token,
             fetch_copilot_models_command,
+            log_startup_metric,
             logger::update_log_level_command,
             logger::open_log_directory
         ])
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app_handle, event| match event {
-            tauri::RunEvent::Ready => {
-                // Restore always_on_top on startup
-                // Access state to get config
-                let state = app_handle.state::<AppState>();
-                let config = state.config.lock().unwrap();
-                if config.always_on_top {
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.set_always_on_top(true);
-                    }
+        .expect("error while building tauri application");
+    let build_ms = duration_to_ms(build_begin.elapsed());
+
+    let native_pre_run_ms = duration_to_ms(native_startup_begin.elapsed());
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::Ready => {
+            let native_startup_ms = duration_to_ms(native_startup_begin.elapsed());
+            info!(
+                native_startup_ms,
+                native_pre_run_ms,
+                state_init_ms,
+                config_load_ms,
+                logger_init_ms,
+                build_ms,
+                db_init_mode = "lazy_on_first_use",
+                "[startup] native ready"
+            );
+
+            // Restore always_on_top on startup
+            // Access state to get config
+            let state = app_handle.state::<AppState>();
+            let config = state.config.lock().unwrap();
+            if config.always_on_top {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.set_always_on_top(true);
                 }
             }
-            tauri::RunEvent::ExitRequested { .. } => {
-                // Ensure LiveCaptions is closed on exit
-                let state = app_handle.state::<AppState>();
-                let mut running = state.caption_running.lock().unwrap();
-                *running = false;
-                let _ = livecaptions::close_livecaptions();
-            }
-            _ => {}
-        });
+        }
+        tauri::RunEvent::ExitRequested { .. } => {
+            // Ensure LiveCaptions is closed on exit
+            let state = app_handle.state::<AppState>();
+            let mut running = state.caption_running.lock().unwrap();
+            *running = false;
+            let _ = livecaptions::close_livecaptions();
+        }
+        _ => {}
+    });
 }

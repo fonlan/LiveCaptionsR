@@ -170,7 +170,7 @@ For detailed debugging information:
 - Caption capture problems (check Windows UI Automation errors)
 - Configuration loading errors
 - Network/proxy connection issues
-- Slow startup diagnostics (look for `[startup] init completed in ...ms`)
+- Slow startup diagnostics (look for `[startup] native ready` and `[startup] frontend init completed`)
 
 ### Startup White Screen / Slow Startup
 
@@ -178,8 +178,12 @@ If startup occasionally appears as a white/blank screen:
 
 1. Wait a few seconds and confirm the loading overlay disappears.
 2. Open logs at `%APPDATA%\LiveCaptionsR\logs\livecaptions-r.log`.
-3. Check startup timings (`[startup] init completed in ...ms`) and recent backend errors.
-4. If sessions are very large, startup may be slower on first run after update while DB indexes are applied.
+3. Check startup timings:
+   - `[startup] native ready native_startup_ms=...`
+   - `[startup] frontend init completed frontend_init_ms=... webview_boot_ms=...`
+   - Native log also includes phase hints (`state_init_ms`, `config_load_ms`, `logger_init_ms`, `build_ms`) for narrowing native-side bottlenecks.
+4. Use the gap between these metrics to determine whether delay is mainly native startup, WebView boot, or frontend IPC initialization.
+5. If sessions are very large, startup may be slower on first run after update while DB indexes are applied.
 
 **Example Log Entries**:
 ```
