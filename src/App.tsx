@@ -266,6 +266,11 @@ function App() {
   const scrollRafRef = useRef<number | null>(null);
   const queuedScrollTopRef = useRef<number>(0);
   const queuedViewportHeightRef = useRef<number>(0);
+  const isRunningRef = useRef<boolean>(false);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const activeSessionNameRef = useRef<string>("");
+  const activeSessionCreatedAtRef = useRef<number>(0);
+  const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
 
 
   const addToast = (type: 'success' | 'error', message: string) => {
@@ -424,6 +429,146 @@ function App() {
     setSessionTranslationCompleted(0);
   };
 
+  const hasPendingLiveTranslations = (): boolean => {
+    if (pendingTranslationCardIdRef.current) return true;
+
+    for (const requestId in pendingTranslationRequestsRef.current) {
+      if (pendingTranslationRequestsRef.current[requestId].mode === 'live') {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const finalizePendingLiveTranslationsOnStop = (): SentenceCard[] => {
+    const pendingCards = new Map<string, string | undefined>();
+
+    if (translationTimerRef.current) {
+      clearTimeout(translationTimerRef.current);
+      translationTimerRef.current = null;
+    }
+
+    if (pendingTranslationCardIdRef.current) {
+      const cardId = pendingTranslationCardIdRef.current;
+      const cardIndex = cardIndexRef.current[cardId];
+      const card = cardIndex === undefined ? undefined : cardsRef.current[cardIndex];
+      pendingCards.set(cardId, card?.original);
+      pendingTranslationCardIdRef.current = null;
+    }
+
+    const retainedRequests: Record<string, PendingTranslationRequest> = {};
+    for (const requestId in pendingTranslationRequestsRef.current) {
+      const pending = pendingTranslationRequestsRef.current[requestId];
+      if (pending.mode === 'live') {
+        pendingCards.set(pending.cardId, pending.text);
+      } else {
+        retainedRequests[requestId] = pending;
+      }
+    }
+    pendingTranslationRequestsRef.current = retainedRequests;
+
+    if (pendingCards.size === 0) {
+      return cardsRef.current;
+    }
+
+    let changed = false;
+    const nextCards = cardsRef.current.map(card => {
+      if (!pendingCards.has(card.id)) {
+        return card;
+      }
+
+      const expectedOriginal = pendingCards.get(card.id);
+      if (expectedOriginal !== undefined && card.original !== expectedOriginal) {
+        return card;
+      }
+
+      if (card.status === 'error' && card.translated === null && !card.retrying) {
+        return card;
+      }
+
+      changed = true;
+      return {
+        ...card,
+        translated: null,
+        status: 'error' as TranslationStatus,
+        retrying: false,
+      };
+    });
+
+    if (changed) {
+      dispatchCards({ type: "reset", cards: nextCards });
+      return nextCards;
+    }
+
+    return cardsRef.current;
+  };
+
+  const saveActiveSessionSnapshot = async (cardsOverride?: SentenceCard[]) => {
+    const sessionId = activeSessionIdRef.current;
+    const createdAt = activeSessionCreatedAtRef.current;
+    if (!sessionId || !createdAt) return;
+
+    const sessionToSave: Session = {
+      id: sessionId,
+      name: activeSessionNameRef.current,
+      created_at: createdAt,
+      cards: cardsOverride ?? cardsRef.current,
+    };
+
+    try {
+      await invoke("save_session_data", { session: sessionToSave });
+      await refreshSessionList();
+    } catch (e) {
+      console.error("Failed to save on stop:", e);
+    }
+  };
+
+  const finalizeCaptureStop = async (nextStatus?: string) => {
+    if (nextStatus) {
+      setStatus(nextStatus);
+    }
+
+    if (stopFinalizeInFlightRef.current) {
+      await stopFinalizeInFlightRef.current;
+      return;
+    }
+
+    const stopTask = (async () => {
+      const finalizedCards = finalizePendingLiveTranslationsOnStop();
+      setIsRunning(false);
+      isRunningRef.current = false;
+      setPartialText("");
+      resetSessionTranslationProgress();
+      await saveActiveSessionSnapshot(finalizedCards);
+    })();
+
+    stopFinalizeInFlightRef.current = stopTask;
+    try {
+      await stopTask;
+    } finally {
+      stopFinalizeInFlightRef.current = null;
+    }
+  };
+
+  const normalizeLoadedCards = (sessionCards: SentenceCard[]): { cards: SentenceCard[]; changed: boolean } => {
+    let changed = false;
+    const cards = sessionCards.map(card => {
+      if (card.status === 'translating') {
+        changed = true;
+        return {
+          ...card,
+          translated: null,
+          status: 'error' as TranslationStatus,
+          retrying: false,
+        };
+      }
+      return card;
+    });
+
+    return { cards, changed };
+  };
+
   const markSessionTranslationProgressStep = (batchId: string) => {
     if (activeSessionTranslationBatchIdRef.current !== batchId) return;
 
@@ -489,13 +634,22 @@ function App() {
 
     try {
       const session = await invoke<Session>("load_session_data", { id });
+      const normalized = normalizeLoadedCards(session.cards);
+      if (normalized.changed) {
+        void invoke("save_session_data", {
+          session: {
+            ...session,
+            cards: normalized.cards,
+          },
+        }).catch(e => console.error("Failed to normalize loaded session:", e));
+      }
       setActiveSessionId(session.id);
       setActiveSessionName(session.name);
       setActiveSessionCreatedAt(session.created_at);
-      dispatchCards({ type: "reset", cards: session.cards });
+      dispatchCards({ type: "reset", cards: normalized.cards });
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
-      lastProcessedCardRef.current = session.cards.length > 0 ? session.cards[session.cards.length - 1] : null;
+      lastProcessedCardRef.current = normalized.cards.length > 0 ? normalized.cards[normalized.cards.length - 1] : null;
       resetRecentSentenceDedup();
 
       setPartialText("");
@@ -618,6 +772,16 @@ function App() {
     autoFollowRef.current = autoFollow;
   }, [autoFollow]);
 
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+    activeSessionNameRef.current = activeSessionName;
+    activeSessionCreatedAtRef.current = activeSessionCreatedAt;
+  }, [activeSessionId, activeSessionName, activeSessionCreatedAt]);
+
   // Handle language change from config
   useEffect(() => {
     if (config.language && i18n.language !== config.language) {
@@ -646,6 +810,7 @@ function App() {
         }
         const running = await invoke<boolean>("is_watcher_running");
         setIsRunning(running);
+        isRunningRef.current = running;
         if (running) setStatus("Running");
         
         await refreshSessionList();
@@ -1096,10 +1261,16 @@ function App() {
       }
     });
 
-    const unlistenStatus = listen<string>("caption-status", (event) => setStatus(event.payload));
+    const unlistenStatus = listen<string>("caption-status", (event) => {
+      const nextStatus = event.payload;
+      setStatus(nextStatus);
+
+      if (nextStatus === "Stopped" && (isRunningRef.current || hasPendingLiveTranslations())) {
+        void finalizeCaptureStop(nextStatus);
+      }
+    });
     const unlistenError = listen<string>("caption-error", (event) => {
-      setStatus(`Error: ${event.payload}`);
-      setIsRunning(false);
+      void finalizeCaptureStop(`Error: ${event.payload}`);
     });
 
     return () => {
@@ -1163,11 +1334,13 @@ function App() {
       try {
       await invoke("start_caption_watcher");
       setIsRunning(true);
+      isRunningRef.current = true;
       pendingTranslationRequestsRef.current = {};
       resetSessionTranslationProgress();
       } catch (err) {
         setStatus(`Failed to start: ${err}`);
         setIsRunning(false);
+        isRunningRef.current = false;
       }
   };
 
@@ -1194,28 +1367,12 @@ function App() {
 
   const toggleWatcher = async () => {
     if (isRunning) {
-      await invoke("stop_caption_watcher");
-      setIsRunning(false);
-      setStatus("Stopped");
-      setPartialText("");
-      pendingTranslationRequestsRef.current = {};
-      resetSessionTranslationProgress();
-      
-      // Immediate save and refresh list to show preview
-      if (activeSessionId && activeSessionCreatedAt) {
-        const sessionToSave: Session = {
-          id: activeSessionId,
-          name: activeSessionName,
-          created_at: activeSessionCreatedAt,
-          cards: cardsRef.current // Use ref for latest value
-        };
-        try {
-          await invoke("save_session_data", { session: sessionToSave });
-          await refreshSessionList();
-        } catch (e) {
-          console.error("Failed to save on stop:", e);
-        }
+      try {
+        await invoke("stop_caption_watcher");
+      } catch (e) {
+        console.error("Failed to stop watcher:", e);
       }
+      await finalizeCaptureStop("Stopped");
     } else {
        if (config.caption_source === 'teams') {
            setIsTeamsModalOpen(true);
