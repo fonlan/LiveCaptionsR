@@ -794,31 +794,64 @@ function App() {
   }, [config]);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function init() {
-      try {
-        const v = await getVersion();
-        setAppVersion(v);
-        const savedConfig = await invoke<AppConfig>("get_config");
-        if (savedConfig) {
-          setConfig({
-            ...DEFAULT_CONFIG,
-            ...savedConfig,
-            summary_prompt: savedConfig.summary_prompt || DEFAULT_SUMMARY_PROMPT, // Ensure default prompt if empty
-            google_proxy: savedConfig.google_proxy || DEFAULT_PROXY,
-            microsoft_proxy: savedConfig.microsoft_proxy || DEFAULT_PROXY,
-          });
-        }
-        const running = await invoke<boolean>("is_watcher_running");
+      const startupBegin = performance.now();
+      const [versionResult, configResult, runningResult, sessionsResult] = await Promise.allSettled([
+        getVersion(),
+        invoke<AppConfig>("get_config"),
+        invoke<boolean>("is_watcher_running"),
+        invoke<SessionMetadata[]>("get_sessions"),
+      ]);
+
+      if (cancelled) {
+        return;
+      }
+
+      if (versionResult.status === "fulfilled") {
+        setAppVersion(versionResult.value);
+      } else {
+        console.error("Failed to load app version:", versionResult.reason);
+      }
+
+      if (configResult.status === "fulfilled") {
+        const savedConfig = configResult.value;
+        setConfig({
+          ...DEFAULT_CONFIG,
+          ...savedConfig,
+          summary_prompt: savedConfig.summary_prompt || DEFAULT_SUMMARY_PROMPT, // Ensure default prompt if empty
+          google_proxy: savedConfig.google_proxy || DEFAULT_PROXY,
+          microsoft_proxy: savedConfig.microsoft_proxy || DEFAULT_PROXY,
+        });
+      } else {
+        console.error("Failed to load config:", configResult.reason);
+      }
+
+      if (runningResult.status === "fulfilled") {
+        const running = runningResult.value;
         setIsRunning(running);
         isRunningRef.current = running;
         if (running) setStatus("Running");
-        
-        await refreshSessionList();
-      } catch (e) {
-        console.error("Failed to init:", e);
+      } else {
+        console.error("Failed to query watcher status:", runningResult.reason);
       }
+
+      if (sessionsResult.status === "fulfilled") {
+        setSessions(sessionsResult.value);
+      } else {
+        console.error("Failed to load sessions:", sessionsResult.reason);
+      }
+
+      const startupCostMs = Math.round(performance.now() - startupBegin);
+      console.info(`[startup] init completed in ${startupCostMs}ms`);
     }
-    init();
+
+    void init();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1513,8 +1546,6 @@ function App() {
     }
   };
 
-  const appWindow = getCurrentWindow();
-
   const handleToggleAlwaysOnTop = async () => {
     const nextAlwaysOnTop = !config.always_on_top;
     const nextConfig = { ...config, always_on_top: nextAlwaysOnTop };
@@ -1528,9 +1559,24 @@ function App() {
     }
   };
 
-  const handleWindowMinimize = () => appWindow.minimize();
-  const handleWindowMaximize = () => appWindow.toggleMaximize();
-  const handleWindowClose = () => appWindow.close();
+  const runWindowAction = async (action: (appWindow: ReturnType<typeof getCurrentWindow>) => Promise<void>) => {
+    try {
+      const appWindow = getCurrentWindow();
+      await action(appWindow);
+    } catch (err) {
+      console.error("Window action failed:", err);
+    }
+  };
+
+  const handleWindowMinimize = () => {
+    void runWindowAction(window => window.minimize());
+  };
+  const handleWindowMaximize = () => {
+    void runWindowAction(window => window.toggleMaximize());
+  };
+  const handleWindowClose = () => {
+    void runWindowAction(window => window.close());
+  };
 
   const sessionTranslationProgressPercent = sessionTranslationTotal > 0
     ? Math.round((sessionTranslationCompleted / sessionTranslationTotal) * 100)

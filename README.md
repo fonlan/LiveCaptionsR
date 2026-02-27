@@ -31,6 +31,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
   - Dark mode Cyber-noir aesthetic.
   - "Always on Top" mode for overlay usage.
   - Auto-scrolling history.
+  - Startup loading overlay to avoid blank/white flash during cold start.
 
 - **System Integration**:
   - Auto-launches Windows LiveCaptions on start.
@@ -169,6 +170,16 @@ For detailed debugging information:
 - Caption capture problems (check Windows UI Automation errors)
 - Configuration loading errors
 - Network/proxy connection issues
+- Slow startup diagnostics (look for `[startup] init completed in ...ms`)
+
+### Startup White Screen / Slow Startup
+
+If startup occasionally appears as a white/blank screen:
+
+1. Wait a few seconds and confirm the loading overlay disappears.
+2. Open logs at `%APPDATA%\LiveCaptionsR\logs\livecaptions-r.log`.
+3. Check startup timings (`[startup] init completed in ...ms`) and recent backend errors.
+4. If sessions are very large, startup may be slower on first run after update while DB indexes are applied.
 
 **Example Log Entries**:
 ```

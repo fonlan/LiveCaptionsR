@@ -70,5 +70,17 @@ pub fn init() -> anyhow::Result<()> {
         tx.commit()?;
     }
 
+    let current_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 3 {
+        let tx = conn.transaction()?;
+        // Accelerates startup session list preview query ordered by first timestamp.
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_cards_session_id_timestamp ON session_cards(session_id, timestamp)",
+            [],
+        )?;
+        tx.pragma_update(None, "user_version", 3)?;
+        tx.commit()?;
+    }
+
     Ok(())
 }
