@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 const TRANSLATION_CACHE_TTL_SECS: u64 = 60;
 const TRANSLATION_CACHE_MAX_ENTRIES: usize = 1024;
 const STREAM_REQUEST_TIMEOUT_SECS: u64 = 300;
+const SUMMARY_MAX_OUTPUT_TOKENS: u32 = 4096;
 
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -887,15 +888,11 @@ impl TranslationService {
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => break,
                 Err(e) => {
-                    if !output.is_empty() {
-                        warn!(
-                            error = %e,
-                            partial_len = output.len(),
-                            "Stream interrupted after partial output; returning partial content"
-                        );
-                        break;
-                    }
-                    return Err(anyhow::Error::new(e)).context("Failed to read stream chunk");
+                    let partial_len = output.len();
+                    return Err(anyhow::Error::new(e)).context(format!(
+                        "Failed to read stream chunk after receiving {} chars",
+                        partial_len
+                    ));
                 }
             };
 
@@ -948,6 +945,7 @@ impl TranslationService {
         github_token: &str,
         model_override: Option<&str>,
         proxy_config: &ProxyConfig,
+        max_tokens: Option<u32>,
     ) -> Result<String> {
         let token = self.get_copilot_token(github_token, proxy_config).await?;
 
@@ -969,6 +967,7 @@ impl TranslationService {
             ],
             temperature: 0.1,
             stream: None,
+            max_tokens,
         };
 
         // Log request details at DEBUG level
@@ -1048,6 +1047,7 @@ impl TranslationService {
         model_override: Option<&str>,
         proxy_config: &ProxyConfig,
         on_chunk: F,
+        max_tokens: Option<u32>,
     ) -> Result<String>
     where
         F: FnMut(&str) -> Result<()>,
@@ -1072,6 +1072,7 @@ impl TranslationService {
             ],
             temperature: 0.1,
             stream: Some(true),
+            max_tokens,
         };
 
         debug!(
@@ -1381,6 +1382,7 @@ impl TranslationService {
             github_token,
             model_name,
             proxy_config,
+            None,
         )
         .await
     }
@@ -1451,7 +1453,7 @@ impl TranslationService {
             )
         };
 
-        self.send_openai_request(endpoint, &system_prompt, &user_content)
+        self.send_openai_request(endpoint, &system_prompt, &user_content, None)
             .await
     }
 
@@ -1476,6 +1478,7 @@ impl TranslationService {
         endpoint: &OpenAIEndpoint,
         system_prompt: &str,
         user_content: &str,
+        max_tokens: Option<u32>,
     ) -> Result<String> {
         if endpoint.api_key.trim().is_empty() {
             anyhow::bail!(
@@ -1504,6 +1507,7 @@ impl TranslationService {
             ],
             temperature: 0.3,
             stream: None,
+            max_tokens,
         };
 
         // Sanitize API key for logging (show only first 4 chars)
@@ -1586,6 +1590,7 @@ impl TranslationService {
         system_prompt: &str,
         user_content: &str,
         on_chunk: F,
+        max_tokens: Option<u32>,
     ) -> Result<String>
     where
         F: FnMut(&str) -> Result<()>,
@@ -1617,6 +1622,7 @@ impl TranslationService {
             ],
             temperature: 0.3,
             stream: Some(true),
+            max_tokens,
         };
 
         let api_key_preview = if endpoint.api_key.chars().count() >= 4 {
@@ -1642,6 +1648,7 @@ impl TranslationService {
             .post(&url)
             .header("Authorization", format!("Bearer {}", endpoint.api_key))
             .header("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS))
             .json(&request)
             .send()
             .await
@@ -1729,6 +1736,7 @@ impl TranslationService {
                         github_token,
                         Some(&model.name),
                         &channel.proxy,
+                        Some(SUMMARY_MAX_OUTPUT_TOKENS),
                     )
                     .await;
             }
@@ -1748,6 +1756,7 @@ impl TranslationService {
                     github_token,
                     None,
                     &self.config.copilot_proxy,
+                    Some(SUMMARY_MAX_OUTPUT_TOKENS),
                 )
                 .await;
         }
@@ -1766,8 +1775,13 @@ impl TranslationService {
             .find(|e| e.id == endpoint_id)
             .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
 
-        self.send_openai_request(endpoint, &system_prompt, text)
-            .await
+        self.send_openai_request(
+            endpoint,
+            &system_prompt,
+            text,
+            Some(SUMMARY_MAX_OUTPUT_TOKENS),
+        )
+        .await
     }
 
     pub async fn summarize_stream<F>(
@@ -1781,66 +1795,110 @@ impl TranslationService {
     {
         let system_prompt = self.build_summary_system_prompt();
 
-        // Check if provider_id is a Copilot model ID
-        if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
-            if let Some(channel) = self
-                .config
-                .ai_channels
-                .iter()
-                .find(|c| c.id == model.channel_id && c.channel_type == "copilot")
-            {
-                let github_token = channel
-                    .token
-                    .as_ref()
-                    .context("Copilot channel not logged in")?;
-                return self
-                    .send_copilot_request_stream(
+        let stream_result =
+            if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
+                if let Some(channel) = self
+                    .config
+                    .ai_channels
+                    .iter()
+                    .find(|c| c.id == model.channel_id && c.channel_type == "copilot")
+                {
+                    let github_token = channel
+                        .token
+                        .as_ref()
+                        .context("Copilot channel not logged in")?;
+                    self.send_copilot_request_stream(
                         &system_prompt,
                         text,
                         github_token,
                         Some(&model.name),
                         &channel.proxy,
                         on_chunk,
+                        Some(SUMMARY_MAX_OUTPUT_TOKENS),
                     )
-                    .await;
-            }
-        }
+                    .await
+                } else {
+                    let endpoint_id = if provider_id.starts_with("openai:") {
+                        provider_id.strip_prefix("openai:").unwrap_or("default")
+                    } else {
+                        provider_id
+                    };
 
-        // Legacy copilot provider
-        if provider_id == "copilot" {
-            let github_token = self
-                .config
-                .github_token
-                .as_ref()
-                .context("GitHub Copilot not logged in")?;
-            return self
-                .send_copilot_request_stream(
+                    let endpoint = self
+                        .config
+                        .openai_endpoints
+                        .iter()
+                        .find(|e| e.id == endpoint_id)
+                        .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+
+                    self.send_openai_request_stream(
+                        endpoint,
+                        &system_prompt,
+                        text,
+                        on_chunk,
+                        Some(SUMMARY_MAX_OUTPUT_TOKENS),
+                    )
+                    .await
+                }
+            } else if provider_id == "copilot" {
+                let github_token = self
+                    .config
+                    .github_token
+                    .as_ref()
+                    .context("GitHub Copilot not logged in")?;
+                self.send_copilot_request_stream(
                     &system_prompt,
                     text,
                     github_token,
                     None,
                     &self.config.copilot_proxy,
                     on_chunk,
+                    Some(SUMMARY_MAX_OUTPUT_TOKENS),
                 )
-                .await;
+                .await
+            } else {
+                let endpoint_id = if provider_id.starts_with("openai:") {
+                    provider_id.strip_prefix("openai:").unwrap_or("default")
+                } else {
+                    provider_id
+                };
+
+                let endpoint = self
+                    .config
+                    .openai_endpoints
+                    .iter()
+                    .find(|e| e.id == endpoint_id)
+                    .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+
+                self.send_openai_request_stream(
+                    endpoint,
+                    &system_prompt,
+                    text,
+                    on_chunk,
+                    Some(SUMMARY_MAX_OUTPUT_TOKENS),
+                )
+                .await
+            };
+
+        match stream_result {
+            Ok(summary) => Ok(summary),
+            Err(stream_error) => {
+                warn!(
+                    provider_id = %provider_id,
+                    error = %stream_error,
+                    "Summary streaming failed, retrying with non-stream request"
+                );
+                self.summarize(text, provider_id)
+                    .await
+                    .map_err(|fallback_error| {
+                        anyhow::anyhow!(
+                            "Summary stream failed: {}. Fallback non-stream request failed: {}",
+                            stream_error,
+                            fallback_error
+                        )
+                    })
+            }
         }
-
-        // OpenAI or compatible model
-        let endpoint_id = if provider_id.starts_with("openai:") {
-            provider_id.strip_prefix("openai:").unwrap_or("default")
-        } else {
-            provider_id
-        };
-
-        let endpoint = self
-            .config
-            .openai_endpoints
-            .iter()
-            .find(|e| e.id == endpoint_id)
-            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
-
-        self.send_openai_request_stream(endpoint, &system_prompt, text, on_chunk)
-            .await
     }
 }
 
@@ -1853,6 +1911,8 @@ struct ChatRequest {
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
