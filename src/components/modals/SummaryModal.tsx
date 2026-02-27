@@ -1,7 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from 'react-markdown';
 import { IconX, IconCopy, IconCheck } from "../Icons";
+
+const SUMMARY_STICK_TO_BOTTOM_EPSILON = 8;
+const SUMMARY_AUTO_FOLLOW_DISABLE_THRESHOLD = 120;
 
 interface SummaryModalProps {
   isOpen: boolean;
@@ -14,10 +17,53 @@ export function SummaryModal({ isOpen, onClose, text, isLoading }: SummaryModalP
   const { t } = useTranslation();
   const [isCopied, setIsCopied] = useState(false);
   const hasText = text.trim().length > 0;
+  const contentRef = useRef<HTMLDivElement>(null);
+  const summaryAutoFollowRef = useRef(true);
+  const lastSummaryScrollTopRef = useRef(0);
 
   useEffect(() => {
-    if (isOpen) setIsCopied(false);
+    if (!isOpen) return;
+    setIsCopied(false);
+    summaryAutoFollowRef.current = true;
+    const container = contentRef.current;
+    if (container) {
+      const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      container.scrollTo({ top: targetTop, behavior: "auto" });
+      lastSummaryScrollTopRef.current = container.scrollTop;
+    }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !summaryAutoFollowRef.current) return;
+    const container = contentRef.current;
+    if (!container) return;
+    const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const distanceToBottom = targetTop - container.scrollTop;
+    if (distanceToBottom > SUMMARY_STICK_TO_BOTTOM_EPSILON) {
+      container.scrollTo({ top: targetTop, behavior: "auto" });
+    }
+  }, [isOpen, text, isLoading]);
+
+  const handleSummaryScroll = () => {
+    const container = contentRef.current;
+    if (!container) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distanceToBottom = scrollHeight - scrollTop - clientHeight;
+    const scrollingUp = scrollTop + 2 < lastSummaryScrollTopRef.current;
+    lastSummaryScrollTopRef.current = scrollTop;
+
+    if (summaryAutoFollowRef.current) {
+      if (
+        (scrollingUp && distanceToBottom > SUMMARY_STICK_TO_BOTTOM_EPSILON) ||
+        distanceToBottom > SUMMARY_AUTO_FOLLOW_DISABLE_THRESHOLD
+      ) {
+        summaryAutoFollowRef.current = false;
+      }
+    } else if (distanceToBottom <= SUMMARY_STICK_TO_BOTTOM_EPSILON) {
+      summaryAutoFollowRef.current = true;
+    }
+  };
 
   const handleCopy = async () => {
     if (!text) return;
@@ -52,7 +98,7 @@ export function SummaryModal({ isOpen, onClose, text, isLoading }: SummaryModalP
             </button>
           </div>
         </header>
-        <div className="settings-content summary-content">
+        <div className="settings-content summary-content" ref={contentRef} onScroll={handleSummaryScroll}>
           {isLoading && !hasText ? (
             <div className="summary-loading" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
               <span className="spinner" style={{ display: 'inline-block', marginBottom: '10px' }}></span>
