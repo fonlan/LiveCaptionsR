@@ -1202,6 +1202,7 @@ fn log_startup_metric(
     config_loaded: bool,
     sessions_loaded: bool,
     watcher_state_loaded: bool,
+    app: AppHandle,
 ) -> Result<(), AppError> {
     let webview_boot_ms_available = webview_boot_ms.is_some();
     let webview_boot_ms = webview_boot_ms.unwrap_or_default();
@@ -1215,6 +1216,16 @@ fn log_startup_metric(
         watcher_state_loaded,
         "[startup] frontend init completed"
     );
+
+    if let Some(main_window) = app.get_webview_window("main") {
+        let _ = main_window.show();
+        let _ = main_window.set_focus();
+    }
+
+    if let Some(splash_window) = app.get_webview_window("splashscreen") {
+        let _ = splash_window.close();
+    }
+
     Ok(())
 }
 
@@ -1321,6 +1332,30 @@ pub fn run() {
                 db_init_mode = "lazy_on_first_use",
                 "[startup] native ready"
             );
+
+            #[cfg(any(windows, target_os = "macos"))]
+            if let Some(splash_window) = app_handle.get_webview_window("splashscreen") {
+                let _ = splash_window.set_shadow(false);
+            }
+
+            // Fail-safe: if frontend never reports startup completion, do not keep splash forever.
+            let app_handle_for_fallback = app_handle.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(10));
+                if let Some(splash_window) =
+                    app_handle_for_fallback.get_webview_window("splashscreen")
+                {
+                    let _ = splash_window.close();
+                    if let Some(main_window) = app_handle_for_fallback.get_webview_window("main") {
+                        let _ = main_window.show();
+                        let _ = main_window.set_focus();
+                    }
+                    info!(
+                        fallback_timeout_ms = 10_000_u64,
+                        "[startup] splash fallback triggered"
+                    );
+                }
+            });
 
             // Restore always_on_top on startup
             // Access state to get config

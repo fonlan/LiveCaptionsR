@@ -31,7 +31,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
   - Dark mode Cyber-noir aesthetic.
   - "Always on Top" mode for overlay usage.
   - Auto-scrolling history.
-  - Startup loading overlay to avoid blank/white flash during cold start.
+  - Native splash startup window while the main webview initializes.
 
 - **System Integration**:
   - Auto-launches Windows LiveCaptions on start.
@@ -176,11 +176,12 @@ For detailed debugging information:
 
 If startup occasionally appears as a white/blank screen:
 
-1. Wait a few seconds and confirm the loading overlay disappears.
+1. Wait a few seconds and confirm the native splash window closes and the main window appears.
 2. Open logs at `%APPDATA%\LiveCaptionsR\logs\livecaptions-r.log`.
 3. Check startup timings:
    - `[startup] native ready native_startup_ms=...`
    - `[startup] frontend init completed frontend_init_ms=... webview_boot_ms=...`
+   - If frontend init hangs, startup can fall back after 10s via `[startup] splash fallback triggered`.
    - Native log also includes phase hints (`state_init_ms`, `config_load_ms`, `logger_init_ms`, `build_ms`) for narrowing native-side bottlenecks.
 4. Use the gap between these metrics to determine whether delay is mainly native startup, WebView boot, or frontend IPC initialization.
 5. If sessions are very large, startup may be slower on first run after update while DB indexes are applied.
