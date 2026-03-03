@@ -270,6 +270,7 @@ function App() {
   const [autoFollow, setAutoFollow] = useState<boolean>(true);
   const [listScrollTop, setListScrollTop] = useState(0);
   const [listViewportHeight, setListViewportHeight] = useState(0);
+  const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
    
    // Teams Modal State
   const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
@@ -304,6 +305,8 @@ function App() {
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
   const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const chatCardJumpTimerRef = useRef<number | null>(null);
+  const chatCardHighlightClearTimerRef = useRef<number | null>(null);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
   const autoFollowRef = useRef<boolean>(true);
   const lastScrollTopRef = useRef<number>(0);
@@ -855,7 +858,19 @@ function App() {
   useEffect(() => {
     setChatMessages([]);
     setChatInput("");
+    setHighlightedCardId(null);
   }, [activeSessionId]);
+
+  useEffect(() => {
+    return () => {
+      if (chatCardJumpTimerRef.current !== null) {
+        window.clearTimeout(chatCardJumpTimerRef.current);
+      }
+      if (chatCardHighlightClearTimerRef.current !== null) {
+        window.clearTimeout(chatCardHighlightClearTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleWindowResize = () => {
@@ -1629,6 +1644,96 @@ function App() {
       }));
   };
 
+  const setJumpHighlightedCard = (cardId: string) => {
+    setHighlightedCardId(cardId);
+    if (chatCardHighlightClearTimerRef.current !== null) {
+      window.clearTimeout(chatCardHighlightClearTimerRef.current);
+    }
+    chatCardHighlightClearTimerRef.current = window.setTimeout(() => {
+      setHighlightedCardId(prev => (prev === cardId ? null : prev));
+      chatCardHighlightClearTimerRef.current = null;
+    }, 1800);
+  };
+
+  const handleChatCardReferenceClick = (cardNumber: number) => {
+    if (!Number.isInteger(cardNumber) || cardNumber <= 0) {
+      return;
+    }
+
+    const targetIndex = cardNumber - 1;
+    const targetCard = cardsRef.current[targetIndex];
+    if (!targetCard) {
+      addToast("error", t("chat.cardNotFound", { number: cardNumber }));
+      return;
+    }
+
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    if (chatCardJumpTimerRef.current !== null) {
+      window.clearTimeout(chatCardJumpTimerRef.current);
+      chatCardJumpTimerRef.current = null;
+    }
+
+    setAutoFollow(false);
+
+    const totalCards = cardsRef.current.length;
+    const maxAttempts = 14;
+    const scrollStepPx = Math.max(Math.round(container.clientHeight * 0.75), 220);
+
+    const locateAndScroll = (attempt: number) => {
+      const node = container.querySelector<HTMLElement>(`[data-card-number="${cardNumber}"]`);
+      if (node) {
+        node.scrollIntoView({ behavior: "smooth", block: "center" });
+        setJumpHighlightedCard(targetCard.id);
+        return;
+      }
+
+      if (attempt >= maxAttempts) {
+        addToast("error", t("chat.cardJumpFailed", { number: cardNumber }));
+        return;
+      }
+
+      const renderedNumbers = Array.from(container.querySelectorAll<HTMLElement>("[data-card-number]"))
+        .map(item => Number.parseInt(item.dataset.cardNumber ?? "", 10))
+        .filter(value => Number.isFinite(value));
+
+      if (renderedNumbers.length === 0) {
+        const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        const avgCardHeight = totalCards > 0 ? container.scrollHeight / totalCards : 0;
+        const estimatedTop = Math.max(
+          0,
+          Math.min(
+            maxScrollTop,
+            Math.round(avgCardHeight * targetIndex - container.clientHeight * 0.4),
+          ),
+        );
+        container.scrollTo({ top: estimatedTop, behavior: "auto" });
+      } else {
+        const minVisible = Math.min(...renderedNumbers);
+        const maxVisible = Math.max(...renderedNumbers);
+        if (cardNumber < minVisible) {
+          container.scrollBy({ top: -scrollStepPx, behavior: "auto" });
+        } else if (cardNumber > maxVisible) {
+          container.scrollBy({ top: scrollStepPx, behavior: "auto" });
+        } else {
+          const midpoint = Math.floor((minVisible + maxVisible) / 2);
+          const nudge = Math.round(scrollStepPx * 0.45);
+          container.scrollBy({ top: cardNumber > midpoint ? nudge : -nudge, behavior: "auto" });
+        }
+      }
+
+      chatCardJumpTimerRef.current = window.setTimeout(() => {
+        chatCardJumpTimerRef.current = null;
+        locateAndScroll(attempt + 1);
+      }, 36);
+    };
+
+    locateAndScroll(0);
+  };
+
   const handleSendChatMessage = async () => {
     if (isChatSending) return;
 
@@ -1925,6 +2030,7 @@ function App() {
                 scrollTop={listScrollTop}
                 viewportHeight={listViewportHeight}
                 tempTranslations={tempTranslations}
+                highlightedCardId={highlightedCardId}
               />
               <div ref={historyEndRef} />
             </div>
@@ -1941,6 +2047,7 @@ function App() {
               onModelChange={setChatModelId}
               onSend={() => void handleSendChatMessage()}
               onResizeStart={handleChatSidebarResizeStart}
+              onCardReferenceClick={handleChatCardReferenceClick}
               getModelLabel={model => getAIModelLabel(model.id)}
             />
           </div>

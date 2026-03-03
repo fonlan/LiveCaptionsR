@@ -178,10 +178,13 @@
     "sending": "发送中...",
     "thinking": "思考中...",
     "copyMessage": "复制该气泡的 Markdown",
+    "cardRefTitle": "跳转到卡片 #{{number}}",
     "empty": "发送消息后，AI 会基于发送时已捕获的字幕内容回答。",
     "modelRequired": "请先选择 AI 对话模型",
     "noModelsConfigured": "尚未配置 AI 模型",
-    "errorPrefix": "AI 对话失败:"
+    "errorPrefix": "AI 对话失败:",
+    "cardNotFound": "当前会话中不存在卡片 #{{number}}",
+    "cardJumpFailed": "无法跳转到卡片 #{{number}}"
   },
   "copy": {
     "tooltip": "复制原文和译文 (Markdown)",

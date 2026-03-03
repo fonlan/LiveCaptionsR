@@ -49,11 +49,14 @@ interface CaptionsListProps {
   scrollTop: number;
   viewportHeight: number;
   tempTranslations: Record<string, TempTranslation>;
+  highlightedCardId?: string | null;
 }
 
 interface CaptionCardItemProps {
   card: SentenceCard;
+  cardNumber: number;
   isVirtualized?: boolean;
+  isHighlighted?: boolean;
   onRetryTranslation: (cardId: string, originalText: string) => void;
   onMeasuredHeight?: (cardId: string, height: number) => void;
   tempTranslation?: TempTranslation;
@@ -65,6 +68,8 @@ function areCaptionCardItemPropsEqual(
 ): boolean {
   return (
     prev.card === next.card
+    && prev.cardNumber === next.cardNumber
+    && prev.isHighlighted === next.isHighlighted
     && prev.isVirtualized === next.isVirtualized
     && prev.onMeasuredHeight === next.onMeasuredHeight
     && prev.tempTranslation === next.tempTranslation
@@ -73,7 +78,9 @@ function areCaptionCardItemPropsEqual(
 
 const CaptionCardItem = memo(function CaptionCardItem({
   card,
+  cardNumber,
   isVirtualized,
+  isHighlighted,
   onRetryTranslation,
   onMeasuredHeight,
   tempTranslation,
@@ -110,7 +117,11 @@ const CaptionCardItem = memo(function CaptionCardItem({
   }, [card.id, card.original, card.retrying, displayStatus, displayTranslated, onMeasuredHeight]);
 
   return (
-    <div ref={itemRef} className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''}`}>
+    <div
+      ref={itemRef}
+      data-card-number={cardNumber}
+      className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''} ${isHighlighted ? 'bg-card-hover border-primary/80 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]' : ''}`}
+    >
       {card.user && (
         <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">
           <IconUser />
@@ -160,6 +171,7 @@ function areCaptionsListPropsEqual(
   if (prev.hasActiveSession !== next.hasActiveSession) return false;
   if (prev.partialText !== next.partialText) return false;
   if (prev.tempTranslations !== next.tempTranslations) return false;
+  if (prev.highlightedCardId !== next.highlightedCardId) return false;
 
   const prevVirtualized = prev.cards.length > STABLE_RENDER_THRESHOLD && prev.viewportHeight > 0;
   const nextVirtualized = next.cards.length > STABLE_RENDER_THRESHOLD && next.viewportHeight > 0;
@@ -179,6 +191,7 @@ export const CaptionsList = memo(function CaptionsList({
   scrollTop,
   viewportHeight,
   tempTranslations,
+  highlightedCardId,
 }: CaptionsListProps) {
   const { t } = useTranslation();
   const measuredHeightsRef = useRef<Record<string, number>>({});
@@ -267,16 +280,21 @@ export const CaptionsList = memo(function CaptionsList({
   return (
     <>
       {topSpacerHeight > 0 && <div aria-hidden="true" style={{ height: `${topSpacerHeight}px` }} />}
-      {visibleCards.map((item) => (
-        <CaptionCardItem
-          key={item.id}
-          card={item}
-          isVirtualized={shouldVirtualize}
-          onMeasuredHeight={shouldVirtualize ? handleMeasuredHeight : undefined}
-          tempTranslation={tempTranslations[item.id]}
-          onRetryTranslation={onRetryTranslation}
-        />
-      ))}
+      {visibleCards.map((item, visibleIndex) => {
+        const cardNumber = (shouldVirtualize ? startIndex : 0) + visibleIndex + 1;
+        return (
+          <CaptionCardItem
+            key={item.id}
+            card={item}
+            cardNumber={cardNumber}
+            isVirtualized={shouldVirtualize}
+            isHighlighted={item.id === highlightedCardId}
+            onMeasuredHeight={shouldVirtualize ? handleMeasuredHeight : undefined}
+            tempTranslation={tempTranslations[item.id]}
+            onRetryTranslation={onRetryTranslation}
+          />
+        );
+      })}
       {bottomSpacerHeight > 0 && <div aria-hidden="true" style={{ height: `${bottomSpacerHeight}px` }} />}
       {partialText && (!cards.length || cards[cards.length - 1].original !== partialText) && (
         <div className="bg-primary-dim rounded-lg p-3 border-l-[3px] border-primary transition-colors duration-200 animate-slide-in relative mb-3">

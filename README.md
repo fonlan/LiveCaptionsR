@@ -26,7 +26,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
   - Save and load caption sessions.
   - Sessions keep full card history during capture (no fixed 200-card cap).
   - Session summaries using AI (OpenAI or Copilot), streamed in real time.
-  - AI chat sidebar for asking questions about captured cards with Markdown-rendered answers, selectable bubble text, per-bubble Markdown copy, and drag-to-resize width.
+  - AI chat sidebar for asking questions about captured cards with Markdown-rendered answers, selectable bubble text, per-bubble Markdown copy, clickable `#card` references that jump to cards, and drag-to-resize width.
 
 - **Modern UI**:
   - Dark mode Cyber-noir aesthetic.
@@ -121,14 +121,14 @@ Each provider has independent proxy settings:
 - **Hide System LiveCaptions Window**: Keeps the native caption bar hidden while capturing.
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
 - **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output.
-- **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, and supports mouse drag width resizing.
+- **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, supports clickable `#card-number` references that jump to the corresponding caption card, and supports mouse drag width resizing.
 
 ## 🛠️ Architecture
 
 - **Frontend**: React + TypeScript + Vite
   - Handles UI, settings, caption segmentation, and display logic.
   - Calculates text similarity for deduplication.
-  - Includes `ChatSidebar.tsx` for caption-grounded AI Q&A with Markdown rendering, selectable/copyable bubbles, and resizable sidebar width.
+  - Includes `ChatSidebar.tsx` for caption-grounded AI Q&A with Markdown rendering, selectable/copyable bubbles, clickable card reference links, and resizable sidebar width.
 
 - **Backend**: Rust (Tauri)
   - `livecaptions.rs`: Manages Windows UI Automation and LiveCaptions process control.

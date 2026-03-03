@@ -1,5 +1,5 @@
-import { useEffect, useRef, type KeyboardEventHandler, type MouseEventHandler } from "react";
-import Markdown from "react-markdown";
+import { useEffect, useMemo, useRef, type KeyboardEventHandler, type MouseEventHandler } from "react";
+import Markdown, { type Components } from "react-markdown";
 import { useTranslation } from "react-i18next";
 import remarkGfm from "remark-gfm";
 
@@ -12,6 +12,13 @@ export interface AIChatBubble {
   content: string;
   status: "done" | "loading" | "error";
 }
+
+type MarkdownNode = {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MarkdownNode[];
+};
 
 interface ChatSidebarProps {
   isOpen: boolean;
@@ -26,8 +33,79 @@ interface ChatSidebarProps {
   onModelChange: (modelId: string) => void;
   onSend: () => void;
   onResizeStart: MouseEventHandler<HTMLDivElement>;
+  onCardReferenceClick: (cardNumber: number) => void;
   getModelLabel: (model: AIModel) => string;
 }
+
+const CARD_REFERENCE_SCHEME = "card://";
+const CARD_REFERENCE_PATTERN = /(^|[^\w`\\])#(\d+)\b/g;
+
+const splitTextIntoCardReferenceNodes = (value: string): MarkdownNode[] => {
+  const fragments: MarkdownNode[] = [];
+  let cursor = 0;
+  CARD_REFERENCE_PATTERN.lastIndex = 0;
+
+  let match = CARD_REFERENCE_PATTERN.exec(value);
+  while (match !== null) {
+    const leading = match[1] ?? "";
+    const cardNumber = match[2];
+    const hashStart = match.index + leading.length;
+
+    if (hashStart > cursor) {
+      fragments.push({ type: "text", value: value.slice(cursor, hashStart) });
+    }
+
+    fragments.push({
+      type: "link",
+      url: `${CARD_REFERENCE_SCHEME}${cardNumber}`,
+      children: [{ type: "text", value: `#${cardNumber}` }],
+    });
+    cursor = hashStart + cardNumber.length + 1;
+    match = CARD_REFERENCE_PATTERN.exec(value);
+  }
+
+  if (fragments.length === 0) {
+    return [{ type: "text", value }];
+  }
+
+  if (cursor < value.length) {
+    fragments.push({ type: "text", value: value.slice(cursor) });
+  }
+
+  return fragments;
+};
+
+const remarkCardReference = () => (tree: MarkdownNode) => {
+  const walk = (node: MarkdownNode): void => {
+    if (!Array.isArray(node.children) || node.children.length === 0) {
+      return;
+    }
+
+    if (node.type === "code" || node.type === "inlineCode" || node.type === "link") {
+      return;
+    }
+
+    for (let i = 0; i < node.children.length; i += 1) {
+      const child = node.children[i];
+      if (child.type === "text" && typeof child.value === "string") {
+        const replacements = splitTextIntoCardReferenceNodes(child.value);
+        if (
+          replacements.length !== 1
+          || replacements[0].type !== child.type
+          || replacements[0].value !== child.value
+        ) {
+          node.children.splice(i, 1, ...replacements);
+          i += replacements.length - 1;
+        }
+        continue;
+      }
+
+      walk(child);
+    }
+  };
+
+  walk(tree);
+};
 
 export function ChatSidebar({
   isOpen,
@@ -42,10 +120,40 @@ export function ChatSidebar({
   onModelChange,
   onSend,
   onResizeStart,
+  onCardReferenceClick,
   getModelLabel,
 }: ChatSidebarProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const markdownComponents = useMemo<Components>(() => ({
+    a: ({ href, children, ...props }) => {
+      const match = href?.match(/^card:\/\/(\d+)$/);
+      if (!match) {
+        return (
+          <a href={href} {...props}>
+            {children}
+          </a>
+        );
+      }
+
+      const cardNumber = Number.parseInt(match[1], 10);
+      if (!Number.isFinite(cardNumber) || cardNumber <= 0) {
+        return <span>{children}</span>;
+      }
+
+      return (
+        <button
+          type="button"
+          className="inline border-none bg-transparent p-0 text-primary cursor-pointer underline underline-offset-2 hover:opacity-85"
+          onClick={() => onCardReferenceClick(cardNumber)}
+          title={t("chat.cardRefTitle", { number: cardNumber })}
+        >
+          {children}
+        </button>
+      );
+    },
+  }), [onCardReferenceClick, t]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -117,7 +225,9 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <div className="markdown-body select-text">
-                        <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+                        <Markdown remarkPlugins={[remarkGfm, remarkCardReference]} components={markdownComponents}>
+                          {message.content}
+                        </Markdown>
                       </div>
                     )
                   ) : (
