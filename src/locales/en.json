@@ -189,6 +189,7 @@
   },
   "copy": {
     "tooltip": "Copy Original & Translation (Markdown)",
+    "cardTooltip": "Copy this card (original + translation)",
     "moreOptions": "More copy options",
     "originalOnly": "Copy Original Only",
     "translationOnly": "Copy Translation Only"

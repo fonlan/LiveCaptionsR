@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconRetry, IconUser } from "./Icons";
+import { IconCopy, IconRetry, IconUser } from "./Icons";
 import { SentenceCard, TranslationStatus } from "../types";
 
 type TempTranslation = { translated: string; status: TranslationStatus };
@@ -42,6 +42,7 @@ function upperBound(offsets: number[], target: number): number {
 }
 
 interface CaptionsListProps {
+  addToast: (type: "success" | "error", message: string) => void;
   cards: SentenceCard[];
   hasActiveSession: boolean;
   onRetryTranslation: (cardId: string, originalText: string) => void;
@@ -53,6 +54,7 @@ interface CaptionsListProps {
 }
 
 interface CaptionCardItemProps {
+  addToast: (type: "success" | "error", message: string) => void;
   card: SentenceCard;
   cardNumber: number;
   isVirtualized?: boolean;
@@ -67,7 +69,8 @@ function areCaptionCardItemPropsEqual(
   next: Readonly<CaptionCardItemProps>
 ): boolean {
   return (
-    prev.card === next.card
+    prev.addToast === next.addToast
+    && prev.card === next.card
     && prev.cardNumber === next.cardNumber
     && prev.isHighlighted === next.isHighlighted
     && prev.isVirtualized === next.isVirtualized
@@ -77,6 +80,7 @@ function areCaptionCardItemPropsEqual(
 }
 
 const CaptionCardItem = memo(function CaptionCardItem({
+  addToast,
   card,
   cardNumber,
   isVirtualized,
@@ -100,6 +104,35 @@ const CaptionCardItem = memo(function CaptionCardItem({
     ? "transition-colors duration-150"
     : "transition-colors duration-200 animate-slide-in";
 
+  const handleCopyCard = useCallback(async () => {
+    const originalText = card.original.trim();
+    let translatedText = (displayTranslated ?? "").trim();
+
+    if (!translatedText) {
+      if (displayStatus === "translating") {
+        translatedText = "...";
+      } else if (displayStatus === "error") {
+        translatedText = t("translation.failed");
+      }
+    }
+
+    const content = translatedText
+      ? `${originalText}\n\n**${translatedText}**`
+      : originalText;
+
+    if (!content.trim()) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      addToast("success", t("toast.copySuccess"));
+    } catch (err) {
+      console.error("Failed to copy caption card:", err);
+      addToast("error", t("toast.copyFailed"));
+    }
+  }, [addToast, card.original, displayStatus, displayTranslated, t]);
+
   useLayoutEffect(() => {
     if (!onMeasuredHeight) return;
 
@@ -120,8 +153,16 @@ const CaptionCardItem = memo(function CaptionCardItem({
     <div
       ref={itemRef}
       data-card-number={cardNumber}
-      className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''} ${isHighlighted ? 'chat-card-jump-highlight bg-card-hover border-primary/80 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]' : ''}`}
+      className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 pr-11 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''} ${isHighlighted ? 'chat-card-jump-highlight bg-card-hover border-primary/80 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]' : ''}`}
     >
+      <button
+        type="button"
+        className="absolute right-2 top-2 h-7 w-7 rounded-full border-none flex items-center justify-center text-text-secondary cursor-pointer transition-all hover:bg-card-hover hover:text-text-primary"
+        onClick={() => void handleCopyCard()}
+        title={t("copy.cardTooltip")}
+      >
+        <IconCopy size={14} />
+      </button>
       {card.user && (
         <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">
           <IconUser />
@@ -167,6 +208,7 @@ function areCaptionsListPropsEqual(
   prev: Readonly<CaptionsListProps>,
   next: Readonly<CaptionsListProps>
 ): boolean {
+  if (prev.addToast !== next.addToast) return false;
   if (prev.cards !== next.cards) return false;
   if (prev.hasActiveSession !== next.hasActiveSession) return false;
   if (prev.partialText !== next.partialText) return false;
@@ -184,6 +226,7 @@ function areCaptionsListPropsEqual(
 }
 
 export const CaptionsList = memo(function CaptionsList({
+  addToast,
   cards,
   hasActiveSession,
   onRetryTranslation,
@@ -284,6 +327,7 @@ export const CaptionsList = memo(function CaptionsList({
         const cardNumber = (shouldVirtualize ? startIndex : 0) + visibleIndex + 1;
         return (
           <CaptionCardItem
+            addToast={addToast}
             key={item.id}
             card={item}
             cardNumber={cardNumber}

@@ -122,6 +122,7 @@ Each provider has independent proxy settings:
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
 - **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output.
 - **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, supports clickable `#card-number` references that jump to the corresponding caption card, and supports mouse drag width resizing.
+- **Caption Card Copy**: Each caption card has a top-right one-click copy button that copies the card's original text plus translation in Markdown format.
 
 ## 🛠️ Architecture
 

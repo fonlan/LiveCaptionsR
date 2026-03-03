@@ -1,6 +1,7 @@
 import {
   Suspense,
   lazy,
+  useCallback,
   useEffect,
   useReducer,
   useRef,
@@ -321,13 +322,13 @@ function App() {
   const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
 
 
-  const addToast = (type: 'success' | 'error', message: string) => {
+  const addToast = useCallback((type: 'success' | 'error', message: string) => {
     const id = generateId();
     setToasts(prev => [...prev, { id, type, message }]);
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 3000);
-  };
+  }, []);
 
   const stopSummaryTypewriter = () => {
     if (summaryTypingTimerRef.current) {
@@ -2095,6 +2096,7 @@ function App() {
               }}
             >
               <CaptionsList
+                addToast={addToast}
                 cards={cards}
                 hasActiveSession={!!activeSessionId}
                 onRetryTranslation={retryTranslation}

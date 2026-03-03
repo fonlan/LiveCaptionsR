@@ -189,6 +189,7 @@
   },
   "copy": {
     "tooltip": "复制原文和译文 (Markdown)",
+    "cardTooltip": "复制此卡片（原文+译文）",
     "moreOptions": "更多复制选项",
     "originalOnly": "仅复制原文",
     "translationOnly": "仅复制译文"
