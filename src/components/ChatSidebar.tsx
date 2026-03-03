@@ -277,7 +277,7 @@ export function ChatSidebar({
             placeholder={t("chat.inputPlaceholder")}
           />
           <button
-            className={`absolute right-2 bottom-2 h-8 px-3 rounded-lg border-none text-xs font-semibold transition-all ${canSend ? "bg-primary text-black cursor-pointer" : "bg-bg-secondary text-text-muted cursor-not-allowed"}`}
+            className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 px-3 rounded-lg border-none text-xs font-semibold transition-all ${canSend ? "bg-primary text-black cursor-pointer" : "bg-bg-secondary text-text-muted cursor-not-allowed"}`}
             onClick={onSend}
             disabled={!canSend}
             title={t("chat.send")}
