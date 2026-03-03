@@ -1754,14 +1754,18 @@ function App() {
                 <span className={`text-[11px] text-text-secondary truncate leading-[1.2] line-clamp-2 hover:line-clamp-none hover:overflow-visible hover:bg-panel hover:z-[100] hover:shadow-lg hover:p-1 hover:rounded ${status.startsWith('Error') ? 'text-error' : ''}`} title={status}>{status}</span>
               </div>
               <div className="flex items-center justify-center absolute left-1/2 -translate-x-1/2 pointer-events-none [&>*]:pointer-events-auto">
-              <button
-                  className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 mr-3 ${!isRunning ? 'text-text-muted cursor-not-allowed opacity-50' : (isWindowVisible ? 'text-text-primary' : 'text-text-muted')} ${isRunning ? 'cursor-pointer opacity-100 hover:brightness-110' : ''}`}
-                  onClick={toggleVisibility}
-                  disabled={!isRunning}
-                  title={isWindowVisible ? t("controls.hideWindow") : t("controls.showWindow")}
-              >
-                  {isWindowVisible ? <IconEye /> : <IconEyeOff />}
-              </button>
+              {config.caption_source !== 'teams' ? (
+                <button
+                    className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 mr-3 ${!isRunning ? 'text-text-muted cursor-not-allowed opacity-50' : (isWindowVisible ? 'text-text-primary' : 'text-text-muted')} ${isRunning ? 'cursor-pointer opacity-100 hover:brightness-110' : ''}`}
+                    onClick={toggleVisibility}
+                    disabled={!isRunning}
+                    title={isWindowVisible ? t("controls.hideWindow") : t("controls.showWindow")}
+                >
+                    {isWindowVisible ? <IconEye /> : <IconEyeOff />}
+                </button>
+              ) : (
+                <div className="h-10 w-10 mr-3" aria-hidden="true" />
+              )}
               <button 
                 className={`h-10 px-5 rounded-[20px] border-none flex items-center gap-2.5 font-bold tracking-[0.5px] cursor-pointer transition-all duration-200 shadow-md hover:-translate-y-0.5 hover:shadow-[0_0_20px_var(--primary-glow)] ${isRunning ? 'bg-bg-secondary border border-error text-error hover:bg-error/10' : 'bg-primary text-black'}`} 
                 onClick={toggleWatcher}
