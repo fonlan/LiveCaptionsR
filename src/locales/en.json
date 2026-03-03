@@ -173,6 +173,7 @@
     "resize": "Resize AI chat sidebar",
     "model": "Model",
     "selectModel": "Select a model",
+    "newSession": "New Chat",
     "inputPlaceholder": "Ask about captured captions...",
     "send": "Send",
     "sending": "Sending...",

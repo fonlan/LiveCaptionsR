@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import remarkGfm from "remark-gfm";
 
 import { AIModel } from "../types";
-import { IconCopy } from "./Icons";
+import { IconCopy, IconPlus } from "./Icons";
 
 export interface AIChatBubble {
   id: string;
@@ -31,6 +31,7 @@ interface ChatSidebarProps {
   addToast: (type: "success" | "error", message: string) => void;
   onInputChange: (value: string) => void;
   onModelChange: (modelId: string) => void;
+  onNewSession: () => void;
   onSend: () => void;
   onResizeStart: MouseEventHandler<HTMLDivElement>;
   onCardReferenceClick: (cardNumber: number) => void;
@@ -118,6 +119,7 @@ export function ChatSidebar({
   addToast,
   onInputChange,
   onModelChange,
+  onNewSession,
   onSend,
   onResizeStart,
   onCardReferenceClick,
@@ -242,18 +244,29 @@ export function ChatSidebar({
 
       <div className="shrink-0 border-t border-border p-3 bg-panel">
         <label className="text-[12px] text-text-secondary block mb-1">{t("chat.model")}</label>
-        <select
-          className="w-full h-9 rounded-lg border border-border bg-input text-text-primary px-3 text-sm outline-none focus:border-primary"
-          value={selectedModelId}
-          onChange={event => onModelChange(event.target.value)}
-        >
-          <option value="">{t("chat.selectModel")}</option>
-          {models.map(model => (
-            <option key={model.id} value={model.id}>
-              {getModelLabel(model)}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            className="flex-1 h-9 rounded-lg border border-border bg-input text-text-primary px-3 text-sm outline-none focus:border-primary"
+            value={selectedModelId}
+            onChange={event => onModelChange(event.target.value)}
+          >
+            <option value="">{t("chat.selectModel")}</option>
+            {models.map(model => (
+              <option key={model.id} value={model.id}>
+                {getModelLabel(model)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="h-9 w-9 shrink-0 rounded-lg border border-border bg-card text-text-secondary cursor-pointer transition-all hover:bg-card-hover hover:text-text-primary flex items-center justify-center"
+            onClick={onNewSession}
+            title={t("chat.newSession")}
+            aria-label={t("chat.newSession")}
+          >
+            <IconPlus size={14} />
+          </button>
+        </div>
 
         <div className="relative mt-2">
           <textarea

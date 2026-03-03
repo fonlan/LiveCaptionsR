@@ -173,6 +173,7 @@
     "resize": "调整 AI 对话侧边栏宽度",
     "model": "模型",
     "selectModel": "请选择模型",
+    "newSession": "新建会话",
     "inputPlaceholder": "基于已捕获字幕提问...",
     "send": "发送",
     "sending": "发送中...",

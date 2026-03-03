@@ -307,6 +307,7 @@ function App() {
   const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const chatCardJumpTimerRef = useRef<number | null>(null);
   const chatCardHighlightClearTimerRef = useRef<number | null>(null);
+  const chatActiveRequestIdRef = useRef<string | null>(null);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
   const autoFollowRef = useRef<boolean>(true);
   const lastScrollTopRef = useRef<number>(0);
@@ -856,6 +857,8 @@ function App() {
   }, [config.ai_models, config.summary_provider]);
 
   useEffect(() => {
+    chatActiveRequestIdRef.current = null;
+    setIsChatSending(false);
     setChatMessages([]);
     setChatInput("");
     setHighlightedCardId(null);
@@ -1749,6 +1752,7 @@ function App() {
     const cardsSnapshot = buildChatCardsSnapshot();
     const userMessageId = generateId();
     const assistantMessageId = generateId();
+    const requestId = generateId();
 
     setChatInput("");
     setChatMessages(prev => [
@@ -1756,6 +1760,7 @@ function App() {
       { id: userMessageId, role: "user", content: question, status: "done" },
       { id: assistantMessageId, role: "assistant", content: "", status: "loading" },
     ]);
+    chatActiveRequestIdRef.current = requestId;
     setIsChatSending(true);
 
     try {
@@ -1765,6 +1770,10 @@ function App() {
         cards: cardsSnapshot,
       });
 
+      if (chatActiveRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setChatMessages(prev =>
         prev.map(message =>
           message.id === assistantMessageId
@@ -1773,6 +1782,10 @@ function App() {
         )
       );
     } catch (err) {
+      if (chatActiveRequestIdRef.current !== requestId) {
+        return;
+      }
+
       const errorMessage = `${t("chat.errorPrefix")} ${String(err)}`;
       setChatMessages(prev =>
         prev.map(message =>
@@ -1782,8 +1795,19 @@ function App() {
         )
       );
     } finally {
-      setIsChatSending(false);
+      if (chatActiveRequestIdRef.current === requestId) {
+        chatActiveRequestIdRef.current = null;
+        setIsChatSending(false);
+      }
     }
+  };
+
+  const handleStartNewChatSession = () => {
+    chatActiveRequestIdRef.current = null;
+    setIsChatSending(false);
+    setChatMessages([]);
+    setChatInput("");
+    setHighlightedCardId(null);
   };
 
   const handleTranslateSession = async (targetLang: string, providerOverride?: string) => {
@@ -2045,6 +2069,7 @@ function App() {
               addToast={addToast}
               onInputChange={setChatInput}
               onModelChange={setChatModelId}
+              onNewSession={handleStartNewChatSession}
               onSend={() => void handleSendChatMessage()}
               onResizeStart={handleChatSidebarResizeStart}
               onCardReferenceClick={handleChatCardReferenceClick}
