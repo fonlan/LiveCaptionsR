@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 mod db;
@@ -1194,6 +1194,61 @@ fn duration_to_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+fn handoff_startup_windows(app: &AppHandle, handoff_source: &'static str) {
+    let app_handle = app.clone();
+    if let Err(err) = app.run_on_main_thread(move || {
+        if let Some(main_window) = app_handle.get_webview_window("main") {
+            if let Err(show_err) = main_window.show() {
+                warn!(
+                    source = handoff_source,
+                    error = %show_err,
+                    "[startup] failed to show main window"
+                );
+            }
+            if let Err(focus_err) = main_window.set_focus() {
+                warn!(
+                    source = handoff_source,
+                    error = %focus_err,
+                    "[startup] failed to focus main window"
+                );
+            }
+        } else {
+            warn!(
+                source = handoff_source,
+                "[startup] main window missing during startup handoff"
+            );
+        }
+
+        if let Some(splash_window) = app_handle.get_webview_window("splashscreen") {
+            if let Err(hide_err) = splash_window.hide() {
+                warn!(
+                    source = handoff_source,
+                    error = %hide_err,
+                    "[startup] failed to hide splash window"
+                );
+            }
+            if let Err(close_err) = splash_window.close() {
+                warn!(
+                    source = handoff_source,
+                    error = %close_err,
+                    "[startup] failed to close splash window"
+                );
+            }
+        } else {
+            debug!(
+                source = handoff_source,
+                "[startup] splash window already absent during handoff"
+            );
+        }
+    }) {
+        warn!(
+            source = handoff_source,
+            error = %err,
+            "[startup] failed to schedule startup handoff on main thread"
+        );
+    }
+}
+
 #[tauri::command]
 fn log_startup_metric(
     frontend_init_ms: u64,
@@ -1217,14 +1272,7 @@ fn log_startup_metric(
         "[startup] frontend init completed"
     );
 
-    if let Some(main_window) = app.get_webview_window("main") {
-        let _ = main_window.show();
-        let _ = main_window.set_focus();
-    }
-
-    if let Some(splash_window) = app.get_webview_window("splashscreen") {
-        let _ = splash_window.close();
-    }
+    handoff_startup_windows(&app, "frontend_metric");
 
     Ok(())
 }
@@ -1342,14 +1390,11 @@ pub fn run() {
             let app_handle_for_fallback = app_handle.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(10));
-                if let Some(splash_window) =
-                    app_handle_for_fallback.get_webview_window("splashscreen")
+                if app_handle_for_fallback
+                    .get_webview_window("splashscreen")
+                    .is_some()
                 {
-                    let _ = splash_window.close();
-                    if let Some(main_window) = app_handle_for_fallback.get_webview_window("main") {
-                        let _ = main_window.show();
-                        let _ = main_window.set_focus();
-                    }
+                    handoff_startup_windows(&app_handle_for_fallback, "fallback_timeout");
                     info!(
                         fallback_timeout_ms = 10_000_u64,
                         "[startup] splash fallback triggered"
