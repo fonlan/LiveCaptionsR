@@ -169,7 +169,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
           <span>{card.user}</span>
         </div>
       )}
-      <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4]">{card.original}</div>
+      <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4] select-text">{card.original}</div>
       {shouldShowTranslation && (
         <>
           {displayStatus === "translating" ? (
@@ -179,10 +179,10 @@ const CaptionCardItem = memo(function CaptionCardItem({
               <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-[typing_1.4s_infinite_ease-in-out_both]"></span>
             </div>
           ) : displayTranslated ? (
-            <div className="text-base text-text-primary font-medium leading-normal">{displayTranslated}</div>
+            <div className="text-base text-text-primary font-medium leading-normal select-text">{displayTranslated}</div>
           ) : (
             <div className="flex items-center justify-between mt-1">
-              <span className="text-[13px] text-error">{t("translation.failed")}</span>
+              <span className="text-[13px] text-error select-text">{t("translation.failed")}</span>
               <button
                 className="bg-transparent border-none text-text-secondary cursor-pointer p-1 hover:text-primary disabled:opacity-50"
                 onClick={() => onRetryTranslation(card.id, card.original)}
@@ -342,7 +342,7 @@ export const CaptionsList = memo(function CaptionsList({
       {bottomSpacerHeight > 0 && <div aria-hidden="true" style={{ height: `${bottomSpacerHeight}px` }} />}
       {partialText && (!cards.length || cards[cards.length - 1].original !== partialText) && (
         <div className="bg-primary-dim rounded-lg p-3 border-l-[3px] border-primary transition-colors duration-200 animate-slide-in relative mb-3">
-          <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4]">{partialText}</div>
+          <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4] select-text">{partialText}</div>
           <div className="text-base text-primary animate-pulse">...</div>
         </div>
       )}
