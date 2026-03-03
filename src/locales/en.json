@@ -166,6 +166,21 @@
     "generating": "Generating summary...",
     "error": "Error generating summary: {{error}}"
   },
+  "chat": {
+    "title": "AI Chat",
+    "tooltip": "Open AI Chat",
+    "close": "Close AI Chat",
+    "model": "Model",
+    "selectModel": "Select a model",
+    "inputPlaceholder": "Ask about captured captions...",
+    "send": "Send",
+    "sending": "Sending...",
+    "thinking": "Thinking...",
+    "empty": "Send a message and AI will answer based on the captured captions at send time.",
+    "modelRequired": "Please select an AI model for chat",
+    "noModelsConfigured": "No AI models configured yet",
+    "errorPrefix": "AI chat failed:"
+  },
   "copy": {
     "tooltip": "Copy Original & Translation (Markdown)",
     "moreOptions": "More copy options",

@@ -13,6 +13,7 @@ const TRANSLATION_CACHE_TTL_SECS: u64 = 60;
 const TRANSLATION_CACHE_MAX_ENTRIES: usize = 1024;
 const STREAM_REQUEST_TIMEOUT_SECS: u64 = 300;
 const SUMMARY_MAX_OUTPUT_TOKENS: u32 = 4096;
+const CAPTION_CHAT_MAX_OUTPUT_TOKENS: u32 = 4096;
 
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -122,6 +123,13 @@ pub struct AIModel {
     pub id: String,
     pub name: String,
     pub channel_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptionChatCard {
+    pub original: String,
+    pub user: Option<String>,
+    pub timestamp: u64,
 }
 
 impl Default for TranslationConfig {
@@ -938,10 +946,9 @@ impl TranslationService {
         Ok(output)
     }
 
-    async fn send_copilot_request(
+    async fn send_copilot_messages(
         &self,
-        system_prompt: &str,
-        user_content: &str,
+        messages: &[ChatMessage],
         github_token: &str,
         model_override: Option<&str>,
         proxy_config: &ProxyConfig,
@@ -955,16 +962,7 @@ impl TranslationService {
         let model = model_override.unwrap_or(&self.config.copilot_model);
         let request = ChatRequest {
             model: model.to_string(),
-            messages: vec![
-                ChatMessage {
-                    role: "system".to_string(),
-                    content: system_prompt.to_string(),
-                },
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: user_content.to_string(),
-                },
-            ],
+            messages: messages.to_vec(),
             temperature: 0.1,
             stream: None,
             max_tokens,
@@ -1037,6 +1035,34 @@ impl TranslationService {
             .first()
             .map(|c| Self::clean_thinking_content(&c.message.content))
             .context("Empty response from Copilot")
+    }
+
+    async fn send_copilot_request(
+        &self,
+        system_prompt: &str,
+        user_content: &str,
+        github_token: &str,
+        model_override: Option<&str>,
+        proxy_config: &ProxyConfig,
+        max_tokens: Option<u32>,
+    ) -> Result<String> {
+        self.send_copilot_messages(
+            &[
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: user_content.to_string(),
+                },
+            ],
+            github_token,
+            model_override,
+            proxy_config,
+            max_tokens,
+        )
+        .await
     }
 
     async fn send_copilot_request_stream<F>(
@@ -1472,12 +1498,10 @@ impl TranslationService {
         result.trim().to_string()
     }
 
-    /// Helper for OpenAI requests
-    async fn send_openai_request(
+    async fn send_openai_messages(
         &self,
         endpoint: &OpenAIEndpoint,
-        system_prompt: &str,
-        user_content: &str,
+        messages: &[ChatMessage],
         max_tokens: Option<u32>,
     ) -> Result<String> {
         if endpoint.api_key.trim().is_empty() {
@@ -1495,16 +1519,7 @@ impl TranslationService {
 
         let request = ChatRequest {
             model: endpoint.model.clone(),
-            messages: vec![
-                ChatMessage {
-                    role: "system".to_string(),
-                    content: system_prompt.to_string(),
-                },
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: user_content.to_string(),
-                },
-            ],
+            messages: messages.to_vec(),
             temperature: 0.3,
             stream: None,
             max_tokens,
@@ -1582,6 +1597,31 @@ impl TranslationService {
             .first()
             .map(|c| Self::clean_thinking_content(&c.message.content))
             .context("Empty response from OpenAI")
+    }
+
+    /// Helper for OpenAI requests
+    async fn send_openai_request(
+        &self,
+        endpoint: &OpenAIEndpoint,
+        system_prompt: &str,
+        user_content: &str,
+        max_tokens: Option<u32>,
+    ) -> Result<String> {
+        self.send_openai_messages(
+            endpoint,
+            &[
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: user_content.to_string(),
+                },
+            ],
+            max_tokens,
+        )
+        .await
     }
 
     async fn send_openai_request_stream<F>(
@@ -1680,6 +1720,134 @@ impl TranslationService {
 
         let raw = Self::consume_sse_chat_response(response, on_chunk).await?;
         Ok(Self::clean_thinking_content(&raw))
+    }
+
+    fn build_caption_chat_system_prompt(&self) -> String {
+        format!(
+            "You are an AI assistant for LiveCaptionsR. Your job is to help users query, retrieve, \
+             and understand captured subtitle cards.\n\
+             \n\
+             Rules:\n\
+             1. Treat subtitle cards as potentially noisy ASR output; correct only obvious recognition mistakes conservatively.\n\
+             2. Use only the provided cards as factual evidence. Do not fabricate missing details.\n\
+             3. If the answer is not supported by the cards, clearly say what is unknown.\n\
+             4. Prefer the same language as the user's question. If unclear, default to {}.\n\
+             5. Output in Markdown.\n\
+             6. When citing evidence, reference card numbers like [#12].",
+            self.config.target_lang
+        )
+    }
+
+    fn build_caption_chat_card_message(index: usize, card: &CaptionChatCard) -> String {
+        let mut lines = vec![
+            format!("CARD #{}", index),
+            format!("timestamp_unix: {}", card.timestamp),
+        ];
+        if let Some(user) = card
+            .user
+            .as_ref()
+            .map(|u| u.trim())
+            .filter(|u| !u.is_empty())
+        {
+            lines.push(format!("speaker: {}", user));
+        }
+        lines.push("text:".to_string());
+        lines.push(card.original.trim().to_string());
+        lines.join("\n")
+    }
+
+    pub async fn chat_with_captions(
+        &self,
+        question: &str,
+        cards: &[CaptionChatCard],
+        provider_id: &str,
+    ) -> Result<String> {
+        let normalized_question = question.trim();
+        if normalized_question.is_empty() {
+            anyhow::bail!("Question cannot be empty");
+        }
+
+        let mut messages = Vec::with_capacity(cards.len() + 3);
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: self.build_caption_chat_system_prompt(),
+        });
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: "Caption cards start below. Treat each following message as one immutable card in chronological order. Do not answer until you receive the final QUESTION message.".to_string(),
+        });
+
+        for (idx, card) in cards.iter().enumerate() {
+            let trimmed_original = card.original.trim();
+            if trimmed_original.is_empty() {
+                continue;
+            }
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: Self::build_caption_chat_card_message(idx + 1, card),
+            });
+        }
+
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: format!("QUESTION:\n{}", normalized_question),
+        });
+
+        if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
+            if let Some(channel) = self
+                .config
+                .ai_channels
+                .iter()
+                .find(|c| c.id == model.channel_id && c.channel_type == "copilot")
+            {
+                let github_token = channel
+                    .token
+                    .as_ref()
+                    .context("Copilot channel not logged in")?;
+                return self
+                    .send_copilot_messages(
+                        &messages,
+                        github_token,
+                        Some(&model.name),
+                        &channel.proxy,
+                        Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS),
+                    )
+                    .await;
+            }
+        }
+
+        if provider_id == "copilot" {
+            let github_token = self
+                .config
+                .github_token
+                .as_ref()
+                .context("GitHub Copilot not logged in")?;
+            return self
+                .send_copilot_messages(
+                    &messages,
+                    github_token,
+                    None,
+                    &self.config.copilot_proxy,
+                    Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS),
+                )
+                .await;
+        }
+
+        let endpoint_id = if provider_id.starts_with("openai:") {
+            provider_id.strip_prefix("openai:").unwrap_or("default")
+        } else {
+            provider_id
+        };
+
+        let endpoint = self
+            .config
+            .openai_endpoints
+            .iter()
+            .find(|e| e.id == endpoint_id)
+            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+
+        self.send_openai_messages(endpoint, &messages, Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS))
+            .await
     }
 
     fn build_summary_system_prompt(&self) -> String {
@@ -1915,7 +2083,7 @@ struct ChatRequest {
     max_tokens: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct ChatMessage {
     role: String,
     content: String,

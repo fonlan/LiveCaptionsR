@@ -26,6 +26,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
   - Save and load caption sessions.
   - Sessions keep full card history during capture (no fixed 200-card cap).
   - Session summaries using AI (OpenAI or Copilot), streamed in real time.
+  - AI chat sidebar for asking questions about captured cards with Markdown-rendered answers.
 
 - **Modern UI**:
   - Dark mode Cyber-noir aesthetic.
@@ -120,18 +121,20 @@ Each provider has independent proxy settings:
 - **Hide System LiveCaptions Window**: Keeps the native caption bar hidden while capturing.
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
 - **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output.
+- **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, and sends all captured original cards (Teams speaker names included when available) with each question.
 
 ## 🛠️ Architecture
 
 - **Frontend**: React + TypeScript + Vite
   - Handles UI, settings, caption segmentation, and display logic.
   - Calculates text similarity for deduplication.
+  - Includes `ChatSidebar.tsx` for caption-grounded AI Q&A with Markdown rendering.
 
 - **Backend**: Rust (Tauri)
   - `livecaptions.rs`: Manages Windows UI Automation and LiveCaptions process control.
   - `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation.
-  - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot).
-  - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`, `summary-stream`), including session-level summarization from persisted history.
+  - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot), summary generation, and caption-chat completion routing.
+  - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`, `summary-stream`), including session-level summarization and AI chat from captured cards.
 
 ## 🔍 Troubleshooting
 

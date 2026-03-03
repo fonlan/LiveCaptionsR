@@ -18,8 +18,8 @@ use error::AppError;
 use state::AppState;
 use teams::TeamsWindowInfo;
 use translation::{
-    CopilotModel, OpenAIEndpoint, ProxyConfig, TranslationConfig, TranslationProvider,
-    TranslationService,
+    CaptionChatCard, CopilotModel, OpenAIEndpoint, ProxyConfig, TranslationConfig,
+    TranslationProvider, TranslationService,
 };
 
 // Simple raw caption event - just the text from LiveCaptions
@@ -749,6 +749,23 @@ async fn summarize_session_by_id_stream(
     Ok(())
 }
 
+#[tauri::command]
+async fn chat_with_captions(
+    provider_id: String,
+    question: String,
+    cards: Vec<CaptionChatCard>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
+    match svc
+        .chat_with_captions(&question, &cards, &provider_id)
+        .await
+    {
+        Ok(response) => Ok(response),
+        Err(e) => Err(AppError::Runtime(format!("AI chat error: {}", e))),
+    }
+}
+
 /// Start caption watcher - simplified to only emit raw text
 #[tauri::command]
 async fn start_caption_watcher(
@@ -1348,6 +1365,7 @@ pub fn run() {
             translate_text_async,
             summarize_session_by_id,
             summarize_session_by_id_stream,
+            chat_with_captions,
             set_always_on_top,
             create_session,
             save_session_data,

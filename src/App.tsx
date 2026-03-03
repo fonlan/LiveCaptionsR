@@ -43,10 +43,12 @@ import {
   IconPin,
   IconEye,
   IconEyeOff,
+  IconMessageSquare,
 } from "./components/Icons";
 import { Sidebar } from "./components/Sidebar";
 import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
+import { AIChatBubble, ChatSidebar } from "./components/ChatSidebar";
 import {
   shouldOverwrite,
   getLatestCaption,
@@ -108,6 +110,12 @@ type SummaryStreamEvent = {
   chunk?: string | null;
   full_text?: string | null;
   error?: string | null;
+};
+
+type CaptionChatCardInput = {
+  original: string;
+  user?: string;
+  timestamp: number;
 };
 
 type PendingTranslationRequest = {
@@ -228,6 +236,11 @@ function App() {
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
   const [summaryText, setSummaryText] = useState<string>("");
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
+  const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
+  const [chatMessages, setChatMessages] = useState<AIChatBubble[]>([]);
+  const [chatInput, setChatInput] = useState<string>("");
+  const [chatModelId, setChatModelId] = useState<string>("");
+  const [isChatSending, setIsChatSending] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
@@ -816,6 +829,26 @@ function App() {
   useEffect(() => {
     configRef.current = config;
   }, [config]);
+
+  useEffect(() => {
+    setChatModelId(prev => {
+      if (prev && config.ai_models.some(model => model.id === prev)) {
+        return prev;
+      }
+
+      const summaryProvider = config.summary_provider?.trim();
+      if (summaryProvider && config.ai_models.some(model => model.id === summaryProvider)) {
+        return summaryProvider;
+      }
+
+      return config.ai_models[0]?.id || "";
+    });
+  }, [config.ai_models, config.summary_provider]);
+
+  useEffect(() => {
+    setChatMessages([]);
+    setChatInput("");
+  }, [activeSessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1517,6 +1550,75 @@ function App() {
     }
   };
 
+  const getAIModelLabel = (modelId: string): string => {
+    const model = config.ai_models.find(item => item.id === modelId);
+    if (!model) return modelId;
+    const channel = config.ai_channels.find(item => item.id === model.channel_id);
+    return `${model.name} (${channel?.name || 'Unknown'})`;
+  };
+
+  const buildChatCardsSnapshot = (): CaptionChatCardInput[] => {
+    return cardsRef.current
+      .filter(card => card.original.trim().length > 0)
+      .map(card => ({
+        original: card.original,
+        user: card.user,
+        timestamp: card.timestamp,
+      }));
+  };
+
+  const handleSendChatMessage = async () => {
+    if (isChatSending) return;
+
+    const question = chatInput.trim();
+    if (!question) return;
+
+    const providerId = chatModelId.trim();
+    if (!providerId) {
+      addToast('error', t("chat.modelRequired"));
+      return;
+    }
+
+    const cardsSnapshot = buildChatCardsSnapshot();
+    const userMessageId = generateId();
+    const assistantMessageId = generateId();
+
+    setChatInput("");
+    setChatMessages(prev => [
+      ...prev,
+      { id: userMessageId, role: "user", content: question, status: "done" },
+      { id: assistantMessageId, role: "assistant", content: "", status: "loading" },
+    ]);
+    setIsChatSending(true);
+
+    try {
+      const response = await invoke<string>("chat_with_captions", {
+        providerId,
+        question,
+        cards: cardsSnapshot,
+      });
+
+      setChatMessages(prev =>
+        prev.map(message =>
+          message.id === assistantMessageId
+            ? { ...message, content: response, status: "done" }
+            : message
+        )
+      );
+    } catch (err) {
+      const errorMessage = `${t("chat.errorPrefix")} ${String(err)}`;
+      setChatMessages(prev =>
+        prev.map(message =>
+          message.id === assistantMessageId
+            ? { ...message, content: errorMessage, status: "error" }
+            : message
+        )
+      );
+    } finally {
+      setIsChatSending(false);
+    }
+  };
+
   const handleTranslateSession = async (targetLang: string, providerOverride?: string) => {
     if (cards.length === 0) return;
 
@@ -1727,25 +1829,53 @@ function App() {
               >
                 <IconLanguages />
               </button>
+              <button
+                className={`bg-transparent border-none text-text-muted p-2 rounded-full transition-all flex items-center justify-center ${config.ai_models.length > 0 ? 'cursor-pointer text-text-secondary hover:bg-card-hover hover:text-text-primary' : 'cursor-not-allowed'} ${isChatOpen ? 'bg-card-hover text-text-primary' : ''}`}
+                onClick={() => {
+                  if (config.ai_models.length === 0) {
+                    addToast('error', t("chat.noModelsConfigured"));
+                    return;
+                  }
+                  setIsChatOpen(prev => !prev);
+                }}
+                title={t("chat.tooltip")}
+              >
+                <IconMessageSquare />
+              </button>
             </div>
           </div>
 
-          <div
-            className="flex-1 overflow-y-auto p-4 flex flex-col"
-            ref={scrollContainerRef}
-            onWheel={handleScrollWheel}
-            style={{ overflowAnchor: 'none' }}
-          >
-            <CaptionsList
-              cards={cards}
-              hasActiveSession={!!activeSessionId}
-              onRetryTranslation={retryTranslation}
-              partialText={partialText}
-              scrollTop={listScrollTop}
-              viewportHeight={listViewportHeight}
-              tempTranslations={tempTranslations}
+          <div className="flex-1 overflow-hidden relative">
+            <div
+              className={`h-full overflow-y-auto p-4 flex flex-col transition-[padding-right] duration-300 ${isChatOpen ? 'pr-[436px]' : ''}`}
+              ref={scrollContainerRef}
+              onWheel={handleScrollWheel}
+              style={{ overflowAnchor: 'none' }}
+            >
+              <CaptionsList
+                cards={cards}
+                hasActiveSession={!!activeSessionId}
+                onRetryTranslation={retryTranslation}
+                partialText={partialText}
+                scrollTop={listScrollTop}
+                viewportHeight={listViewportHeight}
+                tempTranslations={tempTranslations}
+              />
+              <div ref={historyEndRef} />
+            </div>
+            <ChatSidebar
+              isOpen={isChatOpen}
+              messages={chatMessages}
+              input={chatInput}
+              isSending={isChatSending}
+              models={config.ai_models}
+              selectedModelId={chatModelId}
+              onClose={() => setIsChatOpen(false)}
+              onInputChange={setChatInput}
+              onModelChange={setChatModelId}
+              onSend={() => void handleSendChatMessage()}
+              getModelLabel={model => getAIModelLabel(model.id)}
             />
-            <div ref={historyEndRef} />
           </div>
 
           <footer className="h-[60px] bg-panel border-t border-border flex items-center justify-between px-6 relative z-10">

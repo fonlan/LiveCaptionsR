@@ -166,6 +166,21 @@
     "generating": "生成摘要中...",
     "error": "生成摘要错误: {{error}}"
   },
+  "chat": {
+    "title": "AI 对话",
+    "tooltip": "打开 AI 对话",
+    "close": "关闭 AI 对话",
+    "model": "模型",
+    "selectModel": "请选择模型",
+    "inputPlaceholder": "基于已捕获字幕提问...",
+    "send": "发送",
+    "sending": "发送中...",
+    "thinking": "思考中...",
+    "empty": "发送消息后，AI 会基于发送时已捕获的字幕内容回答。",
+    "modelRequired": "请先选择 AI 对话模型",
+    "noModelsConfigured": "尚未配置 AI 模型",
+    "errorPrefix": "AI 对话失败:"
+  },
   "copy": {
     "tooltip": "复制原文和译文 (Markdown)",
     "moreOptions": "更多复制选项",
