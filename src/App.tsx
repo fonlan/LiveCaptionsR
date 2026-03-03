@@ -5,6 +5,7 @@ import {
   useReducer,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type WheelEvent as ReactWheelEvent
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -72,6 +73,9 @@ const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
+const CHAT_SIDEBAR_DEFAULT_WIDTH = 420;
+const CHAT_SIDEBAR_MIN_WIDTH = 320;
+const CHAT_SIDEBAR_MAX_WIDTH = 920;
 
 const SettingsForm = lazy(async () => {
   const module = await import("./components/settings/SettingsForm");
@@ -241,6 +245,8 @@ function App() {
   const [chatInput, setChatInput] = useState<string>("");
   const [chatModelId, setChatModelId] = useState<string>("");
   const [isChatSending, setIsChatSending] = useState<boolean>(false);
+  const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
+  const [isChatSidebarResizing, setIsChatSidebarResizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
@@ -297,6 +303,7 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
+  const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
   const autoFollowRef = useRef<boolean>(true);
   const lastScrollTopRef = useRef<number>(0);
@@ -849,6 +856,46 @@ function App() {
     setChatMessages([]);
     setChatInput("");
   }, [activeSessionId]);
+
+  useEffect(() => {
+    const handleWindowResize = () => {
+      setChatSidebarWidth(prev => clampChatSidebarWidth(prev));
+    };
+
+    handleWindowResize();
+    window.addEventListener("resize", handleWindowResize);
+    return () => {
+      window.removeEventListener("resize", handleWindowResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isChatSidebarResizing) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const resizeState = chatSidebarResizeRef.current;
+      if (!resizeState) return;
+      const deltaX = resizeState.startX - event.clientX;
+      setChatSidebarWidth(clampChatSidebarWidth(resizeState.startWidth + deltaX));
+    };
+
+    const handleMouseUp = () => {
+      setIsChatSidebarResizing(false);
+      chatSidebarResizeRef.current = null;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [isChatSidebarResizing]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1557,6 +1604,21 @@ function App() {
     return `${model.name} (${channel?.name || 'Unknown'})`;
   };
 
+  const clampChatSidebarWidth = (value: number): number => {
+    const viewportMax = Math.floor(window.innerWidth * 0.85);
+    const maxWidth = Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(CHAT_SIDEBAR_MAX_WIDTH, viewportMax));
+    return Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(maxWidth, Math.round(value)));
+  };
+
+  const handleChatSidebarResizeStart = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    chatSidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: chatSidebarWidth,
+    };
+    setIsChatSidebarResizing(true);
+  };
+
   const buildChatCardsSnapshot = (): CaptionChatCardInput[] => {
     return cardsRef.current
       .filter(card => card.original.trim().length > 0)
@@ -1847,10 +1909,13 @@ function App() {
 
           <div className="flex-1 overflow-hidden relative">
             <div
-              className={`h-full overflow-y-auto p-4 flex flex-col transition-[padding-right] duration-300 ${isChatOpen ? 'pr-[436px]' : ''}`}
+              className="h-full overflow-y-auto p-4 flex flex-col transition-[padding-right] duration-300"
               ref={scrollContainerRef}
               onWheel={handleScrollWheel}
-              style={{ overflowAnchor: 'none' }}
+              style={{
+                overflowAnchor: 'none',
+                paddingRight: isChatOpen ? `${chatSidebarWidth + 16}px` : undefined,
+              }}
             >
               <CaptionsList
                 cards={cards}
@@ -1865,15 +1930,17 @@ function App() {
             </div>
             <ChatSidebar
               isOpen={isChatOpen}
+              width={chatSidebarWidth}
               messages={chatMessages}
               input={chatInput}
               isSending={isChatSending}
               models={config.ai_models}
               selectedModelId={chatModelId}
-              onClose={() => setIsChatOpen(false)}
+              addToast={addToast}
               onInputChange={setChatInput}
               onModelChange={setChatModelId}
               onSend={() => void handleSendChatMessage()}
+              onResizeStart={handleChatSidebarResizeStart}
               getModelLabel={model => getAIModelLabel(model.id)}
             />
           </div>
