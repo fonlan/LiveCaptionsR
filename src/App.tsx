@@ -669,7 +669,11 @@ function App() {
   };
 
   const handleSelectSession = async (id: string) => {
-    if (isRunning) {
+    if (!id || id === activeSessionIdRef.current) {
+      return;
+    }
+
+    if (isRunningRef.current) {
       // Optional: Confirm stop? For now just stop if switching
       // Actually, better to block switching while running or stop automatically
       // Let's stop automatically if they switch manually
@@ -1658,6 +1662,41 @@ function App() {
     }, 1800);
   };
 
+  const clampCardJumpScrollTop = (container: HTMLDivElement, top: number): number => {
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    return Math.max(0, Math.min(maxScrollTop, Math.round(top)));
+  };
+
+  const estimateCardJumpScrollTop = (
+    container: HTMLDivElement,
+    targetIndex: number,
+    totalCards: number,
+  ): number => {
+    if (totalCards <= 1) return 0;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const ratio = targetIndex / Math.max(1, totalCards - 1);
+    return clampCardJumpScrollTop(container, maxScrollTop * ratio - container.clientHeight * 0.45);
+  };
+
+  const collectRenderedCardEntries = (container: HTMLDivElement): Array<{ number: number; element: HTMLElement }> => {
+    return Array.from(container.querySelectorAll<HTMLElement>("[data-card-number]"))
+      .map(element => ({
+        number: Number.parseInt(element.dataset.cardNumber ?? "", 10),
+        element,
+      }))
+      .filter(item => Number.isFinite(item.number) && item.number > 0)
+      .sort((a, b) => a.number - b.number);
+  };
+
+  const triggerCardJumpAnimation = (node: HTMLElement) => {
+    node.classList.remove("chat-card-jump-anim");
+    void node.offsetWidth;
+    node.classList.add("chat-card-jump-anim");
+    window.setTimeout(() => {
+      node.classList.remove("chat-card-jump-anim");
+    }, 1100);
+  };
+
   const handleChatCardReferenceClick = (cardNumber: number) => {
     if (!Number.isInteger(cardNumber) || cardNumber <= 0) {
       return;
@@ -1681,15 +1720,18 @@ function App() {
     }
 
     setAutoFollow(false);
+    autoFollowRef.current = false;
 
     const totalCards = cardsRef.current.length;
-    const maxAttempts = 14;
-    const scrollStepPx = Math.max(Math.round(container.clientHeight * 0.75), 220);
+    const maxAttempts = 48;
+    const targetScrollTop = estimateCardJumpScrollTop(container, targetIndex, totalCards);
+    container.scrollTo({ top: targetScrollTop, behavior: "auto" });
 
     const locateAndScroll = (attempt: number) => {
       const node = container.querySelector<HTMLElement>(`[data-card-number="${cardNumber}"]`);
       if (node) {
         node.scrollIntoView({ behavior: "smooth", block: "center" });
+        triggerCardJumpAnimation(node);
         setJumpHighlightedCard(targetCard.id);
         return;
       }
@@ -1699,39 +1741,45 @@ function App() {
         return;
       }
 
-      const renderedNumbers = Array.from(container.querySelectorAll<HTMLElement>("[data-card-number]"))
-        .map(item => Number.parseInt(item.dataset.cardNumber ?? "", 10))
-        .filter(value => Number.isFinite(value));
+      const renderedEntries = collectRenderedCardEntries(container);
 
-      if (renderedNumbers.length === 0) {
-        const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-        const avgCardHeight = totalCards > 0 ? container.scrollHeight / totalCards : 0;
-        const estimatedTop = Math.max(
-          0,
-          Math.min(
-            maxScrollTop,
-            Math.round(avgCardHeight * targetIndex - container.clientHeight * 0.4),
-          ),
-        );
-        container.scrollTo({ top: estimatedTop, behavior: "auto" });
+      if (renderedEntries.length === 0) {
+        container.scrollTo({
+          top: estimateCardJumpScrollTop(container, targetIndex, totalCards),
+          behavior: "auto",
+        });
       } else {
-        const minVisible = Math.min(...renderedNumbers);
-        const maxVisible = Math.max(...renderedNumbers);
+        const firstVisible = renderedEntries[0];
+        const lastVisible = renderedEntries[renderedEntries.length - 1];
+        const minVisible = firstVisible.number;
+        const maxVisible = lastVisible.number;
+
         if (cardNumber < minVisible) {
-          container.scrollBy({ top: -scrollStepPx, behavior: "auto" });
+          const estimated = estimateCardJumpScrollTop(container, targetIndex, totalCards);
+          const nextTop = container.scrollTop - Math.max(240, Math.abs(container.scrollTop - estimated) * 0.7);
+          container.scrollTo({ top: clampCardJumpScrollTop(container, nextTop), behavior: "auto" });
         } else if (cardNumber > maxVisible) {
-          container.scrollBy({ top: scrollStepPx, behavior: "auto" });
+          const estimated = estimateCardJumpScrollTop(container, targetIndex, totalCards);
+          const nextTop = container.scrollTop + Math.max(240, Math.abs(estimated - container.scrollTop) * 0.7);
+          container.scrollTo({ top: clampCardJumpScrollTop(container, nextTop), behavior: "auto" });
         } else {
-          const midpoint = Math.floor((minVisible + maxVisible) / 2);
-          const nudge = Math.round(scrollStepPx * 0.45);
-          container.scrollBy({ top: cardNumber > midpoint ? nudge : -nudge, behavior: "auto" });
+          const cardSpan = Math.max(1, lastVisible.number - firstVisible.number);
+          const pixelSpan = Math.max(1, lastVisible.element.offsetTop - firstVisible.element.offsetTop);
+          const pixelsPerCard = pixelSpan / cardSpan;
+          const estimatedOffsetTop =
+            firstVisible.element.offsetTop + (cardNumber - firstVisible.number) * pixelsPerCard;
+          const desiredTop = estimatedOffsetTop - container.clientHeight * 0.45;
+          container.scrollTo({
+            top: clampCardJumpScrollTop(container, desiredTop),
+            behavior: "auto",
+          });
         }
       }
 
       chatCardJumpTimerRef.current = window.setTimeout(() => {
         chatCardJumpTimerRef.current = null;
         locateAndScroll(attempt + 1);
-      }, 36);
+      }, 24);
     };
 
     locateAndScroll(0);

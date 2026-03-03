@@ -120,7 +120,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
     <div
       ref={itemRef}
       data-card-number={cardNumber}
-      className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''} ${isHighlighted ? 'bg-card-hover border-primary/80 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]' : ''}`}
+      className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''} ${isHighlighted ? 'chat-card-jump-highlight bg-card-hover border-primary/80 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]' : ''}`}
     >
       {card.user && (
         <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">

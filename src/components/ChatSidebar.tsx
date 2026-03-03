@@ -1,6 +1,16 @@
-import { useEffect, useMemo, useRef, type KeyboardEventHandler, type MouseEventHandler } from "react";
+import {
+  Children,
+  isValidElement,
+  useEffect,
+  useMemo,
+  useRef,
+  type KeyboardEventHandler,
+  type MouseEventHandler,
+  type ReactNode,
+} from "react";
 import Markdown, { type Components } from "react-markdown";
 import { useTranslation } from "react-i18next";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import remarkGfm from "remark-gfm";
 
 import { AIModel } from "../types";
@@ -40,6 +50,65 @@ interface ChatSidebarProps {
 
 const CARD_REFERENCE_SCHEME = "card://";
 const CARD_REFERENCE_PATTERN = /(^|[^\w`\\])#(\d+)\b/g;
+
+const parseCardReferenceFromHref = (href?: string): number | null => {
+  if (!href) return null;
+
+  const trimmedHref = href.trim();
+  const decodedHref = (() => {
+    try {
+      return decodeURIComponent(trimmedHref);
+    } catch {
+      return trimmedHref;
+    }
+  })();
+
+  const match =
+    decodedHref.match(/^card:\/\/\s*(\d+)\b/i)
+    ?? decodedHref.match(/^#\s*(\d+)\b/);
+
+  if (!match) return null;
+
+  const cardNumber = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(cardNumber) || cardNumber <= 0) {
+    return null;
+  }
+
+  return cardNumber;
+};
+
+const flattenNodeText = (node: ReactNode): string => {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return "";
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(item => flattenNodeText(item)).join("");
+  }
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return flattenNodeText(node.props.children);
+  }
+  return "";
+};
+
+const parseCardReferenceFromChildren = (children: ReactNode): number | null => {
+  const text = Children.toArray(children)
+    .map(node => flattenNodeText(node))
+    .join("")
+    .trim();
+
+  const match = text.match(/^#\s*(\d+)\b/);
+  if (!match) return null;
+
+  const cardNumber = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(cardNumber) || cardNumber <= 0) {
+    return null;
+  }
+
+  return cardNumber;
+};
 
 const splitTextIntoCardReferenceNodes = (value: string): MarkdownNode[] => {
   const fragments: MarkdownNode[] = [];
@@ -130,29 +199,45 @@ export function ChatSidebar({
 
   const markdownComponents = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {
-      const match = href?.match(/^card:\/\/(\d+)$/);
-      if (!match) {
+      const cardNumber =
+        parseCardReferenceFromHref(href)
+        ?? parseCardReferenceFromChildren(children);
+      if (cardNumber !== null) {
         return (
-          <a href={href} {...props}>
+          <button
+            type="button"
+            className="inline border-none bg-transparent p-0 text-primary cursor-pointer underline underline-offset-2 hover:opacity-85"
+            onMouseDown={event => event.stopPropagation()}
+            onClick={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              event.nativeEvent.stopImmediatePropagation();
+              onCardReferenceClick(cardNumber);
+            }}
+            title={t("chat.cardRefTitle", { number: cardNumber })}
+          >
             {children}
-          </a>
+          </button>
         );
       }
 
-      const cardNumber = Number.parseInt(match[1], 10);
-      if (!Number.isFinite(cardNumber) || cardNumber <= 0) {
-        return <span>{children}</span>;
-      }
-
       return (
-        <button
-          type="button"
-          className="inline border-none bg-transparent p-0 text-primary cursor-pointer underline underline-offset-2 hover:opacity-85"
-          onClick={() => onCardReferenceClick(cardNumber)}
-          title={t("chat.cardRefTitle", { number: cardNumber })}
+        <a
+          href={href}
+          {...props}
+          onMouseDown={event => event.stopPropagation()}
+          onClick={event => {
+            event.preventDefault();
+            event.stopPropagation();
+            event.nativeEvent.stopImmediatePropagation();
+            if (!href) return;
+            void openUrl(href).catch(err => {
+              console.error("Failed to open chat link:", err);
+            });
+          }}
         >
           {children}
-        </button>
+        </a>
       );
     },
   }), [onCardReferenceClick, t]);

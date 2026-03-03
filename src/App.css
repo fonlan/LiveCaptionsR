@@ -113,3 +113,26 @@
   content-visibility: visible;
   contain-intrinsic-size: auto;
 }
+
+.chat-card-jump-highlight {
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.45), 0 0 0 10px rgba(59, 130, 246, 0.05);
+}
+
+.chat-card-jump-anim {
+  animation: cardJumpFocus 0.95s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes cardJumpFocus {
+  0% {
+    transform: translateY(-8px) scale(0.992);
+    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.85), 0 0 0 0 rgba(59, 130, 246, 0.45);
+  }
+  35% {
+    transform: translateY(0) scale(1.006);
+    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.7), 0 0 0 14px rgba(59, 130, 246, 0.14);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.4), 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
