@@ -64,9 +64,15 @@ pub fn save_session(session: &Session) -> anyhow::Result<()> {
     let mut conn = db::get_connection()?;
     let tx = conn.transaction()?;
 
-    // Upsert session
+    // Upsert session without REPLACE semantics. `INSERT OR REPLACE` would delete the
+    // existing row first, triggering FK cascades and unintentionally removing linked
+    // AI chat sessions/messages.
     tx.execute(
-        "INSERT OR REPLACE INTO sessions (id, name, created_at) VALUES (?1, ?2, ?3)",
+        "INSERT INTO sessions (id, name, created_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           created_at = excluded.created_at",
         params![session.id, session.name, session.created_at as i64],
     )?;
 
@@ -308,7 +314,13 @@ pub fn save_ai_chat_session(chat_session: &AIChatSession) -> anyhow::Result<()> 
     let mut existing_messages: HashMap<String, (String, String, String, u64, i64)> = HashMap::new();
     {
         let mut load_stmt = tx.prepare(
-            "SELECT id, role, content, status, created_at, sequence
+            "SELECT
+                CAST(COALESCE(NULLIF(id, ''), printf('legacy-msg-%lld', rowid)) AS TEXT) AS id,
+                CAST(COALESCE(NULLIF(role, ''), 'assistant') AS TEXT) AS role,
+                CAST(COALESCE(content, '') AS TEXT) AS content,
+                CAST(COALESCE(NULLIF(status, ''), 'done') AS TEXT) AS status,
+                CAST(COALESCE(created_at, 0) AS INTEGER) AS created_at,
+                CAST(COALESCE(sequence, rowid) AS INTEGER) AS sequence
              FROM ai_chat_messages
              WHERE chat_session_id = ?1",
         )?;
@@ -388,15 +400,26 @@ pub fn load_ai_chat_session(id: &str) -> anyhow::Result<AIChatSession> {
     let conn = db::get_connection()?;
 
     let (session_id, name, created_at, updated_at): (String, String, i64, i64) = conn.query_row(
-        "SELECT session_id, name, created_at, updated_at
+        "SELECT
+            CAST(COALESCE(session_id, '') AS TEXT) AS session_id,
+            CAST(COALESCE(NULLIF(name, ''), '[Legacy Chat]') AS TEXT) AS name,
+            CAST(COALESCE(created_at, 0) AS INTEGER) AS created_at,
+            CAST(COALESCE(updated_at, created_at, 0) AS INTEGER) AS updated_at
          FROM ai_chat_sessions
-         WHERE id = ?1",
+         WHERE id = ?1
+            OR (id IS NULL AND printf('legacy-chat-%lld', rowid) = ?1)",
         params![id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
 
     let mut stmt = conn.prepare(
-        "SELECT id, role, content, status, created_at
+        "SELECT
+            CAST(COALESCE(NULLIF(id, ''), printf('legacy-msg-%lld', rowid)) AS TEXT) AS id,
+            CAST(COALESCE(NULLIF(role, ''), 'assistant') AS TEXT) AS role,
+            CAST(COALESCE(content, '') AS TEXT) AS content,
+            CAST(COALESCE(NULLIF(status, ''), 'done') AS TEXT) AS status,
+            CAST(COALESCE(created_at, 0) AS INTEGER) AS created_at,
+            CAST(COALESCE(sequence, rowid) AS INTEGER) AS sequence
          FROM ai_chat_messages
          WHERE chat_session_id = ?1
          ORDER BY sequence ASC, created_at ASC",
@@ -408,7 +431,7 @@ pub fn load_ai_chat_session(id: &str) -> anyhow::Result<AIChatSession> {
             role: row.get(1)?,
             content: row.get(2)?,
             status: row.get(3)?,
-            created_at: row.get::<_, i64>(4)? as u64,
+            created_at: row.get::<_, i64>(4)?.max(0) as u64,
         })
     })?;
 
@@ -431,17 +454,17 @@ pub fn list_ai_chat_sessions(session_id: &str) -> anyhow::Result<Vec<AIChatSessi
     let conn = db::get_connection()?;
     let mut stmt = conn.prepare(
         "SELECT
-            s.id,
-            s.session_id,
-            s.name,
-            s.created_at,
-            s.updated_at,
+            CAST(COALESCE(NULLIF(s.id, ''), printf('legacy-chat-%lld', s.rowid)) AS TEXT) AS id,
+            CAST(COALESCE(s.session_id, '') AS TEXT) AS session_id,
+            CAST(COALESCE(NULLIF(s.name, ''), '[Legacy Chat]') AS TEXT) AS name,
+            CAST(COALESCE(s.created_at, 0) AS INTEGER) AS created_at,
+            CAST(COALESCE(s.updated_at, s.created_at, 0) AS INTEGER) AS updated_at,
             COALESCE(
               (
                 SELECT m.content
                 FROM ai_chat_messages m
                 WHERE m.chat_session_id = s.id
-                ORDER BY m.sequence DESC, m.created_at DESC
+                ORDER BY COALESCE(m.sequence, m.rowid) DESC, COALESCE(m.created_at, 0) DESC
                 LIMIT 1
               ),
               ''

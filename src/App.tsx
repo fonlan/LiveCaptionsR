@@ -50,7 +50,7 @@ import {
   IconEyeOff,
   IconMessageSquare,
 } from "./components/Icons";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, SESSION_SIDEBAR_DEFAULT_WIDTH } from "./components/Sidebar";
 import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
 import { ChatSidebar } from "./components/ChatSidebar";
@@ -77,8 +77,8 @@ const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
-const CHAT_SIDEBAR_DEFAULT_WIDTH = 420;
-const CHAT_SIDEBAR_MIN_WIDTH = 280;
+const CHAT_SIDEBAR_DEFAULT_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
+const CHAT_SIDEBAR_MIN_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MAX_WIDTH = 920;
 
 const SettingsForm = lazy(async () => {

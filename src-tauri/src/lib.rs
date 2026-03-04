@@ -1190,24 +1190,49 @@ fn delete_all_sessions_command() -> Result<(), AppError> {
 }
 
 #[tauri::command]
-fn create_ai_chat_session(session_id: String, name: String) -> Result<storage::AIChatSession, AppError> {
+fn create_ai_chat_session(
+    session_id: String,
+    name: String,
+) -> Result<storage::AIChatSession, AppError> {
     info!(session_id = %session_id, chat_name = %name, "Creating AI chat session");
     storage::create_ai_chat_session(&session_id, &name).map_err(AppError::Anyhow)
 }
 
 #[tauri::command]
 fn save_ai_chat_session_data(chat_session: storage::AIChatSession) -> Result<(), AppError> {
-    storage::save_ai_chat_session(&chat_session).map_err(AppError::Anyhow)
+    let chat_session_id = chat_session.id.clone();
+    let translation_session_id = chat_session.session_id.clone();
+    storage::save_ai_chat_session(&chat_session).map_err(|err| {
+        error!(
+            chat_session_id = %chat_session_id,
+            translation_session_id = %translation_session_id,
+            error = %err,
+            "Failed to save AI chat session data"
+        );
+        AppError::Anyhow(err)
+    })
 }
 
 #[tauri::command]
 fn load_ai_chat_session_data(id: String) -> Result<storage::AIChatSession, AppError> {
-    storage::load_ai_chat_session(&id).map_err(AppError::Anyhow)
+    storage::load_ai_chat_session(&id).map_err(|err| {
+        error!(chat_session_id = %id, error = %err, "Failed to load AI chat session data");
+        AppError::Anyhow(err)
+    })
 }
 
 #[tauri::command]
-fn get_ai_chat_sessions(session_id: String) -> Result<Vec<storage::AIChatSessionMetadata>, AppError> {
-    storage::list_ai_chat_sessions(&session_id).map_err(AppError::Anyhow)
+fn get_ai_chat_sessions(
+    session_id: String,
+) -> Result<Vec<storage::AIChatSessionMetadata>, AppError> {
+    storage::list_ai_chat_sessions(&session_id).map_err(|err| {
+        error!(
+            translation_session_id = %session_id,
+            error = %err,
+            "Failed to list AI chat sessions"
+        );
+        AppError::Anyhow(err)
+    })
 }
 
 #[tauri::command]

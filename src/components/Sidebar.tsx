@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { SessionMetadata } from '../types';
 import { IconTrash, IconClock } from './Icons';
 
+export const SESSION_SIDEBAR_DEFAULT_WIDTH = 260;
+
 interface SidebarProps {
   sessions: SessionMetadata[];
   currentId: string | null;
@@ -15,7 +17,10 @@ interface SidebarProps {
 export const Sidebar = memo(function Sidebar({ sessions, currentId, onSelect, onDelete, onClearAll, isOpen }: SidebarProps) {
   const { t } = useTranslation();
   return (
-    <div className={`${isOpen ? 'w-[260px] opacity-100' : 'w-0 opacity-0 border-r-0'} bg-panel border-r border-border flex flex-col shrink-0 transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] z-20 overflow-hidden whitespace-nowrap`}>
+    <div
+      className={`${isOpen ? 'opacity-100' : 'opacity-0 border-r-0'} bg-panel border-r border-border flex flex-col shrink-0 transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] z-20 overflow-hidden whitespace-nowrap`}
+      style={{ width: isOpen ? `${SESSION_SIDEBAR_DEFAULT_WIDTH}px` : '0px' }}
+    >
       <div className="h-[60px] flex items-center justify-between px-4 border-b border-border">
         <h3 className="m-0 text-sm font-semibold text-text-primary uppercase tracking-[0.5px]">{t("sidebar.title")}</h3>
         {sessions.length > 0 && (
