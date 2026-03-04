@@ -14,7 +14,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import remarkGfm from "remark-gfm";
 
 import { AIModel } from "../types";
-import { IconCopy, IconPlus } from "./Icons";
+import { IconCopy, IconPlay, IconPlus, IconSquare } from "./Icons";
 
 export interface AIChatBubble {
   id: string;
@@ -43,6 +43,7 @@ interface ChatSidebarProps {
   onModelChange: (modelId: string) => void;
   onNewSession: () => void;
   onSend: () => void;
+  onStop: () => void;
   onResizeStart: MouseEventHandler<HTMLDivElement>;
   onCardReferenceClick: (cardNumber: number) => void;
   getModelLabel: (model: AIModel) => string;
@@ -190,6 +191,7 @@ export function ChatSidebar({
   onModelChange,
   onNewSession,
   onSend,
+  onStop,
   onResizeStart,
   onCardReferenceClick,
   getModelLabel,
@@ -250,7 +252,7 @@ export function ChatSidebar({
   }, [isOpen, messages]);
 
   const handleInputKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = event => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !isSending) {
       event.preventDefault();
       onSend();
     }
@@ -269,6 +271,8 @@ export function ChatSidebar({
   };
 
   const canSend = input.trim().length > 0 && selectedModelId.trim().length > 0 && !isSending;
+  const canTriggerAction = isSending || canSend;
+  const actionTitle = isSending ? t("controls.stop") : t("chat.send");
 
   return (
     <aside
@@ -362,12 +366,14 @@ export function ChatSidebar({
             placeholder={t("chat.inputPlaceholder")}
           />
           <button
-            className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 px-3 rounded-lg border-none text-xs font-semibold transition-all ${canSend ? "bg-primary text-black cursor-pointer" : "bg-bg-secondary text-text-muted cursor-not-allowed"}`}
-            onClick={onSend}
-            disabled={!canSend}
-            title={t("chat.send")}
+            type="button"
+            className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-lg border-none transition-all flex items-center justify-center ${isSending ? "bg-error text-white cursor-pointer hover:opacity-90" : canSend ? "bg-primary text-black cursor-pointer" : "bg-bg-secondary text-text-muted cursor-not-allowed"}`}
+            onClick={isSending ? onStop : onSend}
+            disabled={!canTriggerAction}
+            title={actionTitle}
+            aria-label={actionTitle}
           >
-            {isSending ? t("chat.sending") : t("chat.send")}
+            {isSending ? <IconSquare size={12} /> : <IconPlay size={14} />}
           </button>
         </div>
       </div>

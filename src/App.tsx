@@ -1876,6 +1876,20 @@ function App() {
     }
   };
 
+  const handleStopChatMessage = () => {
+    if (!isChatSending) return;
+
+    chatActiveRequestIdRef.current = null;
+    setIsChatSending(false);
+    setChatMessages(prev =>
+      prev.map(message =>
+        message.role === "assistant" && message.status === "loading"
+          ? { ...message, content: t("status.stopped"), status: "done" }
+          : message
+      )
+    );
+  };
+
   const handleStartNewChatSession = () => {
     chatActiveRequestIdRef.current = null;
     setIsChatSending(false);
@@ -2146,6 +2160,7 @@ function App() {
               onModelChange={setChatModelId}
               onNewSession={handleStartNewChatSession}
               onSend={() => void handleSendChatMessage()}
+              onStop={handleStopChatMessage}
               onResizeStart={handleChatSidebarResizeStart}
               onCardReferenceClick={handleChatCardReferenceClick}
               getModelLabel={model => getAIModelLabel(model.id)}
