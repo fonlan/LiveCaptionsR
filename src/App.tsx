@@ -2334,10 +2334,10 @@ function App() {
 
         <div className="flex-1 overflow-hidden flex flex-col relative">
           <div
-            className="h-[60px] px-4 flex justify-between items-center border-b border-border bg-panel"
+            className="h-[60px] px-4 flex justify-between items-center border-b border-border bg-panel overflow-hidden"
             onDoubleClick={handleHeaderBlankDoubleClick}
           >
-            <div className="flex items-center">
+            <div className="flex items-center flex-1 min-w-0">
               <button
                 className="bg-transparent border-none text-text-secondary cursor-pointer p-2 rounded-full transition-all flex items-center justify-center hover:bg-card-hover hover:text-text-primary mr-2"
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -2345,12 +2345,12 @@ function App() {
               >
                 <IconList />
               </button>
-              <span className="text-[13px] font-semibold text-text-secondary uppercase tracking-[0.5px] flex items-center gap-2">
+              <span className="text-[13px] font-semibold text-text-secondary uppercase tracking-[0.5px] flex items-center gap-2 min-w-0">
                 <span className={`text-[10px] text-text-muted transition-colors duration-300 ${isRunning ? 'text-success drop-shadow-[0_0_8px_rgba(16,185,129,1)] animate-pulse' : ''}`}>●</span>
                 {isRenaming ? (
                     <input
                       autoFocus
-                      className="bg-transparent border-b border-primary text-text-primary font-semibold p-1 outline-none"
+                      className="bg-transparent border-b border-primary text-text-primary font-semibold p-1 outline-none max-w-full"
                       value={renameValue}
                       onChange={e => setRenameValue(e.target.value)}
                       onBlur={() => { handleRenameSession(renameValue); setIsRenaming(false); }}
@@ -2369,15 +2369,15 @@ function App() {
                           }
                       }}
                       title={activeSessionId ? t("sidebar.renameTooltip") : ""}
-                      className={`transition-colors ${activeSessionId ? 'cursor-text border-b border-dashed border-text-muted hover:text-text-primary' : 'cursor-default'}`}
+                      className={`transition-colors min-w-0 truncate ${activeSessionId ? 'cursor-text border-b border-dashed border-text-muted hover:text-text-primary' : 'cursor-default'}`}
                     >
                       {activeSessionName || t("session.noSession")}
                     </span>
                 )}
-                <span className="opacity-50 ml-2">({cards.length})</span>
+                <span className="opacity-50 ml-2 shrink-0">({cards.length})</span>
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0 pl-2">
               {isSessionTranslating && (
                 <span
                   className="text-xs text-text-secondary px-2 py-1 rounded-md bg-bg-secondary border border-border"
