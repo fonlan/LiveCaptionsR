@@ -325,12 +325,114 @@ impl TeamsWatcher {
         }
     }
 
+    fn is_message_container_class(class_name: &str) -> bool {
+        class_name.starts_with("fui-ChatMessage") || class_name.contains("ui-chat__message")
+    }
+
+    fn normalize_text_fragment(text: &str) -> String {
+        text.replace('\r', " ")
+            .replace('\n', " ")
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+            .trim()
+            .to_string()
+    }
+
+    fn looks_like_speaker(value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed.contains('\n') {
+            return false;
+        }
+
+        if trimmed.chars().count() > 48 {
+            return false;
+        }
+
+        if trimmed.split_whitespace().count() > 8 {
+            return false;
+        }
+
+        !trimmed.chars().any(|c| {
+            matches!(
+                c,
+                '.' | '!' | '?' | ';' | ':' | '。' | '！' | '？' | '；' | '：'
+            )
+        })
+    }
+
+    fn looks_like_content(value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        if trimmed.chars().count() > 48 || trimmed.contains('\n') {
+            return true;
+        }
+
+        trimmed.chars().any(|c| {
+            matches!(
+                c,
+                '.' | '!' | '?' | ',' | ';' | ':' | '。' | '！' | '？' | '，' | '；' | '：'
+            )
+        })
+    }
+
+    fn parse_message_parts(parts: &[String]) -> Option<(Option<String>, String)> {
+        let normalized_parts: Vec<String> = parts
+            .iter()
+            .map(|part| Self::normalize_text_fragment(part))
+            .filter(|part| !part.is_empty())
+            .collect();
+
+        if normalized_parts.is_empty() {
+            return None;
+        }
+
+        if normalized_parts.len() == 1 {
+            return Some((None, normalized_parts[0].clone()));
+        }
+
+        let first = &normalized_parts[0];
+        let second = &normalized_parts[1];
+
+        // Rarely, Teams surfaces content before speaker in a container.
+        if !Self::looks_like_speaker(first)
+            && Self::looks_like_speaker(second)
+            && Self::looks_like_content(first)
+        {
+            let mut content_parts = vec![first.clone()];
+            content_parts.extend(normalized_parts.iter().skip(2).cloned());
+            let content = content_parts.join(" ").trim().to_string();
+            if content.is_empty() {
+                return None;
+            }
+            return Some((Some(second.clone()), content));
+        }
+
+        let content = normalized_parts
+            .iter()
+            .skip(1)
+            .cloned()
+            .collect::<Vec<String>>()
+            .join(" ")
+            .trim()
+            .to_string();
+
+        if content.is_empty() {
+            return None;
+        }
+
+        Some((Some(first.clone()), content))
+    }
+
     /// Get caption text from Teams window
-    /// Returns a flat list of strings: [User1, Content1, User2, Content2, ...]
+    /// Returns ordered messages parsed per chat-message container.
     pub fn get_caption_text(
         &self,
         window: &IUIAutomationElement,
-    ) -> Result<(Vec<String>, Option<IUIAutomationElement>)> {
+    ) -> Result<(Vec<(Option<String>, String)>, Option<IUIAutomationElement>)> {
         unsafe {
             let walker = match self.automation.ControlViewWalker() {
                 Ok(w) => w,
@@ -363,51 +465,54 @@ impl TeamsWatcher {
             const MAX_ELEMENTS: i32 = 5000;
             let limited_count = count.min(MAX_ELEMENTS);
 
-            let mut all_texts: Vec<(String, String)> = Vec::new();
+            let mut container_texts: HashMap<String, Vec<String>> = HashMap::new();
+            let mut container_order: Vec<String> = Vec::new();
             let mut first_container_element: Option<IUIAutomationElement> = None;
 
             for i in 0..limited_count {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let text_element = elements.GetElement(i).ok()?;
 
-                    let text_content = {
-                        let text_pattern_result: Result<
-                            windows::Win32::UI::Accessibility::IUIAutomationTextPattern,
-                            _,
-                        > = text_element.GetCurrentPatternAs(
-                            windows::Win32::UI::Accessibility::UIA_TextPatternId,
-                        );
+                    let text_content = text_element
+                        .CurrentName()
+                        .ok()
+                        .map(|s| s.to_string())
+                        .filter(|text| !text.trim().is_empty())
+                        .or_else(|| {
+                            let text_pattern_result: Result<
+                                windows::Win32::UI::Accessibility::IUIAutomationTextPattern,
+                                _,
+                            > = text_element.GetCurrentPatternAs(
+                                windows::Win32::UI::Accessibility::UIA_TextPatternId,
+                            );
 
-                        if let Ok(text_pattern) = text_pattern_result {
-                            if let Ok(document_range) = text_pattern.DocumentRange() {
-                                document_range.GetText(-1).ok().map(|s| s.to_string())
+                            if let Ok(text_pattern) = text_pattern_result {
+                                if let Ok(document_range) = text_pattern.DocumentRange() {
+                                    document_range.GetText(-1).ok().map(|s| s.to_string())
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             }
-                        } else {
-                            text_element.CurrentName().ok().map(|s| s.to_string())
-                        }
-                    }?;
+                        })?;
 
-                    if text_content.trim().is_empty() {
+                    let normalized_text = Self::normalize_text_fragment(&text_content);
+                    if normalized_text.is_empty() {
                         return None;
                     }
 
                     let mut candidate = walker.GetParentElement(&text_element).ok()?;
                     let mut found_parent = None;
-                    let mut found_class_name = String::new();
 
-                    for _ in 0..4 {
+                    for _ in 0..6 {
                         let class_name = candidate
                             .CurrentClassName()
                             .ok()
                             .map(|s| s.to_string())
                             .unwrap_or_default();
-                        if class_name.starts_with("fui-ChatMessage")
-                            || class_name.contains("ui-chat__message")
-                        {
+                        if Self::is_message_container_class(&class_name) {
                             found_parent = Some(candidate.clone());
-                            found_class_name = class_name;
                             break;
                         }
                         candidate = walker.GetParentElement(&candidate).ok()?;
@@ -422,40 +527,35 @@ impl TeamsWatcher {
                         }
                     }
 
-                    Some((text_content, found_class_name))
+                    let container_id = runtime_id::get_runtime_id_string(&parent);
+                    Some((container_id, normalized_text))
                 }));
 
-                if let Ok(Some((text, class_name))) = result {
-                    all_texts.push((text, class_name));
-                }
-            }
+                if let Ok(Some((container_id, text))) = result {
+                    if !container_texts.contains_key(&container_id) {
+                        container_order.push(container_id.clone());
+                        container_texts.insert(container_id.clone(), Vec::new());
+                    }
 
-            let mut id_counts: HashMap<String, usize> = HashMap::new();
-            for (_text, class_name) in &all_texts {
-                for part in class_name.split_whitespace() {
-                    if part.starts_with("___") {
-                        *id_counts.entry(part.to_string()).or_insert(0) += 1;
-                        break;
+                    if let Some(bucket) = container_texts.get_mut(&container_id) {
+                        let is_duplicate = bucket.last().map(|last| last == &text).unwrap_or(false);
+                        if !is_duplicate {
+                            bucket.push(text);
+                        }
                     }
                 }
             }
 
-            let most_frequent_id = id_counts
-                .iter()
-                .max_by_key(|(_, &count)| count)
-                .map(|(id, _)| id.clone());
+            let mut messages: Vec<(Option<String>, String)> = Vec::new();
+            for container_id in container_order {
+                if let Some(parts) = container_texts.remove(&container_id) {
+                    if let Some((user, content)) = Self::parse_message_parts(&parts) {
+                        messages.push((user, content));
+                    }
+                }
+            }
 
-            let valid_texts: Vec<String> = if let Some(ref valid_id) = most_frequent_id {
-                all_texts
-                    .into_iter()
-                    .filter(|(_text, class_name)| class_name.contains(valid_id))
-                    .map(|(text, _)| text)
-                    .collect()
-            } else {
-                all_texts.into_iter().map(|(text, _)| text).collect()
-            };
-
-            Ok((valid_texts, first_container_element))
+            Ok((messages, first_container_element))
         }
     }
 
@@ -572,9 +672,9 @@ impl TeamsCaptionStream {
         let result = self.watcher.get_caption_text(search_target);
 
         match result {
-            Ok((valid_texts, first_element)) => {
+            Ok((message_pairs, first_element)) => {
                 self.error_count = 0;
-                if !valid_texts.is_empty() && self.caption_parent.is_none() {
+                if !message_pairs.is_empty() && self.caption_parent.is_none() {
                     if let Some(element) = first_element {
                         if let Ok(container) = self.watcher.get_caption_container(&element) {
                             self.caption_parent = Some(container);
@@ -582,35 +682,16 @@ impl TeamsCaptionStream {
                     }
                 }
 
-                if valid_texts.is_empty() {
+                if message_pairs.is_empty() {
                     if self.caption_parent.is_some() {
                         self.caption_parent = None;
                     }
                     return None;
                 }
 
-                let mut message_pairs: Vec<(String, String)> = Vec::new();
-                for pair in valid_texts.chunks(2) {
-                    if pair.len() < 2 {
-                        continue;
-                    }
-                    let user = pair[0].trim().to_string();
-                    let content = pair[1].trim().to_string();
-                    if content.is_empty() {
-                        continue;
-                    }
-                    message_pairs.push((user, content));
-                }
-
-                if message_pairs.is_empty() {
-                    return None;
-                }
-
                 let signatures: Vec<String> = message_pairs
                     .iter()
-                    .map(|(user, content)| {
-                        Self::build_message_signature(Some(user.as_str()), content)
-                    })
+                    .map(|(user, content)| Self::build_message_signature(user.as_deref(), content))
                     .collect();
 
                 const RECOVERY_TAIL_PAIRS: usize = 3;
@@ -630,7 +711,7 @@ impl TeamsCaptionStream {
 
                 for i in start_index..message_pairs.len() {
                     let (user, content) = &message_pairs[i];
-                    self.push_if_new_message(Some(user.clone()), content.clone());
+                    self.push_if_new_message(user.clone(), content.clone());
                 }
 
                 self.last_seen_signature = signatures.last().cloned();

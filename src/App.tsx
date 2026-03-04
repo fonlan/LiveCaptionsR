@@ -304,6 +304,7 @@ function App() {
   const summaryFinalTextRef = useRef("");
 
   const lastFullTextRef = useRef<string>("");
+  const lastCaptionUserRef = useRef<string | null>(null);
   const lastOriginalTextRef = useRef<string>("");
   const lastProcessedCardRef = useRef<SentenceCard | null>(null);
   const pendingTranslationCardIdRef = useRef<string | null>(null); // Teams mode: card waiting for translation
@@ -837,6 +838,7 @@ function App() {
 
       setPartialText("");
       lastFullTextRef.current = "";
+      lastCaptionUserRef.current = null;
       return session.id;
     } catch (e) {
       console.error("Failed to create session:", e);
@@ -904,6 +906,7 @@ function App() {
         lastProcessedCardRef.current = null;
         resetRecentSentenceDedup();
         setPartialText("");
+        lastCaptionUserRef.current = null;
       }
       addToast('success', t("session.deleted"));
     } catch (err) {
@@ -929,6 +932,7 @@ function App() {
       lastProcessedCardRef.current = null;
       resetRecentSentenceDedup();
       setPartialText("");
+      lastCaptionUserRef.current = null;
       
       addToast('success', t("session.deleted"));
     } catch (e) {
@@ -1564,18 +1568,30 @@ function App() {
       if (isFirstCaptionRef.current) {
         isFirstCaptionRef.current = false;
         lastFullTextRef.current = fullText;
+        const initialUser = (user ?? "").trim();
+        lastCaptionUserRef.current = initialUser ? initialUser : null;
         return;
       }
 
       // Teams Mode: Delayed translation strategy with Overwrite support & 3s Timeout
       if (configRef.current.caption_source === 'teams') {
-        if (fullText !== lastFullTextRef.current && fullText.trim()) {
+        const normalizedUser = (user ?? "").trim();
+        const hasKnownSpeaker = normalizedUser.length > 0;
+        const lastUser = (lastCaptionUserRef.current ?? "").trim();
+        const hasSpeakerChanged = hasKnownSpeaker && normalizedUser !== lastUser;
+
+        if ((fullText !== lastFullTextRef.current || hasSpeakerChanged) && fullText.trim()) {
           // Clear any existing 3s timer
           if (translationTimerRef.current) {
             clearTimeout(translationTimerRef.current);
           }
 
           const lastCard = lastProcessedCardRef.current;
+          const lastCardUser = (lastCard?.user ?? "").trim();
+          const continuationUser = hasKnownSpeaker ? normalizedUser : lastCardUser;
+          const sanitizedUser = continuationUser ? continuationUser : undefined;
+          const shouldTreatAsContinuation =
+            !!lastCard && !hasSpeakerChanged && (!hasKnownSpeaker || normalizedUser === lastCardUser) && shouldOverwrite(lastCard.original, fullText);
           
           // Helper to trigger translation for a pending card
           const triggerTranslation = (cardId: string) => {
@@ -1592,16 +1608,16 @@ function App() {
           };
 
           // Check if this is an incremental update (continuation) of the last card
-          if (lastCard && shouldOverwrite(lastCard.original, fullText)) {
+          if (shouldTreatAsContinuation && lastCard) {
             // Update the existing card, but keep status 'success' to hide dots
             dispatchCards({
               type: "patch",
               cardId: lastCard.id,
-              patch: { original: fullText, status: 'success', translated: null },
+              patch: { original: fullText, user: sanitizedUser, status: 'success', translated: null },
             });
             
             pendingTranslationCardIdRef.current = lastCard.id;
-            lastProcessedCardRef.current = { ...lastCard, original: fullText };
+            lastProcessedCardRef.current = { ...lastCard, original: fullText, user: sanitizedUser };
           } else {
             // NEW message bubble or person
             // 1. Immediately trigger translation for the PREVIOUS finalized card
@@ -1617,7 +1633,7 @@ function App() {
               original: fullText,
               translated: null,
               status: 'success', 
-              user,
+              user: sanitizedUser,
               timestamp
             };
 
@@ -1636,6 +1652,9 @@ function App() {
 
           setPartialText(fullText);
           lastFullTextRef.current = fullText;
+          if (hasKnownSpeaker) {
+            lastCaptionUserRef.current = normalizedUser;
+          }
         }
         return;
       }

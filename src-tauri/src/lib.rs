@@ -1033,7 +1033,7 @@ fn start_teams_caption_loop(
         }
     }
 
-    let mut last_text = String::new();
+    let mut last_caption_signature = String::new();
     let base_interval = stream.poll_interval();
     let max_backoff_interval = Duration::from_millis(450);
     let mut idle_polls: u32 = 0;
@@ -1062,10 +1062,13 @@ fn start_teams_caption_loop(
         let mut had_activity = false;
 
         if let Some((user, text)) = stream.get_next_caption() {
-            if text == last_text {
+            let current_signature =
+                format!("{}|{}", user.as_deref().unwrap_or("").trim(), text.trim());
+
+            if current_signature == last_caption_signature {
                 // No effective update, keep backing off progressively
             } else {
-                last_text = text.clone();
+                last_caption_signature = current_signature;
 
                 if text.starts_with("[ERROR]") {
                     let _ = app.emit("caption-error", text);
