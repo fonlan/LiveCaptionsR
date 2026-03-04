@@ -45,6 +45,7 @@ interface CaptionsListProps {
   addToast: (type: "success" | "error", message: string) => void;
   cards: SentenceCard[];
   hasActiveSession: boolean;
+  isTeamsMode: boolean;
   onRetryTranslation: (cardId: string, originalText: string) => void;
   partialText: string;
   scrollTop: number;
@@ -57,6 +58,7 @@ interface CaptionCardItemProps {
   addToast: (type: "success" | "error", message: string) => void;
   card: SentenceCard;
   cardNumber: number;
+  isTeamsMode: boolean;
   isVirtualized?: boolean;
   isHighlighted?: boolean;
   onRetryTranslation: (cardId: string, originalText: string) => void;
@@ -72,6 +74,7 @@ function areCaptionCardItemPropsEqual(
     prev.addToast === next.addToast
     && prev.card === next.card
     && prev.cardNumber === next.cardNumber
+    && prev.isTeamsMode === next.isTeamsMode
     && prev.isHighlighted === next.isHighlighted
     && prev.isVirtualized === next.isVirtualized
     && prev.onMeasuredHeight === next.onMeasuredHeight
@@ -83,6 +86,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
   addToast,
   card,
   cardNumber,
+  isTeamsMode,
   isVirtualized,
   isHighlighted,
   onRetryTranslation,
@@ -133,6 +137,21 @@ const CaptionCardItem = memo(function CaptionCardItem({
     }
   }, [addToast, card.original, displayStatus, displayTranslated, t]);
 
+  const handleCopySpeaker = useCallback(async () => {
+    const speakerName = (card.user ?? "").trim();
+    if (!speakerName) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(speakerName);
+      addToast("success", t("toast.copySuccess"));
+    } catch (err) {
+      console.error("Failed to copy speaker name:", err);
+      addToast("error", t("toast.copyFailed"));
+    }
+  }, [addToast, card.user, t]);
+
   useLayoutEffect(() => {
     if (!onMeasuredHeight) return;
 
@@ -147,7 +166,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
     };
 
     reportHeight();
-  }, [card.id, card.original, card.retrying, displayStatus, displayTranslated, onMeasuredHeight]);
+  }, [card.id, card.original, card.retrying, card.user, displayStatus, displayTranslated, onMeasuredHeight]);
 
   return (
     <div
@@ -155,9 +174,13 @@ const CaptionCardItem = memo(function CaptionCardItem({
       data-card-number={cardNumber}
       className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 pr-11 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''} ${isHighlighted ? 'chat-card-jump-highlight bg-card-hover border-primary/80 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]' : ''}`}
     >
+      <div className="pointer-events-none absolute right-2 top-2 inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/35 px-2 py-0.5 text-[10px] font-semibold leading-none tracking-[0.3px] text-text-muted tabular-nums select-none">
+        <span className="opacity-70">#</span>
+        <span>{cardNumber}</span>
+      </div>
       <button
         type="button"
-        className="absolute right-2 top-2 h-7 w-7 rounded-full border-none flex items-center justify-center text-text-secondary cursor-pointer transition-all hover:bg-card-hover hover:text-text-primary"
+        className="absolute right-2 top-1/2 -translate-y-1/2 h-7 w-7 rounded-full border-none flex items-center justify-center text-text-secondary cursor-pointer transition-all hover:bg-card-hover hover:text-text-primary"
         onClick={() => void handleCopyCard()}
         title={t("copy.cardTooltip")}
       >
@@ -166,7 +189,18 @@ const CaptionCardItem = memo(function CaptionCardItem({
       {card.user && (
         <div className="flex items-center gap-1.5 text-[11px] font-bold text-primary mb-1.5 uppercase tracking-[0.5px] opacity-90">
           <IconUser />
-          <span>{card.user}</span>
+          {isTeamsMode ? (
+            <button
+              type="button"
+              className="bg-transparent border-none p-0 m-0 text-inherit font-inherit uppercase tracking-[0.5px] cursor-pointer transition-colors hover:text-primary/80"
+              onClick={() => void handleCopySpeaker()}
+              title={t("copy.speakerTooltip")}
+            >
+              {card.user}
+            </button>
+          ) : (
+            <span>{card.user}</span>
+          )}
         </div>
       )}
       <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4] select-text">{card.original}</div>
@@ -211,6 +245,7 @@ function areCaptionsListPropsEqual(
   if (prev.addToast !== next.addToast) return false;
   if (prev.cards !== next.cards) return false;
   if (prev.hasActiveSession !== next.hasActiveSession) return false;
+  if (prev.isTeamsMode !== next.isTeamsMode) return false;
   if (prev.partialText !== next.partialText) return false;
   if (prev.tempTranslations !== next.tempTranslations) return false;
   if (prev.highlightedCardId !== next.highlightedCardId) return false;
@@ -229,6 +264,7 @@ export const CaptionsList = memo(function CaptionsList({
   addToast,
   cards,
   hasActiveSession,
+  isTeamsMode,
   onRetryTranslation,
   partialText,
   scrollTop,
@@ -331,6 +367,7 @@ export const CaptionsList = memo(function CaptionsList({
             key={item.id}
             card={item}
             cardNumber={cardNumber}
+            isTeamsMode={isTeamsMode}
             isVirtualized={shouldVirtualize}
             isHighlighted={item.id === highlightedCardId}
             onMeasuredHeight={shouldVirtualize ? handleMeasuredHeight : undefined}
