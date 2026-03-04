@@ -196,6 +196,7 @@
   "copy": {
     "tooltip": "Copy Original & Translation (Markdown)",
     "cardTooltip": "Copy this card (original + translation)",
+    "speakerTooltip": "Copy speaker name",
     "moreOptions": "More copy options",
     "originalOnly": "Copy Original Only",
     "translationOnly": "Copy Translation Only"

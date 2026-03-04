@@ -2404,6 +2404,7 @@ function App() {
                 addToast={addToast}
                 cards={cards}
                 hasActiveSession={!!activeSessionId}
+                isTeamsMode={config.caption_source === 'teams'}
                 onRetryTranslation={retryTranslation}
                 partialText={partialText}
                 scrollTop={listScrollTop}
