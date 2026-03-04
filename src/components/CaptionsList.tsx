@@ -110,6 +110,8 @@ const CaptionCardItem = memo(function CaptionCardItem({
 
   const handleCopyCard = useCallback(async () => {
     const originalText = card.original.trim();
+    const speakerName = isTeamsMode ? (card.user ?? "").trim() : "";
+    const speakerPrefix = speakerName ? `[${speakerName}]\n` : "";
     let translatedText = (displayTranslated ?? "").trim();
 
     if (!translatedText) {
@@ -121,8 +123,8 @@ const CaptionCardItem = memo(function CaptionCardItem({
     }
 
     const content = translatedText
-      ? `${originalText}\n\n**${translatedText}**`
-      : originalText;
+      ? `${speakerPrefix}${originalText}\n\n**${translatedText}**`
+      : `${speakerPrefix}${originalText}`;
 
     if (!content.trim()) {
       return;
@@ -135,7 +137,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
       console.error("Failed to copy caption card:", err);
       addToast("error", t("toast.copyFailed"));
     }
-  }, [addToast, card.original, displayStatus, displayTranslated, t]);
+  }, [addToast, card.original, card.user, displayStatus, displayTranslated, isTeamsMode, t]);
 
   const handleCopySpeaker = useCallback(async () => {
     const speakerName = (card.user ?? "").trim();

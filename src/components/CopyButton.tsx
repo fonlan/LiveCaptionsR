@@ -6,9 +6,10 @@ import { SentenceCard } from "../types";
 interface CopyButtonProps {
   cards: SentenceCard[];
   addToast: (type: 'success' | 'error', msg: string) => void;
+  isTeamsMode: boolean;
 }
 
-export function CopyButton({ cards, addToast }: CopyButtonProps) {
+export function CopyButton({ cards, addToast, isTeamsMode }: CopyButtonProps) {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -32,14 +33,30 @@ export function CopyButton({ cards, addToast }: CopyButtonProps) {
     cards.forEach(card => {
       const original = card.original?.trim() || "";
       const translated = card.translated?.trim() || "";
+      const speaker = isTeamsMode ? (card.user?.trim() || "") : "";
+      const speakerBlock = speaker ? `[${speaker}]` : "";
       
       if (mode === 'all') {
-        // Format: Original\n**Translated**
-        text += `${original}\n**${translated}**\n\n`;
+        const lines = [
+          ...(speakerBlock ? [speakerBlock] : []),
+          original,
+          ...(translated ? [`**${translated}**`] : []),
+        ];
+        text += `${lines.join("\n")}\n\n`;
       } else if (mode === 'original') {
-        text += `${original}\n\n`;
+        const lines = [
+          ...(speakerBlock ? [speakerBlock] : []),
+          original,
+        ];
+        text += `${lines.join("\n")}\n\n`;
       } else if (mode === 'translated') {
-         if (translated) text += `${translated}\n\n`;
+        if (translated) {
+          const lines = [
+            ...(speakerBlock ? [speakerBlock] : []),
+            translated,
+          ];
+          text += `${lines.join("\n")}\n\n`;
+        }
       }
     });
 

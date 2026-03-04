@@ -2362,7 +2362,11 @@ function App() {
                   {sessionTranslationCompleted}/{sessionTranslationTotal} ({sessionTranslationProgressPercent}%)
                 </span>
               )}
-              <CopyButton cards={cards} addToast={addToast} />
+              <CopyButton
+                cards={cards}
+                addToast={addToast}
+                isTeamsMode={config.caption_source === 'teams'}
+              />
               <button
                 className={`bg-transparent border-none text-text-muted cursor-not-allowed p-2 rounded-full transition-all flex items-center justify-center ${(cards.length > 0 && !isSessionTranslating) ? 'cursor-pointer text-text-secondary hover:bg-card-hover hover:text-text-primary' : ''}`}
                 onClick={() => {
