@@ -2021,6 +2021,30 @@ function App() {
     locateAndScroll(0);
   };
 
+  const handleHeaderBlankDoubleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
+    if (cardsRef.current.length === 0) {
+      return;
+    }
+
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    setAutoFollow(false);
+    autoFollowRef.current = false;
+    container.scrollTo({ top: 0, behavior: "smooth" });
+
+    const firstCardId = cardsRef.current[0]?.id;
+    if (firstCardId) {
+      setJumpHighlightedCard(firstCardId);
+    }
+  };
+
   const handleSendChatMessage = async () => {
     if (isChatSending) return;
 
@@ -2309,7 +2333,10 @@ function App() {
         />
 
         <div className="flex-1 overflow-hidden flex flex-col relative">
-          <div className="h-[60px] px-4 flex justify-between items-center border-b border-border bg-panel">
+          <div
+            className="h-[60px] px-4 flex justify-between items-center border-b border-border bg-panel"
+            onDoubleClick={handleHeaderBlankDoubleClick}
+          >
             <div className="flex items-center">
               <button
                 className="bg-transparent border-none text-text-secondary cursor-pointer p-2 rounded-full transition-all flex items-center justify-center hover:bg-card-hover hover:text-text-primary mr-2"

@@ -123,6 +123,7 @@ Each provider has independent proxy settings:
 - **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output.
 - **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, supports clickable `#card-number` references that jump to the corresponding caption card, supports mouse drag width resizing, and persists AI chat sessions locally with a history switcher scoped to the current translation session.
 - **Caption Card Copy**: Each caption card has a top-right one-click copy button that copies the card's original text plus translation in Markdown format.
+- **Header Blank-Area Double Click**: Double-clicking blank space in the main session header scrolls the captions list back to the first card at the top.
 
 ## 🛠️ Architecture
 
