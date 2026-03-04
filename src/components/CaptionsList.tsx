@@ -181,7 +181,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
           ) : displayTranslated ? (
             <div className="text-base text-text-primary font-medium leading-normal select-text">{displayTranslated}</div>
           ) : (
-            <div className="flex items-center justify-between mt-1">
+            <div className="flex items-center gap-1.5 mt-1">
               <span className="text-[13px] text-error select-text">{t("translation.failed")}</span>
               <button
                 className="bg-transparent border-none text-text-secondary cursor-pointer p-1 hover:text-primary disabled:opacity-50"
