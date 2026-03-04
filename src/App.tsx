@@ -127,7 +127,7 @@ type PendingTranslationRequest = {
   cardId: string;
   text: string;
   isRetry: boolean;
-  mode: 'live' | 'session';
+  mode: 'live' | 'manual' | 'session';
   batchId?: string;
 };
 
@@ -1112,7 +1112,7 @@ function App() {
     cardId: string,
     text: string,
     isRetry: boolean,
-    mode: 'live' | 'session' = 'live',
+    mode: 'live' | 'manual' | 'session' = 'live',
     targetLangOverride?: string,
     providerOverride?: string,
   ) => {
@@ -1145,7 +1145,8 @@ function App() {
 
   const retryTranslation = async (cardId: string, originalText: string) => {
     dispatchCards({ type: "patch", cardId, patch: { retrying: true } });
-    await enqueueTranslation(cardId, originalText, true, 'live');
+    const retryMode = isRunningRef.current ? 'live' : 'manual';
+    await enqueueTranslation(cardId, originalText, true, retryMode);
   };
 
   const performTranslation = async (cardId: string, text: string) => {
@@ -1249,6 +1250,26 @@ function App() {
 
       if (pending.isRetry) {
         if (payload.status === 'success') {
+          const cardIndex = cardIndexRef.current[pending.cardId];
+          const currentCard = cardIndex === undefined ? undefined : cardsRef.current[cardIndex];
+          const canPersistPatchedRetry =
+            pending.mode === 'manual'
+            && !!currentCard
+            && currentCard.original === pending.text;
+          const persistedCards = canPersistPatchedRetry && currentCard
+            ? cardsRef.current.map(card => {
+              if (card.id !== pending.cardId || card.original !== pending.text) {
+                return card;
+              }
+              return {
+                ...card,
+                translated: payload.translated,
+                retrying: false,
+                status: 'success' as TranslationStatus,
+              };
+            })
+            : null;
+
           dispatchCards({
             type: "patch",
             cardId: pending.cardId,
@@ -1259,6 +1280,10 @@ function App() {
             },
             expectedOriginal: pending.text,
           });
+
+          if (persistedCards) {
+            void saveActiveSessionSnapshot(persistedCards);
+          }
         } else {
           dispatchCards({
             type: "patch",
