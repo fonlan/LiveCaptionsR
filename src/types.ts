@@ -32,6 +32,35 @@ export interface SessionMetadata {
   preview: string;
 }
 
+export type AIChatRole = "user" | "assistant";
+export type AIChatMessageStatus = "done" | "loading" | "error";
+
+export interface AIChatMessage {
+  id: string;
+  role: AIChatRole;
+  content: string;
+  status: AIChatMessageStatus;
+  created_at: number;
+}
+
+export interface AIChatSession {
+  id: string;
+  session_id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  messages: AIChatMessage[];
+}
+
+export interface AIChatSessionMetadata {
+  id: string;
+  session_id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  preview: string;
+}
+
 export interface TeamsWindowInfo {
   hwnd: number;
   pid: number;

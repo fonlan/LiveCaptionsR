@@ -26,7 +26,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
   - Save and load caption sessions.
   - Sessions keep full card history during capture (no fixed 200-card cap).
   - Session summaries using AI (OpenAI or Copilot), streamed in real time.
-  - AI chat sidebar for asking questions about captured cards with Markdown-rendered answers, selectable bubble text, per-bubble Markdown copy, clickable `#card` references that jump to cards, and drag-to-resize width.
+  - AI chat sidebar for asking questions about captured cards with Markdown-rendered answers, selectable bubble text, per-bubble Markdown copy, clickable `#card` references that jump to cards, drag-to-resize width, and per-caption-session local chat history switching.
 
 - **Modern UI**:
   - Dark mode Cyber-noir aesthetic.
@@ -121,7 +121,7 @@ Each provider has independent proxy settings:
 - **Hide System LiveCaptions Window**: Keeps the native caption bar hidden while capturing.
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
 - **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output.
-- **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, supports clickable `#card-number` references that jump to the corresponding caption card, and supports mouse drag width resizing.
+- **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, supports clickable `#card-number` references that jump to the corresponding caption card, supports mouse drag width resizing, and persists AI chat sessions locally with a history switcher scoped to the current translation session.
 - **Caption Card Copy**: Each caption card has a top-right one-click copy button that copies the card's original text plus translation in Markdown format.
 
 ## 🛠️ Architecture
@@ -136,6 +136,7 @@ Each provider has independent proxy settings:
   - `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation.
   - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot), summary generation, and caption-chat completion routing.
   - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`, `summary-stream`), including session-level summarization and AI chat from captured cards.
+  - `storage.rs`: Persists translation sessions/cards plus AI chat sessions/messages (bound to translation session IDs) in SQLite.
 
 ## 🔍 Troubleshooting
 

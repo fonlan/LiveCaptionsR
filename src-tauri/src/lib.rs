@@ -1190,6 +1190,27 @@ fn delete_all_sessions_command() -> Result<(), AppError> {
 }
 
 #[tauri::command]
+fn create_ai_chat_session(session_id: String, name: String) -> Result<storage::AIChatSession, AppError> {
+    info!(session_id = %session_id, chat_name = %name, "Creating AI chat session");
+    storage::create_ai_chat_session(&session_id, &name).map_err(AppError::Anyhow)
+}
+
+#[tauri::command]
+fn save_ai_chat_session_data(chat_session: storage::AIChatSession) -> Result<(), AppError> {
+    storage::save_ai_chat_session(&chat_session).map_err(AppError::Anyhow)
+}
+
+#[tauri::command]
+fn load_ai_chat_session_data(id: String) -> Result<storage::AIChatSession, AppError> {
+    storage::load_ai_chat_session(&id).map_err(AppError::Anyhow)
+}
+
+#[tauri::command]
+fn get_ai_chat_sessions(session_id: String) -> Result<Vec<storage::AIChatSessionMetadata>, AppError> {
+    storage::list_ai_chat_sessions(&session_id).map_err(AppError::Anyhow)
+}
+
+#[tauri::command]
 fn toggle_livecaptions_visibility(state: State<'_, AppState>) -> Result<(), AppError> {
     let sender = state.caption_command_sender.lock().unwrap();
     if let Some(tx) = &*sender {
@@ -1373,6 +1394,10 @@ pub fn run() {
             get_sessions,
             delete_session_data,
             delete_all_sessions_command,
+            create_ai_chat_session,
+            save_ai_chat_session_data,
+            load_ai_chat_session_data,
+            get_ai_chat_sessions,
             start_copilot_auth,
             poll_copilot_token,
             fetch_copilot_models_command,

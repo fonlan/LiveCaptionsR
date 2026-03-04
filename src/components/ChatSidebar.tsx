@@ -4,6 +4,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type KeyboardEventHandler,
   type MouseEventHandler,
   type ReactNode,
@@ -13,15 +14,8 @@ import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import remarkGfm from "remark-gfm";
 
-import { AIModel } from "../types";
-import { IconCopy, IconPlay, IconPlus, IconSquare } from "./Icons";
-
-export interface AIChatBubble {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  status: "done" | "loading" | "error";
-}
+import { AIChatMessage, AIChatSessionMetadata, AIModel } from "../types";
+import { IconClock, IconCopy, IconPlus, IconSend, IconSquare } from "./Icons";
 
 type MarkdownNode = {
   type: string;
@@ -33,15 +27,19 @@ type MarkdownNode = {
 interface ChatSidebarProps {
   isOpen: boolean;
   width: number;
-  messages: AIChatBubble[];
+  messages: AIChatMessage[];
   input: string;
   isSending: boolean;
   models: AIModel[];
+  chatSessions: AIChatSessionMetadata[];
+  activeChatSessionId: string | null;
+  hasActiveSession: boolean;
   selectedModelId: string;
   addToast: (type: "success" | "error", message: string) => void;
   onInputChange: (value: string) => void;
   onModelChange: (modelId: string) => void;
   onNewSession: () => void;
+  onSelectChatSession: (chatSessionId: string) => void;
   onSend: () => void;
   onStop: () => void;
   onResizeStart: MouseEventHandler<HTMLDivElement>;
@@ -185,11 +183,15 @@ export function ChatSidebar({
   input,
   isSending,
   models,
+  chatSessions,
+  activeChatSessionId,
+  hasActiveSession,
   selectedModelId,
   addToast,
   onInputChange,
   onModelChange,
   onNewSession,
+  onSelectChatSession,
   onSend,
   onStop,
   onResizeStart,
@@ -198,6 +200,9 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const historyButtonRef = useRef<HTMLButtonElement>(null);
+  const historyMenuRef = useRef<HTMLDivElement>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   const markdownComponents = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {
@@ -251,6 +256,29 @@ export function ChatSidebar({
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [isOpen, messages]);
 
+  useEffect(() => {
+    if (!isOpen) {
+      setIsHistoryOpen(false);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isHistoryOpen) return;
+
+    const handleOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (historyMenuRef.current?.contains(target) || historyButtonRef.current?.contains(target)) {
+        return;
+      }
+      setIsHistoryOpen(false);
+    };
+
+    document.addEventListener("mousedown", handleOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+    };
+  }, [isHistoryOpen]);
+
   const handleInputKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = event => {
     if (event.key === "Enter" && !event.shiftKey && !isSending) {
       event.preventDefault();
@@ -270,9 +298,14 @@ export function ChatSidebar({
     }
   };
 
-  const canSend = input.trim().length > 0 && selectedModelId.trim().length > 0 && !isSending;
+  const canSend =
+    hasActiveSession
+    && input.trim().length > 0
+    && selectedModelId.trim().length > 0
+    && !isSending;
   const canTriggerAction = isSending || canSend;
   const actionTitle = isSending ? t("controls.stop") : t("chat.send");
+  const historyDisabled = !hasActiveSession || chatSessions.length === 0 || isSending;
 
   return (
     <aside
@@ -333,9 +366,9 @@ export function ChatSidebar({
 
       <div className="shrink-0 border-t border-border p-3 bg-panel">
         <label className="text-[12px] text-text-secondary block mb-1">{t("chat.model")}</label>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <select
-            className="flex-1 h-9 rounded-lg border border-border bg-input text-text-primary px-3 text-sm outline-none focus:border-primary"
+            className="min-w-0 flex-1 h-9 rounded-lg border border-border bg-input text-text-primary px-3 text-sm outline-none focus:border-primary"
             value={selectedModelId}
             onChange={event => onModelChange(event.target.value)}
           >
@@ -348,13 +381,61 @@ export function ChatSidebar({
           </select>
           <button
             type="button"
-            className="h-9 w-9 shrink-0 rounded-lg border border-border bg-card text-text-secondary cursor-pointer transition-all hover:bg-card-hover hover:text-text-primary flex items-center justify-center"
+            className={`h-9 w-9 shrink-0 rounded-lg border border-border bg-card transition-all flex items-center justify-center ${!hasActiveSession || isSending ? "text-text-muted cursor-not-allowed" : "text-text-secondary cursor-pointer hover:bg-card-hover hover:text-text-primary"}`}
             onClick={onNewSession}
             title={t("chat.newSession")}
             aria-label={t("chat.newSession")}
+            disabled={!hasActiveSession || isSending}
           >
             <IconPlus size={14} />
           </button>
+          <div className="relative">
+            <button
+              ref={historyButtonRef}
+              type="button"
+              className={`h-9 w-9 shrink-0 rounded-lg border border-border bg-card transition-all flex items-center justify-center ${historyDisabled ? "text-text-muted cursor-not-allowed" : "text-text-secondary cursor-pointer hover:bg-card-hover hover:text-text-primary"}`}
+              onClick={() => {
+                if (historyDisabled) return;
+                setIsHistoryOpen(prev => !prev);
+              }}
+              title={t("chat.switchSession")}
+              aria-label={t("chat.switchSession")}
+              disabled={historyDisabled}
+            >
+              <IconClock size={14} />
+            </button>
+            {isHistoryOpen && (
+              <div
+                ref={historyMenuRef}
+                className="absolute right-0 bottom-[calc(100%+8px)] w-[290px] rounded-xl border border-border bg-panel shadow-2xl p-1 z-30"
+              >
+                {chatSessions.length === 0 ? (
+                  <div className="px-3 py-2.5 text-xs text-text-muted">
+                    {t("chat.historyEmpty")}
+                  </div>
+                ) : (
+                  <div className="max-h-[260px] overflow-y-auto space-y-1">
+                    {chatSessions.map(session => (
+                      <button
+                        key={session.id}
+                        type="button"
+                        className={`w-full text-left px-3 py-2 rounded-lg border border-transparent transition-all ${session.id === activeChatSessionId ? "bg-primary-dim text-text-primary border-primary/30" : "text-text-secondary hover:bg-card-hover hover:text-text-primary"}`}
+                        onClick={() => {
+                          onSelectChatSession(session.id);
+                          setIsHistoryOpen(false);
+                        }}
+                      >
+                        <div className="text-xs font-medium truncate">{session.name}</div>
+                        <div className="text-[11px] mt-0.5 text-text-muted truncate">
+                          {session.preview || t("chat.historyNoPreview")}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="relative mt-2">
@@ -367,13 +448,13 @@ export function ChatSidebar({
           />
           <button
             type="button"
-            className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-lg border-none transition-all flex items-center justify-center ${isSending ? "bg-error text-white cursor-pointer hover:opacity-90" : canSend ? "bg-primary text-black cursor-pointer" : "bg-bg-secondary text-text-muted cursor-not-allowed"}`}
+            className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 min-w-[34px] px-2 rounded-lg border border-transparent bg-transparent transition-all flex items-center justify-center ${isSending ? "text-error cursor-pointer hover:bg-error/12 hover:border-error/45" : canSend ? "text-primary cursor-pointer hover:bg-primary/12 hover:border-primary/45" : "text-text-muted cursor-not-allowed"}`}
             onClick={isSending ? onStop : onSend}
             disabled={!canTriggerAction}
             title={actionTitle}
             aria-label={actionTitle}
           >
-            {isSending ? <IconSquare size={12} /> : <IconPlay size={14} />}
+            {isSending ? <IconSquare size={12} /> : <IconSend size={14} />}
           </button>
         </div>
       </div>

@@ -99,5 +99,46 @@ fn init_schema() -> anyhow::Result<()> {
         tx.commit()?;
     }
 
+    let current_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 4 {
+        let tx = conn.transaction()?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS ai_chat_messages (
+                id TEXT PRIMARY KEY,
+                chat_session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                sequence INTEGER NOT NULL,
+                FOREIGN KEY(chat_session_id) REFERENCES ai_chat_sessions(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_session_id_updated_at
+             ON ai_chat_sessions(session_id, updated_at DESC)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_chat_session_id_sequence
+             ON ai_chat_messages(chat_session_id, sequence)",
+            [],
+        )?;
+        tx.pragma_update(None, "user_version", 4)?;
+        tx.commit()?;
+    }
+
     Ok(())
 }
