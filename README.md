@@ -33,6 +33,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
   - "Always on Top" mode for overlay usage.
   - Auto-scrolling history.
   - Native splash startup window while the main webview initializes.
+  - Startup windows are centered on the monitor under the current mouse cursor (active screen), not fixed to the primary display.
 
 - **System Integration**:
   - Auto-launches Windows LiveCaptions on start.
@@ -183,6 +184,7 @@ For detailed debugging information:
 If startup occasionally appears as a white/blank screen:
 
 1. Wait a few seconds and confirm the native splash window closes and the main window appears.
+   - On multi-monitor setups, startup windows should appear on the screen where the mouse cursor is currently located.
 2. Open logs at `%APPDATA%\LiveCaptionsR\logs\livecaptions-r.log`.
 3. Check startup timings:
    - `[startup] native ready native_startup_ms=...`

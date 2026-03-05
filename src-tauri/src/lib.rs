@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -1260,9 +1260,125 @@ fn duration_to_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+fn center_window_on_monitor(
+    window: &tauri::WebviewWindow,
+    window_label: &'static str,
+    monitor: &tauri::Monitor,
+    source: &'static str,
+) {
+    let window_size = match window.outer_size() {
+        Ok(size) => size,
+        Err(err) => {
+            warn!(
+                source,
+                window = window_label,
+                error = %err,
+                "[startup] failed to read window size for monitor centering"
+            );
+            return;
+        }
+    };
+
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+
+    let centered_x = i64::from(monitor_position.x)
+        + (i64::from(monitor_size.width) - i64::from(window_size.width)) / 2;
+    let centered_y = i64::from(monitor_position.y)
+        + (i64::from(monitor_size.height) - i64::from(window_size.height)) / 2;
+
+    let target_x = centered_x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let target_y = centered_y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+
+    if let Err(err) = window.set_position(PhysicalPosition::new(target_x, target_y)) {
+        warn!(
+            source,
+            window = window_label,
+            error = %err,
+            "[startup] failed to set window position on cursor monitor"
+        );
+    } else {
+        debug!(
+            source,
+            window = window_label,
+            target_x,
+            target_y,
+            monitor_name = ?monitor.name(),
+            "[startup] positioned window on cursor monitor"
+        );
+    }
+}
+
+fn pin_startup_windows_to_cursor_monitor(app: &AppHandle, source: &'static str) {
+    let cursor = match app.cursor_position() {
+        Ok(position) => position,
+        Err(err) => {
+            warn!(
+                source,
+                error = %err,
+                "[startup] failed to read cursor position for monitor selection"
+            );
+            return;
+        }
+    };
+
+    let monitor = match app.monitor_from_point(cursor.x, cursor.y) {
+        Ok(Some(monitor)) => Some(monitor),
+        Ok(None) => {
+            warn!(
+                source,
+                cursor_x = cursor.x,
+                cursor_y = cursor.y,
+                "[startup] no monitor at cursor position, falling back to primary"
+            );
+            app.primary_monitor().unwrap_or_else(|err| {
+                warn!(
+                    source,
+                    error = %err,
+                    "[startup] failed to query primary monitor after cursor lookup miss"
+                );
+                None
+            })
+        }
+        Err(err) => {
+            warn!(
+                source,
+                error = %err,
+                "[startup] failed monitor lookup from cursor position, falling back to primary"
+            );
+            app.primary_monitor().unwrap_or_else(|primary_err| {
+                warn!(
+                    source,
+                    error = %primary_err,
+                    "[startup] failed to query primary monitor after cursor lookup error"
+                );
+                None
+            })
+        }
+    };
+
+    let Some(monitor) = monitor else {
+        warn!(
+            source,
+            "[startup] no monitor available for startup positioning"
+        );
+        return;
+    };
+
+    if let Some(main_window) = app.get_webview_window("main") {
+        center_window_on_monitor(&main_window, "main", &monitor, source);
+    }
+
+    if let Some(splash_window) = app.get_webview_window("splashscreen") {
+        center_window_on_monitor(&splash_window, "splashscreen", &monitor, source);
+    }
+}
+
 fn handoff_startup_windows(app: &AppHandle, handoff_source: &'static str) {
     let app_handle = app.clone();
     if let Err(err) = app.run_on_main_thread(move || {
+        pin_startup_windows_to_cursor_monitor(&app_handle, handoff_source);
+
         if let Some(main_window) = app_handle.get_webview_window("main") {
             if let Err(show_err) = main_window.show() {
                 warn!(
@@ -1451,6 +1567,8 @@ pub fn run() {
                 db_init_mode = "lazy_on_first_use",
                 "[startup] native ready"
             );
+
+            pin_startup_windows_to_cursor_monitor(&app_handle, "ready_event");
 
             #[cfg(any(windows, target_os = "macos"))]
             if let Some(splash_window) = app_handle.get_webview_window("splashscreen") {
