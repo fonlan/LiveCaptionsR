@@ -639,6 +639,126 @@ impl TeamsCaptionStream {
         self.pending_messages.push((user, content));
     }
 
+    fn normalize_for_match(value: &str) -> String {
+        value
+            .to_lowercase()
+            .replace('\r', " ")
+            .replace('\n', " ")
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '.' | '!' | '?' | ',' | ';' | ':' | '。' | '！' | '？' | '，' | '；' | '：'
+                )
+            })
+            .to_string()
+    }
+
+    fn looks_like_speaker(value: &str) -> bool {
+        let normalized = Self::normalize_for_match(value);
+        if normalized.is_empty() {
+            return false;
+        }
+
+        if normalized.chars().count() > 64 {
+            return false;
+        }
+
+        if normalized.split_whitespace().count() > 10 {
+            return false;
+        }
+
+        !normalized.chars().any(|c| {
+            matches!(
+                c,
+                '.' | '!' | '?' | ';' | ':' | '。' | '！' | '？' | '；' | '：'
+            )
+        })
+    }
+
+    fn looks_like_content(value: &str) -> bool {
+        let normalized = Self::normalize_for_match(value);
+        if normalized.is_empty() {
+            return false;
+        }
+
+        if normalized.chars().count() > 64 || normalized.split_whitespace().count() > 10 {
+            return true;
+        }
+
+        normalized.chars().any(|c| {
+            matches!(
+                c,
+                '.' | '!' | '?' | ',' | ';' | ':' | '。' | '！' | '？' | '，' | '；' | '：'
+            )
+        })
+    }
+
+    fn content_similar(a: &str, b: &str) -> bool {
+        if a.is_empty() || b.is_empty() {
+            return false;
+        }
+        if a == b {
+            return true;
+        }
+
+        if a.contains(b) || b.contains(a) {
+            let min_len = a.chars().count().min(b.chars().count());
+            if min_len >= 16 {
+                return true;
+            }
+        }
+
+        let a_chars: Vec<char> = a.chars().collect();
+        let b_chars: Vec<char> = b.chars().collect();
+        let max_prefix = a_chars.len().min(b_chars.len());
+        let mut common_prefix = 0usize;
+        while common_prefix < max_prefix && a_chars[common_prefix] == b_chars[common_prefix] {
+            common_prefix += 1;
+        }
+
+        let min_len = a_chars.len().min(b_chars.len());
+        min_len >= 20 && (common_prefix as f32 / min_len as f32) >= 0.70
+    }
+
+    fn should_swap_user_content(
+        user: &str,
+        content: &str,
+        previous_pair: Option<(&str, &str)>,
+    ) -> bool {
+        let normalized_user = Self::normalize_for_match(user);
+        let normalized_content = Self::normalize_for_match(content);
+
+        if normalized_user.is_empty() || normalized_content.is_empty() {
+            return false;
+        }
+
+        // Structural fallback: current "user" looks like sentence, current "content" looks like short speaker name.
+        let structural_swap = !Self::looks_like_speaker(user)
+            && Self::looks_like_speaker(content)
+            && Self::looks_like_content(user);
+        if structural_swap {
+            return true;
+        }
+
+        // Cross-check with previous message: if current content equals previous user, and current user is
+        // similar to previous content, this pair is most likely swapped.
+        if let Some((prev_user, prev_content)) = previous_pair {
+            let prev_user_norm = Self::normalize_for_match(prev_user);
+            let prev_content_norm = Self::normalize_for_match(prev_content);
+            if !prev_user_norm.is_empty()
+                && normalized_content == prev_user_norm
+                && Self::content_similar(&normalized_user, &prev_content_norm)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub fn set_window(&mut self, hwnd: isize) {
         self.selected_hwnd = Some(hwnd);
     }
@@ -672,9 +792,9 @@ impl TeamsCaptionStream {
         let result = self.watcher.get_caption_text(search_target);
 
         match result {
-            Ok((message_pairs, first_element)) => {
+            Ok((message_pairs_raw, first_element)) => {
                 self.error_count = 0;
-                if !message_pairs.is_empty() && self.caption_parent.is_none() {
+                if !message_pairs_raw.is_empty() && self.caption_parent.is_none() {
                     if let Some(element) = first_element {
                         if let Ok(container) = self.watcher.get_caption_container(&element) {
                             self.caption_parent = Some(container);
@@ -682,10 +802,42 @@ impl TeamsCaptionStream {
                     }
                 }
 
-                if message_pairs.is_empty() {
+                if message_pairs_raw.is_empty() {
                     if self.caption_parent.is_some() {
                         self.caption_parent = None;
                     }
+                    return None;
+                }
+
+                // Apply a final cross-message swap guard without regressing container-based parsing.
+                let mut message_pairs: Vec<(Option<String>, String)> =
+                    Vec::with_capacity(message_pairs_raw.len());
+                for (mut user, mut content) in message_pairs_raw {
+                    let previous_pair = message_pairs.last().and_then(|(prev_user, prev_content)| {
+                        prev_user
+                            .as_deref()
+                            .map(|prev_user| (prev_user, prev_content.as_str()))
+                    });
+
+                    if let Some(current_user) = user.clone() {
+                        if Self::should_swap_user_content(&current_user, &content, previous_pair) {
+                            let swapped_user = content.trim().to_string();
+                            let swapped_content = current_user.trim().to_string();
+                            if !swapped_user.is_empty() && !swapped_content.is_empty() {
+                                user = Some(swapped_user);
+                                content = swapped_content;
+                            }
+                        }
+                    }
+
+                    if content.trim().is_empty() {
+                        continue;
+                    }
+
+                    message_pairs.push((user, content));
+                }
+
+                if message_pairs.is_empty() {
                     return None;
                 }
 
@@ -746,5 +898,35 @@ impl TeamsCaptionStream {
     }
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(100)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TeamsCaptionStream;
+
+    #[test]
+    fn detects_swapped_pair_by_previous_cross_match() {
+        let should_swap = TeamsCaptionStream::should_swap_user_content(
+            "The way people decide they want to use this form OK and if there's a need.",
+            "Nikita Suprotivnyi (Nokia)",
+            Some((
+                "Nikita Suprotivnyi (Nokia)",
+                "The way people decide they want to use this for OK and if there's a need to say to this again.",
+            )),
+        );
+
+        assert!(should_swap);
+    }
+
+    #[test]
+    fn keeps_normal_pair_without_swap_signal() {
+        let should_swap = TeamsCaptionStream::should_swap_user_content(
+            "Nikita Suprotivnyi (Nokia)",
+            "The way people decide they want to use this for OK and if there's a need.",
+            Some(("Another Speaker", "Previous message")),
+        );
+
+        assert!(!should_swap);
     }
 }
