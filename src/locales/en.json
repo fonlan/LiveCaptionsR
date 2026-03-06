@@ -42,7 +42,7 @@
     "deleteTooltip": "Delete Session",
     "clearAllTooltip": "Delete All Sessions",
     "emptyState": "No saved sessions",
-    "searchPlaceholder": "Search session title or preview",
+    "searchPlaceholder": "Search session title, original, or translated text",
     "clearFiltersTooltip": "Clear filters",
     "filteredCount": "Showing {{filtered}} / {{total}}",
     "noResults": "No matching sessions",

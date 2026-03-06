@@ -30,6 +30,7 @@ export interface SessionMetadata {
   name: string;
   created_at: number;
   preview: string;
+  search_text?: string;
 }
 
 export type AIChatRole = "user" | "assistant";

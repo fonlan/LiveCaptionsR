@@ -90,7 +90,7 @@ export const Sidebar = memo(function Sidebar({
         return true;
       }
 
-      const haystack = `${session.name}\n${session.preview}`.toLocaleLowerCase();
+      const haystack = `${session.name}\n${session.preview}\n${session.search_text ?? ''}`.toLocaleLowerCase();
       return haystack.includes(normalizedKeyword);
     });
   }, [endDate, normalizedKeyword, sessions, startDate]);

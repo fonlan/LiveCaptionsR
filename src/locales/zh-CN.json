@@ -42,7 +42,7 @@
     "deleteTooltip": "删除会话",
     "clearAllTooltip": "清空所有会话",
     "emptyState": "无保存的会话",
-    "searchPlaceholder": "搜索会话标题或预览",
+    "searchPlaceholder": "搜索会话标题、原文或译文",
     "clearFiltersTooltip": "清除筛选",
     "filteredCount": "显示 {{filtered}} / {{total}}",
     "noResults": "没有匹配的历史会话",

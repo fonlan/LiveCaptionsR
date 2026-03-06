@@ -29,6 +29,7 @@ pub struct SessionMetadata {
     pub name: String,
     pub created_at: u64,
     pub preview: String,
+    pub search_text: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -228,18 +229,28 @@ pub fn list_sessions() -> anyhow::Result<Vec<SessionMetadata>> {
             s.id, 
             s.name, 
             s.created_at, 
-            (SELECT original FROM session_cards WHERE session_id = s.id ORDER BY timestamp ASC LIMIT 1) as preview 
+            (SELECT original FROM session_cards WHERE session_id = s.id ORDER BY timestamp ASC LIMIT 1) as preview,
+            (
+                SELECT GROUP_CONCAT(
+                    TRIM(COALESCE(original, '') || ' ' || COALESCE(translated, '')),
+                    ' '
+                )
+                FROM session_cards
+                WHERE session_id = s.id
+            ) as search_text
          FROM sessions s 
          ORDER BY s.created_at DESC"
     )?;
 
     let session_iter = stmt.query_map([], |row| {
         let preview: Option<String> = row.get(3)?;
+        let search_text: Option<String> = row.get(4)?;
         Ok(SessionMetadata {
             id: row.get(0)?,
             name: row.get(1)?,
             created_at: row.get::<_, i64>(2)? as u64,
             preview: preview.unwrap_or_default().chars().take(50).collect(),
+            search_text: search_text.unwrap_or_default(),
         })
     })?;
 
