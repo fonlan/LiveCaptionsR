@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -35,9 +36,11 @@ import {
 } from "./types";
 import { 
   IconCheck, 
+  IconChevronDown,
   IconFileText, 
   IconList,
   IconLanguages,
+  IconSearch,
   IconPlay, 
   IconSettings, 
   IconSquare, 
@@ -140,6 +143,11 @@ type PendingTranslationRequest = {
   batchId?: string;
 };
 
+type CardSearchMatch = {
+  cardId: string;
+  cardNumber: number;
+};
+
 type CardsState = {
   cards: SentenceCard[];
   indexById: Record<string, number>;
@@ -164,6 +172,12 @@ const buildCardIndex = (cards: SentenceCard[]): Record<string, number> => {
     indexById[cards[i].id] = i;
   }
   return indexById;
+};
+
+const normalizeCardSearchKeyword = (value: string): string => value.trim().toLocaleLowerCase();
+
+const buildCardSearchHaystack = (card: SentenceCard, translatedText?: string | null): string => {
+  return `${card.user ?? ""}\n${card.original}\n${translatedText ?? ""}`.toLocaleLowerCase();
 };
 
 const cardsReducer = (state: CardsState, action: CardsAction): CardsState => {
@@ -287,6 +301,9 @@ function App() {
   const [listScrollTop, setListScrollTop] = useState(0);
   const [listViewportHeight, setListViewportHeight] = useState(0);
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
+  const [isCardSearchOpen, setIsCardSearchOpen] = useState(false);
+  const [cardSearchQuery, setCardSearchQuery] = useState("");
+  const [activeCardSearchMatchIndex, setActiveCardSearchMatchIndex] = useState(-1);
    
    // Teams Modal State
   const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
@@ -297,6 +314,7 @@ function App() {
 
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const cardSearchInputRef = useRef<HTMLInputElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const cardIndexRef = useRef<Record<string, number>>({});
   const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
@@ -338,6 +356,31 @@ function App() {
   const queuedViewportHeightRef = useRef<number>(0);
   const isRunningRef = useRef<boolean>(false);
   const activeSessionIdRef = useRef<string | null>(null);
+
+  const normalizedCardSearchQuery = useMemo(
+    () => normalizeCardSearchKeyword(cardSearchQuery),
+    [cardSearchQuery],
+  );
+
+  const cardSearchMatches = useMemo<CardSearchMatch[]>(() => {
+    if (!isCardSearchOpen || !normalizedCardSearchQuery) {
+      return [];
+    }
+
+    return cards.reduce<CardSearchMatch[]>((matches, card, index) => {
+      const translatedText = tempTranslations[card.id]?.translated ?? card.translated;
+      const haystack = buildCardSearchHaystack(card, translatedText);
+
+      if (haystack.includes(normalizedCardSearchQuery)) {
+        matches.push({
+          cardId: card.id,
+          cardNumber: index + 1,
+        });
+      }
+
+      return matches;
+    }, []);
+  }, [cards, isCardSearchOpen, normalizedCardSearchQuery, tempTranslations]);
   const activeSessionNameRef = useRef<string>("");
   const activeSessionCreatedAtRef = useRef<number>(0);
   const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
@@ -1279,6 +1322,47 @@ function App() {
     document.documentElement.style.setProperty('--app-opacity', (config.opacity ?? 1.0).toString());
   }, [config.opacity]);
 
+  useEffect(() => {
+    setIsCardSearchOpen(false);
+    setCardSearchQuery("");
+    setActiveCardSearchMatchIndex(-1);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!isCardSearchOpen) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      cardSearchInputRef.current?.focus();
+      cardSearchInputRef.current?.select();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [isCardSearchOpen]);
+
+  useEffect(() => {
+    setActiveCardSearchMatchIndex(-1);
+  }, [normalizedCardSearchQuery]);
+
+  useEffect(() => {
+    setActiveCardSearchMatchIndex(prev => {
+      if (!normalizedCardSearchQuery || cardSearchMatches.length === 0) {
+        return -1;
+      }
+
+      if (prev < 0) {
+        return prev;
+      }
+
+      return Math.min(prev, cardSearchMatches.length - 1);
+    });
+  }, [cardSearchMatches.length]);
+
+
+
   // Handle scroll detection for auto-follow
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -2013,21 +2097,21 @@ function App() {
     }, 1100);
   };
 
-  const handleChatCardReferenceClick = (cardNumber: number) => {
+  const jumpToCardByNumber = useCallback((cardNumber: number) => {
     if (!Number.isInteger(cardNumber) || cardNumber <= 0) {
-      return;
+      return false;
     }
 
     const targetIndex = cardNumber - 1;
     const targetCard = cardsRef.current[targetIndex];
     if (!targetCard) {
       addToast("error", t("chat.cardNotFound", { number: cardNumber }));
-      return;
+      return false;
     }
 
     const container = scrollContainerRef.current;
     if (!container) {
-      return;
+      return false;
     }
 
     if (chatCardJumpTimerRef.current !== null) {
@@ -2099,7 +2183,95 @@ function App() {
     };
 
     locateAndScroll(0);
+    return true;
+  }, [addToast, t]);
+
+  const handleChatCardReferenceClick = (cardNumber: number) => {
+    jumpToCardByNumber(cardNumber);
   };
+
+  const handleOpenCardSearch = useCallback(() => {
+    setIsCardSearchOpen(true);
+
+    window.requestAnimationFrame(() => {
+      cardSearchInputRef.current?.focus();
+      cardSearchInputRef.current?.select();
+    });
+  }, []);
+
+  const handleCloseCardSearch = useCallback(() => {
+    setIsCardSearchOpen(false);
+    cardSearchInputRef.current?.blur();
+  }, []);
+
+  const handleToggleCardSearch = useCallback(() => {
+    setIsCardSearchOpen(prev => {
+      const next = !prev;
+      if (next) {
+        window.requestAnimationFrame(() => {
+          cardSearchInputRef.current?.focus();
+          cardSearchInputRef.current?.select();
+        });
+      }
+      return next;
+    });
+  }, []);
+
+  const handleNavigateCardSearch = useCallback((direction: 'next' | 'prev') => {
+    if (!normalizedCardSearchQuery) {
+      cardSearchInputRef.current?.focus();
+      return;
+    }
+
+    if (cardSearchMatches.length === 0) {
+      addToast('error', t('headerSearch.noResults'));
+      return;
+    }
+
+    const nextIndex = activeCardSearchMatchIndex < 0
+      ? (direction === 'next' ? 0 : cardSearchMatches.length - 1)
+      : (activeCardSearchMatchIndex + (direction === 'next' ? 1 : -1) + cardSearchMatches.length) % cardSearchMatches.length;
+
+    setActiveCardSearchMatchIndex(nextIndex);
+    jumpToCardByNumber(cardSearchMatches[nextIndex].cardNumber);
+  }, [activeCardSearchMatchIndex, addToast, cardSearchMatches, jumpToCardByNumber, normalizedCardSearchQuery, t]);
+
+  const handleCardSearchKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter') {
+      return;
+    }
+
+    event.preventDefault();
+    handleNavigateCardSearch(event.shiftKey ? 'prev' : 'next');
+  }, [handleNavigateCardSearch]);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      if (isSettingsOpen || isSummaryOpen || isTranslateModalOpen || isTeamsModalOpen || isDeviceAuthOpen) {
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && (event.key === 'Escape' || event.key === 'Esc') && isCardSearchOpen) {
+        event.preventDefault();
+        handleCloseCardSearch();
+        return;
+      }
+
+      const isFindShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f';
+      if (!isFindShortcut) {
+        return;
+      }
+
+      event.preventDefault();
+      handleOpenCardSearch();
+    };
+
+    document.addEventListener('keydown', handleGlobalKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, [handleCloseCardSearch, handleOpenCardSearch, isCardSearchOpen, isDeviceAuthOpen, isSettingsOpen, isSummaryOpen, isTeamsModalOpen, isTranslateModalOpen]);
 
   const handleHeaderBlankDoubleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) {
@@ -2415,10 +2587,11 @@ function App() {
         />
 
         <div className="flex-1 overflow-hidden flex flex-col relative">
-          <div
-            className="h-[60px] px-4 flex justify-between items-center border-b border-border bg-panel overflow-hidden"
-            onDoubleClick={handleHeaderBlankDoubleClick}
-          >
+          <div className="border-b border-border bg-panel overflow-hidden">
+            <div
+              className="h-[60px] px-4 flex justify-between items-center overflow-hidden"
+              onDoubleClick={handleHeaderBlankDoubleClick}
+            >
             <div className="flex items-center flex-1 min-w-0">
               <button
                 className="bg-transparent border-none text-text-secondary cursor-pointer p-2 rounded-full transition-all flex items-center justify-center hover:bg-card-hover hover:text-text-primary mr-2"
@@ -2477,6 +2650,17 @@ function App() {
                 isTeamsMode={config.caption_source === 'teams'}
               />
               <button
+                className={`bg-transparent border-none text-text-muted p-2 rounded-full transition-all flex items-center justify-center ${(cards.length > 0) ? 'cursor-pointer text-text-secondary hover:bg-card-hover hover:text-text-primary' : 'cursor-not-allowed'} ${isCardSearchOpen ? 'bg-card-hover text-text-primary' : ''}`}
+                onClick={handleToggleCardSearch}
+                title={t("headerSearch.tooltip")}
+                aria-label={t("headerSearch.tooltip")}
+                aria-expanded={isCardSearchOpen}
+                aria-controls="caption-card-search"
+                disabled={cards.length === 0}
+              >
+                <IconSearch />
+              </button>
+              <button
                 className={`bg-transparent border-none text-text-muted cursor-not-allowed p-2 rounded-full transition-all flex items-center justify-center ${(cards.length > 0 && !isSessionTranslating) ? 'cursor-pointer text-text-secondary hover:bg-card-hover hover:text-text-primary' : ''}`}
                 onClick={() => {
                   if (isSessionTranslating) return;
@@ -2501,9 +2685,55 @@ function App() {
                 <IconMessageSquare />
               </button>
             </div>
+            </div>
+
           </div>
 
           <div className="flex-1 overflow-hidden relative">
+            {isCardSearchOpen && (
+              <div
+                className="pointer-events-none absolute right-4 top-4 z-20 max-w-[calc(100%-2rem)] animate-slide-in"
+                style={{
+                  right: isChatOpen ? `${chatSidebarWidth + 16}px` : '16px',
+                }}
+              >
+                <div className="pointer-events-auto relative h-10 w-[320px] max-w-full overflow-hidden rounded-xl border border-border/90 bg-input/95 shadow-[0_12px_28px_rgba(0,0,0,0.35)] backdrop-blur-sm transition-colors focus-within:border-primary">
+                  <input
+                    id="caption-card-search"
+                    ref={cardSearchInputRef}
+                    type="text"
+                    className="h-full w-full border-none bg-transparent pl-3 pr-14 text-sm text-text-primary outline-none placeholder:text-text-muted"
+                    value={cardSearchQuery}
+                    onChange={event => setCardSearchQuery(event.target.value)}
+                    onKeyDown={handleCardSearchKeyDown}
+                    placeholder={t('headerSearch.placeholder')}
+                    aria-label={t('headerSearch.placeholder')}
+                  />
+                  <div className="absolute inset-y-0 right-0 flex w-8 flex-col overflow-hidden border-l border-border bg-bg-secondary/85">
+                    <button
+                      type="button"
+                      className="flex flex-1 items-center justify-center border-none bg-transparent text-text-secondary transition-colors hover:bg-card-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => handleNavigateCardSearch('prev')}
+                      title={t('headerSearch.previous')}
+                      aria-label={t('headerSearch.previous')}
+                      disabled={!normalizedCardSearchQuery || cardSearchMatches.length === 0}
+                    >
+                      <IconChevronDown className="rotate-180" size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="flex flex-1 items-center justify-center border-none border-t border-border bg-transparent text-text-secondary transition-colors hover:bg-card-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => handleNavigateCardSearch('next')}
+                      title={t('headerSearch.next')}
+                      aria-label={t('headerSearch.next')}
+                      disabled={!normalizedCardSearchQuery || cardSearchMatches.length === 0}
+                    >
+                      <IconChevronDown size={16} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             <div
               className="h-full overflow-y-auto p-4 flex flex-col transition-[padding-right] duration-300"
               ref={scrollContainerRef}

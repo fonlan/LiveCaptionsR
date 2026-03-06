@@ -28,6 +28,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
   - History session sidebar supports keyword search, custom date-range filtering, and drag-to-resize width.
   - Session summaries using AI (OpenAI or Copilot), streamed in real time.
   - AI chat sidebar for asking questions about captured cards with Markdown-rendered answers, selectable bubble text, per-bubble Markdown copy, clickable `#card` references that jump to cards, drag-to-resize width, and per-caption-session local chat history switching.
+  - Session header card search expands below the header, matches speaker/original/translated text, and lets you jump between results with highlight animation.
 
 - **Modern UI**:
   - Dark mode Cyber-noir aesthetic.
@@ -127,6 +128,7 @@ Each provider has independent proxy settings:
 - **Session Sidebar Filters**: The left history session sidebar supports keyword matching against session title plus captured original/translated text, a custom start/end date range (date-only), and mouse drag width resizing.
 - **Clear Saved Sessions**: The destructive "clear all sessions" action lives in Settings > General.
 - **Caption Card Copy**: Each caption card has a top-right one-click copy button that copies the card's original text plus translation in Markdown format.
+- **Header Card Search**: A search button next to the header translate button opens a floating search panel over the caption cards (without changing header height); it matches speaker name, original text, and translated text, supports opening via `Ctrl+F`, closing via `Esc`, and Enter / the up-down buttons jump through matches with animated card highlighting.
 - **Header Blank-Area Double Click**: Double-clicking blank space in the main session header scrolls the captions list back to the first card at the top.
 
 ## 🛠️ Architecture

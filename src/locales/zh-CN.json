@@ -230,6 +230,13 @@
     "cancel": "取消",
     "tooltip": "翻译会话"
   },
+  "headerSearch": {
+    "tooltip": "搜索卡片",
+    "placeholder": "搜索用户名、原文或译文",
+    "previous": "上一个结果",
+    "next": "下一个结果",
+    "noResults": "未找到匹配的卡片"
+  },
   "teams": {
     "selectWindow": "选择 Teams 窗口",
     "description": "请选择要捕获字幕的 Microsoft Teams 会议窗口。",

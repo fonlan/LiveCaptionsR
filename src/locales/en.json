@@ -230,6 +230,13 @@
     "cancel": "Cancel",
     "tooltip": "Translate Session"
   },
+  "headerSearch": {
+    "tooltip": "Search Cards",
+    "placeholder": "Search speaker, original, or translation",
+    "previous": "Previous Match",
+    "next": "Next Match",
+    "noResults": "No matching cards found"
+  },
   "teams": {
     "selectWindow": "Select Teams Window",
     "description": "Please select the Microsoft Teams meeting window to capture subtitles from.",
