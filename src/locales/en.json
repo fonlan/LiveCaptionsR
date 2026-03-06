@@ -47,7 +47,6 @@
     "filteredCount": "Showing {{filtered}} / {{total}}",
     "noResults": "No matching sessions",
     "emptyPreview": "Empty session",
-    "dateRangeLabel": "Date range",
     "startDateLabel": "Start date",
     "endDateLabel": "End date",
     "resize": "Resize session sidebar"

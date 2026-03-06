@@ -47,7 +47,6 @@
     "filteredCount": "显示 {{filtered}} / {{total}}",
     "noResults": "没有匹配的历史会话",
     "emptyPreview": "空会话",
-    "dateRangeLabel": "日期范围",
     "startDateLabel": "开始日期",
     "endDateLabel": "结束日期",
     "resize": "调整会话侧边栏宽度"
