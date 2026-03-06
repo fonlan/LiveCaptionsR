@@ -25,7 +25,7 @@ LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, 
 - **Session Management**:
   - Save and load caption sessions.
   - Sessions keep full card history during capture (no fixed 200-card cap).
-  - History session sidebar supports keyword search and custom date-range filtering.
+  - History session sidebar supports keyword search, custom date-range filtering, and drag-to-resize width.
   - Session summaries using AI (OpenAI or Copilot), streamed in real time.
   - AI chat sidebar for asking questions about captured cards with Markdown-rendered answers, selectable bubble text, per-bubble Markdown copy, clickable `#card` references that jump to cards, drag-to-resize width, and per-caption-session local chat history switching.
 
@@ -124,7 +124,7 @@ Each provider has independent proxy settings:
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
 - **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output.
 - **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, supports clickable `#card-number` references that jump to the corresponding caption card, supports mouse drag width resizing, and persists AI chat sessions locally with a history switcher scoped to the current translation session.
-- **Session Sidebar Filters**: The left history session sidebar supports keyword matching against session title/preview plus a custom start/end date range (date-only) for narrowing saved sessions.
+- **Session Sidebar Filters**: The left history session sidebar supports keyword matching against session title/preview, a custom start/end date range (date-only), and mouse drag width resizing.
 - **Clear Saved Sessions**: The destructive "clear all sessions" action lives in Settings > General.
 - **Caption Card Copy**: Each caption card has a top-right one-click copy button that copies the card's original text plus translation in Markdown format.
 - **Header Blank-Area Double Click**: Double-clicking blank space in the main session header scrolls the captions list back to the first card at the top.

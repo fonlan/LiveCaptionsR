@@ -49,7 +49,8 @@
     "emptyPreview": "Empty session",
     "dateRangeLabel": "Date range",
     "startDateLabel": "Start date",
-    "endDateLabel": "End date"
+    "endDateLabel": "End date",
+    "resize": "Resize session sidebar"
   },
   "controls": {
     "settings": "Settings",

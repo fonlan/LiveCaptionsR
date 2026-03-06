@@ -50,7 +50,12 @@ import {
   IconEyeOff,
   IconMessageSquare,
 } from "./components/Icons";
-import { Sidebar, SESSION_SIDEBAR_DEFAULT_WIDTH } from "./components/Sidebar";
+import {
+  Sidebar,
+  SESSION_SIDEBAR_DEFAULT_WIDTH,
+  SESSION_SIDEBAR_MAX_WIDTH,
+  SESSION_SIDEBAR_MIN_WIDTH,
+} from "./components/Sidebar";
 import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
 import { ChatSidebar } from "./components/ChatSidebar";
@@ -77,6 +82,7 @@ const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
+const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
 const CHAT_SIDEBAR_DEFAULT_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MIN_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MAX_WIDTH = 920;
@@ -253,6 +259,8 @@ function App() {
   const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
   const [activeChatSessionName, setActiveChatSessionName] = useState<string>("");
   const [activeChatSessionCreatedAt, setActiveChatSessionCreatedAt] = useState<number>(0);
+  const [sessionSidebarWidth, setSessionSidebarWidth] = useState<number>(SESSION_SIDEBAR_DEFAULT_WIDTH);
+  const [isSessionSidebarResizing, setIsSessionSidebarResizing] = useState<boolean>(false);
   const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
   const [isChatSidebarResizing, setIsChatSidebarResizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
@@ -313,6 +321,7 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
+  const sessionSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const chatCardJumpTimerRef = useRef<number | null>(null);
   const chatCardHighlightClearTimerRef = useRef<number | null>(null);
@@ -1094,8 +1103,29 @@ function App() {
     };
   }, []);
 
+  const clampChatSidebarWidth = useCallback((value: number): number => {
+    const viewportMax = Math.floor(window.innerWidth * 0.85);
+    const maxWidth = Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(CHAT_SIDEBAR_MAX_WIDTH, viewportMax));
+    return Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(maxWidth, Math.round(value)));
+  }, []);
+
+  const clampSessionSidebarWidth = useCallback((value: number): number => {
+    const availableWidth = window.innerWidth - (isChatOpen ? chatSidebarWidth : 0) - SESSION_SIDEBAR_MIN_MAIN_WIDTH;
+    const maxWidth = Math.max(
+      SESSION_SIDEBAR_MIN_WIDTH,
+      Math.min(SESSION_SIDEBAR_MAX_WIDTH, Math.floor(availableWidth)),
+    );
+
+    return Math.max(SESSION_SIDEBAR_MIN_WIDTH, Math.min(maxWidth, Math.round(value)));
+  }, [chatSidebarWidth, isChatOpen]);
+
+  useEffect(() => {
+    setSessionSidebarWidth(prev => clampSessionSidebarWidth(prev));
+  }, [clampSessionSidebarWidth]);
+
   useEffect(() => {
     const handleWindowResize = () => {
+      setSessionSidebarWidth(prev => clampSessionSidebarWidth(prev));
       setChatSidebarWidth(prev => clampChatSidebarWidth(prev));
     };
 
@@ -1104,7 +1134,35 @@ function App() {
     return () => {
       window.removeEventListener("resize", handleWindowResize);
     };
-  }, []);
+  }, [clampChatSidebarWidth, clampSessionSidebarWidth]);
+
+  useEffect(() => {
+    if (!isSessionSidebarResizing) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const resizeState = sessionSidebarResizeRef.current;
+      if (!resizeState) return;
+      const deltaX = event.clientX - resizeState.startX;
+      setSessionSidebarWidth(clampSessionSidebarWidth(resizeState.startWidth + deltaX));
+    };
+
+    const handleMouseUp = () => {
+      setIsSessionSidebarResizing(false);
+      sessionSidebarResizeRef.current = null;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [clampSessionSidebarWidth, isSessionSidebarResizing]);
 
   useEffect(() => {
     if (!isChatSidebarResizing) return;
@@ -1881,10 +1939,13 @@ function App() {
     return `${model.name} (${channel?.name || 'Unknown'})`;
   };
 
-  const clampChatSidebarWidth = (value: number): number => {
-    const viewportMax = Math.floor(window.innerWidth * 0.85);
-    const maxWidth = Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(CHAT_SIDEBAR_MAX_WIDTH, viewportMax));
-    return Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(maxWidth, Math.round(value)));
+  const handleSessionSidebarResizeStart = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    sessionSidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: sessionSidebarWidth,
+    };
+    setIsSessionSidebarResizing(true);
   };
 
   const handleChatSidebarResizeStart = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -2345,9 +2406,12 @@ function App() {
         <Sidebar 
           sessions={sessions}
           currentId={activeSessionId}
+          width={sessionSidebarWidth}
           onSelect={handleSelectSession}
           onDelete={handleDeleteSession}
-          isOpen={isSidebarOpen} 
+          onResizeStart={handleSessionSidebarResizeStart}
+          isOpen={isSidebarOpen}
+          isResizing={isSessionSidebarResizing}
         />
 
         <div className="flex-1 overflow-hidden flex flex-col relative">

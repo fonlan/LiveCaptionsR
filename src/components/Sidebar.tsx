@@ -4,6 +4,8 @@ import { SessionMetadata } from '../types';
 import { IconTrash, IconClock, IconX } from './Icons';
 
 export const SESSION_SIDEBAR_DEFAULT_WIDTH = 260;
+export const SESSION_SIDEBAR_MIN_WIDTH = 220;
+export const SESSION_SIDEBAR_MAX_WIDTH = 420;
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
@@ -51,12 +53,24 @@ const matchesSessionDateRange = (createdAtMs: number, startDate: string, endDate
 interface SidebarProps {
   sessions: SessionMetadata[];
   currentId: string | null;
+  width: number;
   onSelect: (id: string) => void;
   onDelete: (id: string, e: React.MouseEvent) => void;
+  onResizeStart: React.MouseEventHandler<HTMLDivElement>;
   isOpen: boolean;
+  isResizing: boolean;
 }
 
-export const Sidebar = memo(function Sidebar({ sessions, currentId, onSelect, onDelete, isOpen }: SidebarProps) {
+export const Sidebar = memo(function Sidebar({
+  sessions,
+  currentId,
+  width,
+  onSelect,
+  onDelete,
+  onResizeStart,
+  isOpen,
+  isResizing,
+}: SidebarProps) {
   const { t } = useTranslation();
   const [keyword, setKeyword] = useState('');
   const [startDate, setStartDate] = useState('');
@@ -89,9 +103,16 @@ export const Sidebar = memo(function Sidebar({ sessions, currentId, onSelect, on
 
   return (
     <div
-      className={`${isOpen ? 'opacity-100' : 'opacity-0 border-r-0'} bg-panel border-r border-border flex flex-col shrink-0 transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] z-20 overflow-hidden whitespace-nowrap`}
-      style={{ width: isOpen ? `${SESSION_SIDEBAR_DEFAULT_WIDTH}px` : '0px' }}
+      className={`${isOpen ? 'opacity-100' : 'opacity-0 border-r-0'} relative bg-panel border-r border-border flex flex-col shrink-0 ${isResizing ? 'transition-none' : 'transition-[width,opacity,border-color] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]'} z-20 overflow-hidden whitespace-nowrap`}
+      style={{ width: isOpen ? `${width}px` : '0px' }}
     >
+      <div
+        className={`absolute right-0 top-0 h-full w-2 cursor-col-resize select-none ${isOpen ? '' : 'pointer-events-none'}`}
+        onMouseDown={onResizeStart}
+        title={t('sidebar.resize')}
+        aria-label={t('sidebar.resize')}
+      />
+
       <div className="border-b border-border px-3 py-3">
         <div className="flex items-center gap-2 min-w-0">
           <h3 className="m-0 shrink-0 text-sm font-semibold text-text-primary uppercase tracking-[0.5px]">{t('sidebar.title')}</h3>
