@@ -582,6 +582,7 @@ pub struct TeamsCaptionStream {
     last_seen_signature: Option<String>,
     pending_messages: Vec<(Option<String>, String)>,
     recent_signatures: VecDeque<String>,
+    known_users: HashSet<String>,
     error_count: u32,
 }
 
@@ -597,6 +598,7 @@ impl TeamsCaptionStream {
             last_seen_signature: None,
             pending_messages: Vec::new(),
             recent_signatures: VecDeque::with_capacity(120),
+            known_users: HashSet::new(),
             error_count: 0,
         })
     }
@@ -656,78 +658,16 @@ impl TeamsCaptionStream {
             .to_string()
     }
 
-    fn looks_like_speaker(value: &str) -> bool {
-        let normalized = Self::normalize_for_match(value);
-        if normalized.is_empty() {
-            return false;
+    fn remember_known_user(&mut self, user: &str) {
+        let normalized_user = Self::normalize_for_match(user);
+        if normalized_user.is_empty() {
+            return;
         }
 
-        if normalized.chars().count() > 64 {
-            return false;
-        }
-
-        if normalized.split_whitespace().count() > 10 {
-            return false;
-        }
-
-        !normalized.chars().any(|c| {
-            matches!(
-                c,
-                '.' | '!' | '?' | ';' | ':' | '。' | '！' | '？' | '；' | '：'
-            )
-        })
+        self.known_users.insert(normalized_user);
     }
 
-    fn looks_like_content(value: &str) -> bool {
-        let normalized = Self::normalize_for_match(value);
-        if normalized.is_empty() {
-            return false;
-        }
-
-        if normalized.chars().count() > 64 || normalized.split_whitespace().count() > 10 {
-            return true;
-        }
-
-        normalized.chars().any(|c| {
-            matches!(
-                c,
-                '.' | '!' | '?' | ',' | ';' | ':' | '。' | '！' | '？' | '，' | '；' | '：'
-            )
-        })
-    }
-
-    fn content_similar(a: &str, b: &str) -> bool {
-        if a.is_empty() || b.is_empty() {
-            return false;
-        }
-        if a == b {
-            return true;
-        }
-
-        if a.contains(b) || b.contains(a) {
-            let min_len = a.chars().count().min(b.chars().count());
-            if min_len >= 16 {
-                return true;
-            }
-        }
-
-        let a_chars: Vec<char> = a.chars().collect();
-        let b_chars: Vec<char> = b.chars().collect();
-        let max_prefix = a_chars.len().min(b_chars.len());
-        let mut common_prefix = 0usize;
-        while common_prefix < max_prefix && a_chars[common_prefix] == b_chars[common_prefix] {
-            common_prefix += 1;
-        }
-
-        let min_len = a_chars.len().min(b_chars.len());
-        min_len >= 20 && (common_prefix as f32 / min_len as f32) >= 0.70
-    }
-
-    fn should_swap_user_content(
-        user: &str,
-        content: &str,
-        previous_pair: Option<(&str, &str)>,
-    ) -> bool {
+    fn should_swap_user_content(&self, user: &str, content: &str) -> bool {
         let normalized_user = Self::normalize_for_match(user);
         let normalized_content = Self::normalize_for_match(content);
 
@@ -735,28 +675,11 @@ impl TeamsCaptionStream {
             return false;
         }
 
-        // Structural fallback: current "user" looks like sentence, current "content" looks like short speaker name.
-        let structural_swap = !Self::looks_like_speaker(user)
-            && Self::looks_like_speaker(content)
-            && Self::looks_like_content(user);
-        if structural_swap {
-            return true;
+        if self.known_users.contains(&normalized_user) {
+            return false;
         }
 
-        // Cross-check with previous message: if current content equals previous user, and current user is
-        // similar to previous content, this pair is most likely swapped.
-        if let Some((prev_user, prev_content)) = previous_pair {
-            let prev_user_norm = Self::normalize_for_match(prev_user);
-            let prev_content_norm = Self::normalize_for_match(prev_content);
-            if !prev_user_norm.is_empty()
-                && normalized_content == prev_user_norm
-                && Self::content_similar(&normalized_user, &prev_content_norm)
-            {
-                return true;
-            }
-        }
-
-        false
+        self.known_users.contains(&normalized_content)
     }
 
     pub fn set_window(&mut self, hwnd: isize) {
@@ -765,6 +688,10 @@ impl TeamsCaptionStream {
 
     pub fn connect(&mut self) -> Result<String> {
         self.error_count = 0;
+        self.last_seen_signature = None;
+        self.pending_messages.clear();
+        self.recent_signatures.clear();
+        self.known_users.clear();
         if !is_teams_running() {
             return Err(anyhow::anyhow!("Teams is not running."));
         }
@@ -809,18 +736,11 @@ impl TeamsCaptionStream {
                     return None;
                 }
 
-                // Apply a final cross-message swap guard without regressing container-based parsing.
                 let mut message_pairs: Vec<(Option<String>, String)> =
                     Vec::with_capacity(message_pairs_raw.len());
                 for (mut user, mut content) in message_pairs_raw {
-                    let previous_pair = message_pairs.last().and_then(|(prev_user, prev_content)| {
-                        prev_user
-                            .as_deref()
-                            .map(|prev_user| (prev_user, prev_content.as_str()))
-                    });
-
                     if let Some(current_user) = user.clone() {
-                        if Self::should_swap_user_content(&current_user, &content, previous_pair) {
+                        if self.should_swap_user_content(&current_user, &content) {
                             let swapped_user = content.trim().to_string();
                             let swapped_content = current_user.trim().to_string();
                             if !swapped_user.is_empty() && !swapped_content.is_empty() {
@@ -832,6 +752,10 @@ impl TeamsCaptionStream {
 
                     if content.trim().is_empty() {
                         continue;
+                    }
+
+                    if let Some(current_user) = user.as_deref() {
+                        self.remember_known_user(current_user);
                     }
 
                     message_pairs.push((user, content));
@@ -856,7 +780,6 @@ impl TeamsCaptionStream {
                     {
                         start_index = anchor_index.saturating_add(1);
                     } else {
-                        // The caption list likely got recycled/reordered; only recover from a short tail.
                         start_index = message_pairs.len().saturating_sub(RECOVERY_TAIL_PAIRS);
                     }
                 }
@@ -906,27 +829,40 @@ mod tests {
     use super::TeamsCaptionStream;
 
     #[test]
-    fn detects_swapped_pair_by_previous_cross_match() {
-        let should_swap = TeamsCaptionStream::should_swap_user_content(
-            "The way people decide they want to use this form OK and if there's a need.",
+    fn detects_swapped_pair_when_content_matches_known_user() {
+        let mut stream = TeamsCaptionStream::new().expect("stream");
+        stream.remember_known_user("Nikita Suprotivnyi (Nokia)");
+
+        let should_swap = stream.should_swap_user_content(
+            "In any case, and then kind of that's why what it means.",
             "Nikita Suprotivnyi (Nokia)",
-            Some((
-                "Nikita Suprotivnyi (Nokia)",
-                "The way people decide they want to use this for OK and if there's a need to say to this again.",
-            )),
         );
 
         assert!(should_swap);
     }
 
     #[test]
-    fn keeps_normal_pair_without_swap_signal() {
-        let should_swap = TeamsCaptionStream::should_swap_user_content(
+    fn keeps_normal_pair_when_user_is_known() {
+        let mut stream = TeamsCaptionStream::new().expect("stream");
+        stream.remember_known_user("Nikita Suprotivnyi (Nokia)");
+
+        let should_swap = stream.should_swap_user_content(
             "Nikita Suprotivnyi (Nokia)",
             "The way people decide they want to use this for OK and if there's a need.",
-            Some(("Another Speaker", "Previous message")),
         );
 
         assert!(!should_swap);
+    }
+
+    #[test]
+    fn remembers_new_user_when_pair_is_accepted() {
+        let mut stream = TeamsCaptionStream::new().expect("stream");
+
+        assert!(!stream.should_swap_user_content("Alice Example", "Hello there"));
+        stream.remember_known_user("Alice Example");
+
+        assert!(stream
+            .known_users
+            .contains(&TeamsCaptionStream::normalize_for_match("Alice Example")));
     }
 }
