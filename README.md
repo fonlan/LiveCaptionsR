@@ -146,7 +146,7 @@ Each provider has independent proxy settings:
 
 LiveCaptionsR maintains detailed logs to help diagnose issues:
 
-**Log Location**: `%APPDATA%\LiveCaptionsR\logs\livecaptions-r.log`
+**Log Location**: `%APPDATA%\LiveCaptionsR\logs\livecaptions-r-YYYY-MM-DD.log`
 
 To quickly access the logs directory:
 1. Press `Win+R` to open Run dialog
@@ -154,8 +154,8 @@ To quickly access the logs directory:
 3. Press Enter
 
 **Log Files**:
-- `livecaptions-r.log` - Current log file
-- `livecaptions-r.log.1` through `.5` - Rotated log files (older logs)
+- `livecaptions-r-YYYY-MM-DD.log` - Current day's log file
+- `livecaptions-r-YYYY-MM-DD.log.1` through `.5` - Same day's rotated log files (older segments)
 
 **Changing Log Level**:
 
@@ -185,7 +185,7 @@ If startup occasionally appears as a white/blank screen:
 
 1. Wait a few seconds and confirm the native splash window closes and the main window appears.
    - On multi-monitor setups, startup windows should appear on the screen where the mouse cursor is currently located.
-2. Open logs at `%APPDATA%\LiveCaptionsR\logs\livecaptions-r.log`.
+2. Open logs at `%APPDATA%\LiveCaptionsR\logs\livecaptions-r-YYYY-MM-DD.log`.
 3. Check startup timings:
    - `[startup] native ready native_startup_ms=...`
    - `[startup] frontend init completed frontend_init_ms=... webview_boot_ms=...`
