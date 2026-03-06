@@ -12,9 +12,11 @@ interface SettingsFormProps {
   onConfigChange?: (c: AppConfig) => void;
   onStartCopilotAuth: (id: string) => void;
   addToast: (type: 'success' | 'error', msg: string) => void;
+  onClearAllSessions: () => void;
+  hasSessions: boolean;
 }
 
-export function SettingsForm({ config, onSave, onConfigChange, onStartCopilotAuth, addToast }: SettingsFormProps) {
+export function SettingsForm({ config, onSave, onConfigChange, onStartCopilotAuth, addToast, onClearAllSessions, hasSessions }: SettingsFormProps) {
   const { t, i18n } = useTranslation();
   const [formData, setFormData] = useState<AppConfig>(config);
   const [activeTab, setActiveTab] = useState<'general' | 'translation' | 'channels' | 'models' | 'summary'>('general');
@@ -218,6 +220,18 @@ export function SettingsForm({ config, onSave, onConfigChange, onStartCopilotAut
           <span className="slider round"></span>
         </label>
         <span>{t("settings.general.alwaysOnTop")}</span>
+      </div>
+      <div className="mt-6 rounded-xl border border-error/25 bg-error/10 p-4">
+        <div className="text-sm font-semibold text-text-primary">{t("settings.general.sessionManagement")}</div>
+        <div className="mt-1 text-xs text-text-secondary">{t("settings.general.clearAllSessionsHint")}</div>
+        <button
+          type="button"
+          className={`mt-3 h-10 w-full rounded-lg border transition-all ${hasSessions ? 'border-error/40 bg-error/10 text-error cursor-pointer hover:bg-error/15' : 'border-border bg-input text-text-muted cursor-not-allowed opacity-70'}`}
+          onClick={() => { void onClearAllSessions(); }}
+          disabled={!hasSessions}
+        >
+          {t("settings.general.clearAllSessions")}
+        </button>
       </div>
     </div>
   );

@@ -41,7 +41,15 @@
     "renameTooltip": "点击重命名",
     "deleteTooltip": "删除会话",
     "clearAllTooltip": "清空所有会话",
-    "emptyState": "无保存的会话"
+    "emptyState": "无保存的会话",
+    "searchPlaceholder": "搜索会话标题或预览",
+    "clearFiltersTooltip": "清除筛选",
+    "filteredCount": "显示 {{filtered}} / {{total}}",
+    "noResults": "没有匹配的历史会话",
+    "emptyPreview": "空会话",
+    "dateRangeLabel": "日期范围",
+    "startDateLabel": "开始日期",
+    "endDateLabel": "结束日期"
   },
   "controls": {
     "settings": "设置",
@@ -84,7 +92,10 @@
       "backgroundOpacity": "背景透明度",
       "hideSystemWindow": "隐藏系统实时字幕窗口",
       "includeMicrophone": "包含麦克风音频",
-      "alwaysOnTop": "始终置顶"
+      "alwaysOnTop": "始终置顶",
+      "sessionManagement": "会话管理",
+      "clearAllSessionsHint": "在这里清空所有已保存的历史会话，此操作不可撤销。",
+      "clearAllSessions": "清空所有会话"
     },
     "translation": {
       "enableTranslation": "启用翻译",

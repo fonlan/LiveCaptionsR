@@ -41,7 +41,15 @@
     "renameTooltip": "Click to rename",
     "deleteTooltip": "Delete Session",
     "clearAllTooltip": "Delete All Sessions",
-    "emptyState": "No saved sessions"
+    "emptyState": "No saved sessions",
+    "searchPlaceholder": "Search session title or preview",
+    "clearFiltersTooltip": "Clear filters",
+    "filteredCount": "Showing {{filtered}} / {{total}}",
+    "noResults": "No matching sessions",
+    "emptyPreview": "Empty session",
+    "dateRangeLabel": "Date range",
+    "startDateLabel": "Start date",
+    "endDateLabel": "End date"
   },
   "controls": {
     "settings": "Settings",
@@ -84,7 +92,10 @@
       "backgroundOpacity": "Background Opacity",
       "hideSystemWindow": "Hide System LiveCaptions Window",
       "includeMicrophone": "Include Microphone Audio",
-      "alwaysOnTop": "Always on Top"
+      "alwaysOnTop": "Always on Top",
+      "sessionManagement": "Session Management",
+      "clearAllSessionsHint": "Clear all saved history sessions here. This action cannot be undone.",
+      "clearAllSessions": "Clear All Sessions"
     },
     "translation": {
       "enableTranslation": "Enable Translation",

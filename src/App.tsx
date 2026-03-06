@@ -2347,7 +2347,6 @@ function App() {
           currentId={activeSessionId}
           onSelect={handleSelectSession}
           onDelete={handleDeleteSession}
-          onClearAll={handleClearAllSessions}
           isOpen={isSidebarOpen} 
         />
 
@@ -2558,6 +2557,8 @@ function App() {
                   onConfigChange={setConfig}
                   onStartCopilotAuth={(id) => { setAuthChannelId(id); setDeviceAuthOpen(true); }}
                   addToast={addToast}
+                  onClearAllSessions={handleClearAllSessions}
+                  hasSessions={sessions.length > 0}
                 />
               </Suspense>
             )}
