@@ -87,6 +87,8 @@ const RECENT_SENTENCE_MIN_LENGTH = 8;
 const TEAMS_REWRITE_MAX_AGE_SECONDS = 15;
 const TEAMS_REWRITE_SIMILARITY_THRESHOLD = 0.72;
 const TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD = 0.58;
+const TEAMS_REWRITE_MIN_TOKEN_COUNT = 5;
+const TEAMS_REWRITE_MAX_TOKEN_EDITS = 2;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
 const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
@@ -499,6 +501,37 @@ function App() {
     return count;
   };
 
+  const calculateSequenceSimilarity = (left: string[], right: string[]): number => {
+    if (left.length === 0 && right.length === 0) {
+      return 1;
+    }
+    if (left.length === 0 || right.length === 0) {
+      return 0;
+    }
+
+    const matrix = Array.from({ length: left.length + 1 }, (_, rowIndex) =>
+      Array.from({ length: right.length + 1 }, (_, columnIndex) => {
+        if (rowIndex === 0) return columnIndex;
+        if (columnIndex === 0) return rowIndex;
+        return 0;
+      }),
+    );
+
+    for (let i = 1; i <= left.length; i += 1) {
+      for (let j = 1; j <= right.length; j += 1) {
+        const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + cost,
+        );
+      }
+    }
+
+    const distance = matrix[left.length][right.length];
+    const maxLength = Math.max(left.length, right.length);
+    return 1 - distance / maxLength;
+  };
   const shouldOverwriteTeamsCard = (
     previousText: string,
     nextText: string,
@@ -523,6 +556,7 @@ function App() {
     const minTokenCount = Math.min(previousTokens.length, nextTokens.length);
     const sharedPrefixTokens = countSharedTokenPrefix(previousTokens, nextTokens);
     const sharedSuffixTokens = countSharedTokenSuffix(previousTokens, nextTokens);
+    const sharedEdgeTokens = Math.min(minTokenCount, sharedPrefixTokens + sharedSuffixTokens);
     const shorterText = previousNormalized.length <= nextNormalized.length
       ? previousNormalized
       : nextNormalized;
@@ -533,23 +567,46 @@ function App() {
     const fullySharedEdge = minTokenCount > 0 && (
       sharedPrefixTokens === minTokenCount || sharedSuffixTokens === minTokenCount
     );
+    const hasDominantEdgeCoverage =
+      minTokenCount >= TEAMS_REWRITE_MIN_TOKEN_COUNT &&
+      sharedEdgeTokens + TEAMS_REWRITE_MAX_TOKEN_EDITS >= minTokenCount;
     const normalizedSimilarity = calculateSimilarity(previousNormalized, nextNormalized);
+    const tokenSimilarity = calculateSequenceSimilarity(previousTokens, nextTokens);
     const hasStrongSimilarity = normalizedSimilarity >= TEAMS_REWRITE_SIMILARITY_THRESHOLD;
     const hasEdgeBackedSimilarity =
       normalizedSimilarity >= TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD && (
         hasContainment ||
         fullySharedEdge ||
+        hasDominantEdgeCoverage ||
         sharedPrefixTokens >= 2 ||
         sharedSuffixTokens >= 2
       );
 
-    if (hasStrongSimilarity || hasEdgeBackedSimilarity) {
+    const hasStrongTokenSimilarity =
+      minTokenCount >= TEAMS_REWRITE_MIN_TOKEN_COUNT &&
+      tokenSimilarity >= TEAMS_REWRITE_SIMILARITY_THRESHOLD;
+    const hasEdgeBackedTokenSimilarity =
+      minTokenCount >= TEAMS_REWRITE_MIN_TOKEN_COUNT &&
+      tokenSimilarity >= TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD && (
+        hasContainment ||
+        hasDominantEdgeCoverage ||
+        sharedPrefixTokens >= 3 ||
+        sharedSuffixTokens >= 3
+      );
+    if (
+      hasStrongSimilarity ||
+      hasEdgeBackedSimilarity ||
+      hasStrongTokenSimilarity ||
+      hasEdgeBackedTokenSimilarity ||
+      hasDominantEdgeCoverage
+    ) {
       return true;
     }
 
     return shouldOverwrite(previousText, nextText) && (
       hasContainment ||
       fullySharedEdge ||
+      hasDominantEdgeCoverage ||
       sharedPrefixTokens >= 3 ||
       sharedSuffixTokens >= 3
     );

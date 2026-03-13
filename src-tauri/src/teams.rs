@@ -32,7 +32,6 @@ pub struct TeamsWindowInfo {
     pub pid: u32,
     pub title: String,
 }
-
 /// Check if Teams is running
 pub fn is_teams_running() -> bool {
     Command::new("tasklist")
@@ -681,6 +680,7 @@ pub struct TeamsCaptionStream {
     selected_hwnd: Option<isize>,
     running: Arc<AtomicBool>,
     last_seen_signature: Option<String>,
+    last_seen_message: Option<(Option<String>, String)>,
     pending_messages: Vec<(Option<String>, String)>,
     recent_signatures: VecDeque<String>,
     known_users: HashSet<String>,
@@ -698,6 +698,7 @@ impl TeamsCaptionStream {
             selected_hwnd: None,
             running: Arc::new(AtomicBool::new(false)),
             last_seen_signature: None,
+            last_seen_message: None,
             pending_messages: Vec::new(),
             recent_signatures: VecDeque::with_capacity(120),
             known_users: HashSet::new(),
@@ -732,6 +733,24 @@ impl TeamsCaptionStream {
             return;
         }
 
+        if let Some((pending_user, pending_content)) = self.pending_messages.last_mut() {
+            if Self::is_probable_rewrite(
+                pending_user.as_deref(),
+                pending_content,
+                user.as_deref(),
+                &content,
+            ) {
+                *pending_user = user.clone();
+                *pending_content = content.clone();
+                if !self.recent_signatures.contains(&signature) {
+                    self.recent_signatures.push_back(signature);
+                    if self.recent_signatures.len() > 120 {
+                        self.recent_signatures.pop_front();
+                    }
+                }
+                return;
+            }
+        }
         if self.recent_signatures.contains(&signature) {
             return;
         }
@@ -761,6 +780,179 @@ impl TeamsCaptionStream {
             .to_string()
     }
 
+    fn tokenize_rewrite_text(value: &str) -> Vec<String> {
+        let normalized = value
+            .replace('\r', " ")
+            .replace('\n', " ")
+            .replace('’', "'")
+            .to_lowercase();
+
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+
+        for ch in normalized.chars() {
+            if ch.is_alphanumeric() {
+                current.push(ch);
+                continue;
+            }
+
+            if ch == '\'' && !current.is_empty() {
+                current.push(ch);
+                continue;
+            }
+
+            if current.ends_with('\'') {
+                current.pop();
+            }
+
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        }
+
+        if current.ends_with('\'') {
+            current.pop();
+        }
+
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+
+        tokens
+    }
+    fn count_shared_token_prefix(left: &[String], right: &[String]) -> usize {
+        let limit = left.len().min(right.len());
+        let mut count = 0;
+        while count < limit && left[count] == right[count] {
+            count += 1;
+        }
+        count
+    }
+    fn count_shared_token_suffix(left: &[String], right: &[String]) -> usize {
+        let limit = left.len().min(right.len());
+        let mut count = 0;
+        while count < limit && left[left.len() - 1 - count] == right[right.len() - 1 - count] {
+            count += 1;
+        }
+        count
+    }
+    fn calculate_token_similarity(left: &[String], right: &[String]) -> f32 {
+        if left == right {
+            return 1.0;
+        }
+
+        let max_len = left.len().max(right.len());
+        if max_len == 0 {
+            return 0.0;
+        }
+
+        let mut matrix = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+        for (i, row) in matrix.iter_mut().enumerate().take(left.len() + 1) {
+            row[0] = i;
+        }
+        for j in 0..=right.len() {
+            matrix[0][j] = j;
+        }
+
+        for i in 1..=left.len() {
+            for j in 1..=right.len() {
+                let cost = usize::from(left[i - 1] != right[j - 1]);
+                matrix[i][j] = (matrix[i - 1][j] + 1)
+                    .min(matrix[i][j - 1] + 1)
+                    .min(matrix[i - 1][j - 1] + cost);
+            }
+        }
+
+        let distance = matrix[left.len()][right.len()];
+        1.0 - distance as f32 / max_len as f32
+    }
+    fn has_compatible_user(previous_user: Option<&str>, next_user: Option<&str>) -> bool {
+        let previous = previous_user
+            .map(Self::normalize_for_match)
+            .unwrap_or_default();
+        let next = next_user.map(Self::normalize_for_match).unwrap_or_default();
+
+        previous.is_empty() || next.is_empty() || previous == next
+    }
+    fn is_probable_rewrite(
+        previous_user: Option<&str>,
+        previous_content: &str,
+        next_user: Option<&str>,
+        next_content: &str,
+    ) -> bool {
+        if !Self::has_compatible_user(previous_user, next_user) {
+            return false;
+        }
+
+        let previous_tokens = Self::tokenize_rewrite_text(previous_content);
+        let next_tokens = Self::tokenize_rewrite_text(next_content);
+        let min_token_count = previous_tokens.len().min(next_tokens.len());
+        if min_token_count == 0 {
+            return false;
+        }
+
+        if previous_tokens == next_tokens {
+            return true;
+        }
+
+        let previous_normalized = previous_tokens.join(" ");
+        let next_normalized = next_tokens.join(" ");
+        let shorter = if previous_normalized.len() <= next_normalized.len() {
+            previous_normalized.as_str()
+        } else {
+            next_normalized.as_str()
+        };
+        let longer = if previous_normalized.len() > next_normalized.len() {
+            previous_normalized.as_str()
+        } else {
+            next_normalized.as_str()
+        };
+        let has_containment = shorter.len() >= 8 && longer.contains(shorter);
+
+        let shared_prefix_tokens = Self::count_shared_token_prefix(&previous_tokens, &next_tokens);
+        let shared_suffix_tokens = Self::count_shared_token_suffix(&previous_tokens, &next_tokens);
+        let shared_edge_tokens = min_token_count.min(shared_prefix_tokens + shared_suffix_tokens);
+
+        const REWRITE_MIN_TOKEN_COUNT: usize = 5;
+        const REWRITE_MAX_TOKEN_EDITS: usize = 2;
+        const REWRITE_STRONG_SIMILARITY: f32 = 0.72;
+        const REWRITE_EDGE_SIMILARITY: f32 = 0.58;
+
+        let has_dominant_edge_coverage = min_token_count >= REWRITE_MIN_TOKEN_COUNT
+            && shared_edge_tokens + REWRITE_MAX_TOKEN_EDITS >= min_token_count;
+        let token_similarity = Self::calculate_token_similarity(&previous_tokens, &next_tokens);
+        let has_strong_token_similarity = min_token_count >= REWRITE_MIN_TOKEN_COUNT
+            && token_similarity >= REWRITE_STRONG_SIMILARITY;
+        let has_edge_backed_similarity = min_token_count >= REWRITE_MIN_TOKEN_COUNT
+            && token_similarity >= REWRITE_EDGE_SIMILARITY
+            && (has_containment
+                || has_dominant_edge_coverage
+                || shared_prefix_tokens >= 3
+                || shared_suffix_tokens >= 3);
+
+        has_containment
+            || has_dominant_edge_coverage
+            || has_strong_token_similarity
+            || has_edge_backed_similarity
+    }
+    fn find_rewrite_anchor_index(
+        &self,
+        message_pairs: &[(Option<String>, String)],
+        recovery_tail_pairs: usize,
+    ) -> Option<usize> {
+        let (previous_user, previous_content) = self.last_seen_message.as_ref()?;
+        let start_index = message_pairs.len().saturating_sub(recovery_tail_pairs);
+
+        (start_index..message_pairs.len()).rev().find(|&index| {
+            let (next_user, next_content) = &message_pairs[index];
+            Self::is_probable_rewrite(
+                previous_user.as_deref(),
+                previous_content,
+                next_user.as_deref(),
+                next_content,
+            )
+        })
+    }
     fn remember_known_user(&mut self, user: &str) {
         let trimmed_user = user.trim();
         let normalized_user = Self::normalize_for_match(trimmed_user);
@@ -940,6 +1132,7 @@ impl TeamsCaptionStream {
     pub fn connect(&mut self) -> Result<String> {
         self.error_count = 0;
         self.last_seen_signature = None;
+        self.last_seen_message = None;
         self.pending_messages.clear();
         self.recent_signatures.clear();
         self.known_users.clear();
@@ -1039,6 +1232,10 @@ impl TeamsCaptionStream {
                         .rposition(|signature| signature == last_signature)
                     {
                         start_index = anchor_index.saturating_add(1);
+                    } else if let Some(anchor_index) =
+                        self.find_rewrite_anchor_index(&message_pairs, RECOVERY_TAIL_PAIRS)
+                    {
+                        start_index = anchor_index;
                     } else {
                         start_index = message_pairs.len().saturating_sub(RECOVERY_TAIL_PAIRS);
                     }
@@ -1050,6 +1247,7 @@ impl TeamsCaptionStream {
                 }
 
                 self.last_seen_signature = signatures.last().cloned();
+                self.last_seen_message = message_pairs.last().cloned();
 
                 if !self.pending_messages.is_empty() {
                     return Some(self.pending_messages.remove(0));
@@ -1287,5 +1485,51 @@ mod tests {
                 ),
             ]
         );
+    }
+    #[test]
+    fn treats_same_speaker_caption_corrections_as_rewrites() {
+        let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            Some("Alex Mercer (Contoso)"),
+            "Review the rollout notes for the q3 migration because during the 118 planning workshop we still have an unresolved item around the service gateway and",
+            Some("Alex Mercer (Contoso)"),
+            "Review the rollout notes for the q3 migration. Because during the 118 planning workshop, we still have an unresolved item around the service gateway and deployment checklist.",
+        );
+
+        assert!(is_rewrite);
+    }
+    #[test]
+    fn keeps_distinct_same_speaker_messages_out_of_rewrite_bucket() {
+        let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            Some("Alex Mercer (Contoso)"),
+            "Can everyone see the dashboard update from yesterday?",
+            Some("Alex Mercer (Contoso)"),
+            "Let's move on to the pipeline blockers for the next sprint.",
+        );
+
+        assert!(!is_rewrite);
+    }
+    #[test]
+    fn finds_rewrite_anchor_inside_recovery_tail() {
+        let mut stream = TeamsCaptionStream::new().expect("stream");
+        stream.last_seen_message = Some((
+            Some("Alex Mercer (Contoso)".to_string()),
+            "Review the rollout notes for the q3 migration because during the 118 planning workshop we still have an unresolved item around the service gateway and".to_string(),
+        ));
+
+        let message_pairs = vec![
+            (
+                Some("Jordan Example".to_string()),
+                "Unrelated earlier caption".to_string(),
+            ),
+            (
+                Some("Alex Mercer (Contoso)".to_string()),
+                "Review the rollout notes for the q3 migration. Because during the 118 planning workshop, we still have an unresolved item around the service gateway and deployment checklist."
+                    .to_string(),
+            ),
+        ];
+
+        let anchor_index = stream.find_rewrite_anchor_index(&message_pairs, 3);
+
+        assert_eq!(anchor_index, Some(1));
     }
 }
