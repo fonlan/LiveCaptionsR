@@ -63,6 +63,7 @@ import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
 import { ChatSidebar } from "./components/ChatSidebar";
 import {
+  calculateSimilarity,
   shouldOverwrite,
   getLatestCaption,
   generateId
@@ -83,6 +84,9 @@ const WHEEL_MAX_STEP_PX = 92;
 const RECENT_SENTENCE_DEDUP_WINDOW_MS = 45_000;
 const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
+const TEAMS_REWRITE_MAX_AGE_SECONDS = 15;
+const TEAMS_REWRITE_SIMILARITY_THRESHOLD = 0.72;
+const TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD = 0.58;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
 const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
@@ -459,6 +463,96 @@ function App() {
       .replace(/[.!?。！？,，;；:：]+$/g, "")
       .trim()
       .toLowerCase();
+  };
+
+  const tokenizeTeamsRewriteText = (text: string): string[] => {
+    const normalized = text
+      .normalize("NFKC")
+      .replace(/[’]/g, "'")
+      .toLowerCase();
+
+    return normalized.match(/[\p{L}\p{N}]+(?:'[\p{L}\p{N}]+)*/gu) ?? [];
+  };
+
+  const normalizeTeamsRewriteText = (text: string): string => {
+    return tokenizeTeamsRewriteText(text).join(" ");
+  };
+
+  const countSharedTokenPrefix = (left: string[], right: string[]): number => {
+    const limit = Math.min(left.length, right.length);
+    let count = 0;
+    while (count < limit && left[count] === right[count]) {
+      count += 1;
+    }
+    return count;
+  };
+
+  const countSharedTokenSuffix = (left: string[], right: string[]): number => {
+    const limit = Math.min(left.length, right.length);
+    let count = 0;
+    while (
+      count < limit &&
+      left[left.length - 1 - count] === right[right.length - 1 - count]
+    ) {
+      count += 1;
+    }
+    return count;
+  };
+
+  const shouldOverwriteTeamsCard = (
+    previousText: string,
+    nextText: string,
+    ageSeconds: number,
+  ): boolean => {
+    if (ageSeconds > TEAMS_REWRITE_MAX_AGE_SECONDS) {
+      return false;
+    }
+
+    const previousNormalized = normalizeTeamsRewriteText(previousText);
+    const nextNormalized = normalizeTeamsRewriteText(nextText);
+    if (!previousNormalized || !nextNormalized) {
+      return false;
+    }
+
+    if (previousNormalized === nextNormalized) {
+      return true;
+    }
+
+    const previousTokens = tokenizeTeamsRewriteText(previousText);
+    const nextTokens = tokenizeTeamsRewriteText(nextText);
+    const minTokenCount = Math.min(previousTokens.length, nextTokens.length);
+    const sharedPrefixTokens = countSharedTokenPrefix(previousTokens, nextTokens);
+    const sharedSuffixTokens = countSharedTokenSuffix(previousTokens, nextTokens);
+    const shorterText = previousNormalized.length <= nextNormalized.length
+      ? previousNormalized
+      : nextNormalized;
+    const longerText = previousNormalized.length > nextNormalized.length
+      ? previousNormalized
+      : nextNormalized;
+    const hasContainment = shorterText.length >= 8 && longerText.includes(shorterText);
+    const fullySharedEdge = minTokenCount > 0 && (
+      sharedPrefixTokens === minTokenCount || sharedSuffixTokens === minTokenCount
+    );
+    const normalizedSimilarity = calculateSimilarity(previousNormalized, nextNormalized);
+    const hasStrongSimilarity = normalizedSimilarity >= TEAMS_REWRITE_SIMILARITY_THRESHOLD;
+    const hasEdgeBackedSimilarity =
+      normalizedSimilarity >= TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD && (
+        hasContainment ||
+        fullySharedEdge ||
+        sharedPrefixTokens >= 2 ||
+        sharedSuffixTokens >= 2
+      );
+
+    if (hasStrongSimilarity || hasEdgeBackedSimilarity) {
+      return true;
+    }
+
+    return shouldOverwrite(previousText, nextText) && (
+      hasContainment ||
+      fullySharedEdge ||
+      sharedPrefixTokens >= 3 ||
+      sharedSuffixTokens >= 3
+    );
   };
 
   const shouldSkipRecentSentence = (text: string, user?: string): boolean => {
@@ -1732,8 +1826,14 @@ function App() {
           const lastCardUser = (lastCard?.user ?? "").trim();
           const continuationUser = hasKnownSpeaker ? normalizedUser : lastCardUser;
           const sanitizedUser = continuationUser ? continuationUser : undefined;
+          const cardAgeSeconds = lastCard
+            ? Math.max(0, Math.floor(Date.now() / 1000) - lastCard.timestamp)
+            : Number.POSITIVE_INFINITY;
           const shouldTreatAsContinuation =
-            !!lastCard && !hasSpeakerChanged && (!hasKnownSpeaker || normalizedUser === lastCardUser) && shouldOverwrite(lastCard.original, fullText);
+            !!lastCard &&
+            !hasSpeakerChanged &&
+            (!hasKnownSpeaker || normalizedUser === lastCardUser) &&
+            shouldOverwriteTeamsCard(lastCard.original, fullText, cardAgeSeconds);
           
           // Helper to trigger translation for a pending card
           const triggerTranslation = (cardId: string) => {

@@ -339,6 +339,33 @@ impl TeamsWatcher {
             .to_string()
     }
 
+    fn looks_like_speaker_word(value: &str) -> bool {
+        let trimmed = value.trim_matches(|c: char| {
+            matches!(
+                c,
+                '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | ',' | ':' | ';'
+            )
+        });
+
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        let has_cased_letters = trimmed
+            .chars()
+            .any(|c| c.is_lowercase() || c.is_uppercase());
+        if !has_cased_letters {
+            return true;
+        }
+
+        let mut alphabetic = trimmed.chars().filter(|c| c.is_alphabetic());
+        let Some(first_letter) = alphabetic.next() else {
+            return true;
+        };
+
+        first_letter.is_uppercase() && alphabetic.all(|c| c.is_lowercase() || c.is_uppercase())
+    }
+
     fn looks_like_speaker(value: &str) -> bool {
         let trimmed = value.trim();
         if trimmed.is_empty() || trimmed.contains('\n') {
@@ -353,12 +380,24 @@ impl TeamsWatcher {
             return false;
         }
 
-        !trimmed.chars().any(|c| {
+        if trimmed.chars().any(|c| {
             matches!(
                 c,
                 '.' | '!' | '?' | ';' | ':' | '。' | '！' | '？' | '；' | '：'
             )
-        })
+        }) {
+            return false;
+        }
+
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        if words.iter().all(|word| Self::looks_like_speaker_word(word)) {
+            return true;
+        }
+
+        let has_cased_letters = trimmed
+            .chars()
+            .any(|c| c.is_lowercase() || c.is_uppercase());
+        !has_cased_letters && words.len() <= 2 && trimmed.chars().count() <= 16
     }
 
     fn looks_like_content(value: &str) -> bool {
@@ -376,10 +415,71 @@ impl TeamsWatcher {
                 c,
                 '.' | '!' | '?' | ',' | ';' | ':' | '。' | '！' | '？' | '，' | '；' | '：'
             )
-        })
+        }) || !Self::looks_like_speaker(trimmed)
     }
 
-    fn parse_message_parts(parts: &[String]) -> Option<(Option<String>, String)> {
+    fn push_message_pair(
+        messages: &mut Vec<(Option<String>, String)>,
+        user: Option<String>,
+        content_parts: &mut Vec<String>,
+    ) {
+        let content = content_parts.join(" ").trim().to_string();
+        if content.is_empty() {
+            content_parts.clear();
+            return;
+        }
+
+        messages.push((user, content));
+        content_parts.clear();
+    }
+
+    fn strip_cumulative_prefix(previous_content: &str, current_content: &str) -> Option<String> {
+        let previous = previous_content.trim();
+        let current = current_content.trim();
+        if previous.is_empty() || current.len() <= previous.len() {
+            return None;
+        }
+
+        let suffix = current.strip_prefix(previous)?;
+        let trimmed_suffix = suffix
+            .trim_start_matches(|c: char| {
+                c.is_whitespace()
+                    || matches!(c, '-' | '–' | '—' | ':' | '：' | ',' | '，' | ';' | '；')
+            })
+            .trim();
+
+        if trimmed_suffix.is_empty() {
+            return None;
+        }
+
+        Some(trimmed_suffix.to_string())
+    }
+
+    fn decumulate_messages(
+        messages: Vec<(Option<String>, String)>,
+    ) -> Vec<(Option<String>, String)> {
+        let mut decumulated: Vec<(Option<String>, String)> = Vec::with_capacity(messages.len());
+        let mut previous_raw_content: Option<String> = None;
+
+        for (user, raw_content) in messages {
+            let normalized_content = Self::normalize_text_fragment(&raw_content);
+            if normalized_content.is_empty() {
+                continue;
+            }
+
+            let content = previous_raw_content
+                .as_deref()
+                .and_then(|previous| Self::strip_cumulative_prefix(previous, &normalized_content))
+                .unwrap_or_else(|| normalized_content.clone());
+
+            decumulated.push((user, content));
+            previous_raw_content = Some(normalized_content);
+        }
+
+        decumulated
+    }
+
+    fn parse_message_parts(parts: &[String]) -> Vec<(Option<String>, String)> {
         let normalized_parts: Vec<String> = parts
             .iter()
             .map(|part| Self::normalize_text_fragment(part))
@@ -387,44 +487,47 @@ impl TeamsWatcher {
             .collect();
 
         if normalized_parts.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         if normalized_parts.len() == 1 {
-            return Some((None, normalized_parts[0].clone()));
+            return vec![(None, normalized_parts[0].clone())];
         }
+
+        let mut raw_messages: Vec<(Option<String>, String)> = Vec::new();
 
         let first = &normalized_parts[0];
         let second = &normalized_parts[1];
+        let mut index = 2;
 
-        // Rarely, Teams surfaces content before speaker in a container.
-        if !Self::looks_like_speaker(first)
-            && Self::looks_like_speaker(second)
-            && Self::looks_like_content(first)
-        {
-            let mut content_parts = vec![first.clone()];
-            content_parts.extend(normalized_parts.iter().skip(2).cloned());
-            let content = content_parts.join(" ").trim().to_string();
-            if content.is_empty() {
-                return None;
+        let (mut current_user, mut content_parts): (Option<String>, Vec<String>) =
+            if !Self::looks_like_speaker(first) && Self::looks_like_speaker(second) {
+                (Some(second.clone()), vec![first.clone()])
+            } else {
+                (Some(first.clone()), vec![second.clone()])
+            };
+
+        while index < normalized_parts.len() {
+            let part = &normalized_parts[index];
+            let next_part = normalized_parts.get(index + 1);
+            let is_new_speaker_boundary = next_part
+                .map(|next| Self::looks_like_speaker(part) && Self::looks_like_content(next))
+                .unwrap_or(false);
+
+            if is_new_speaker_boundary {
+                Self::push_message_pair(&mut raw_messages, current_user.take(), &mut content_parts);
+                current_user = Some(part.clone());
+                content_parts.push(next_part.cloned().unwrap_or_default());
+                index += 2;
+                continue;
             }
-            return Some((Some(second.clone()), content));
+
+            content_parts.push(part.clone());
+            index += 1;
         }
 
-        let content = normalized_parts
-            .iter()
-            .skip(1)
-            .cloned()
-            .collect::<Vec<String>>()
-            .join(" ")
-            .trim()
-            .to_string();
-
-        if content.is_empty() {
-            return None;
-        }
-
-        Some((Some(first.clone()), content))
+        Self::push_message_pair(&mut raw_messages, current_user, &mut content_parts);
+        Self::decumulate_messages(raw_messages)
     }
 
     /// Get caption text from Teams window
@@ -549,9 +652,7 @@ impl TeamsWatcher {
             let mut messages: Vec<(Option<String>, String)> = Vec::new();
             for container_id in container_order {
                 if let Some(parts) = container_texts.remove(&container_id) {
-                    if let Some((user, content)) = Self::parse_message_parts(&parts) {
-                        messages.push((user, content));
-                    }
+                    messages.extend(Self::parse_message_parts(&parts));
                 }
             }
 
@@ -583,6 +684,7 @@ pub struct TeamsCaptionStream {
     pending_messages: Vec<(Option<String>, String)>,
     recent_signatures: VecDeque<String>,
     known_users: HashSet<String>,
+    known_user_samples: Vec<String>,
     error_count: u32,
 }
 
@@ -599,6 +701,7 @@ impl TeamsCaptionStream {
             pending_messages: Vec::new(),
             recent_signatures: VecDeque::with_capacity(120),
             known_users: HashSet::new(),
+            known_user_samples: Vec::new(),
             error_count: 0,
         })
     }
@@ -659,12 +762,160 @@ impl TeamsCaptionStream {
     }
 
     fn remember_known_user(&mut self, user: &str) {
-        let normalized_user = Self::normalize_for_match(user);
+        let trimmed_user = user.trim();
+        let normalized_user = Self::normalize_for_match(trimmed_user);
         if normalized_user.is_empty() {
             return;
         }
 
         self.known_users.insert(normalized_user);
+
+        if !self.known_user_samples.iter().any(|sample| {
+            Self::normalize_for_match(sample) == Self::normalize_for_match(trimmed_user)
+        }) {
+            self.known_user_samples.push(trimmed_user.to_string());
+            if self.known_user_samples.len() > 32 {
+                self.known_user_samples.remove(0);
+            }
+        }
+    }
+
+    fn push_unique_user_candidate(candidates: &mut Vec<String>, candidate: &str) {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        if candidates.iter().any(|existing| {
+            Self::normalize_for_match(existing) == Self::normalize_for_match(trimmed)
+        }) {
+            return;
+        }
+
+        candidates.push(trimmed.to_string());
+    }
+
+    fn collect_embedded_speaker_candidates(&self, user: Option<&str>) -> Vec<String> {
+        let mut candidates = Vec::new();
+        if let Some(current_user) = user {
+            Self::push_unique_user_candidate(&mut candidates, current_user);
+        }
+
+        for sample in &self.known_user_samples {
+            Self::push_unique_user_candidate(&mut candidates, sample);
+        }
+
+        candidates.sort_by(|left, right| {
+            right
+                .chars()
+                .count()
+                .cmp(&left.chars().count())
+                .then_with(|| left.cmp(right))
+        });
+        candidates
+    }
+
+    fn trim_embedded_marker_suffix(value: &str) -> &str {
+        value.trim_start_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '-' | '–' | '—' | ':' | '：' | ',' | '，' | ';' | '；' | '(' | '[' | '{'
+                )
+        })
+    }
+
+    fn has_embedded_marker_boundary(content: &str, index: usize) -> bool {
+        if index == 0 {
+            return true;
+        }
+
+        content[..index]
+            .chars()
+            .rev()
+            .find(|c| !c.is_whitespace())
+            .map(|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？'))
+            .unwrap_or(false)
+    }
+
+    fn find_embedded_speaker_marker(
+        content: &str,
+        candidates: &[String],
+    ) -> Option<(usize, String, usize)> {
+        let mut best_match: Option<(usize, String, usize)> = None;
+
+        for candidate in candidates {
+            for (index, _) in content.match_indices(candidate) {
+                if !Self::has_embedded_marker_boundary(content, index) {
+                    continue;
+                }
+
+                let suffix = Self::trim_embedded_marker_suffix(&content[index + candidate.len()..]);
+                if suffix.is_empty() {
+                    continue;
+                }
+
+                let candidate_match = (index, candidate.clone(), candidate.len());
+                let should_replace = match &best_match {
+                    None => true,
+                    Some((best_index, best_candidate, _)) => {
+                        index < *best_index
+                            || (index == *best_index
+                                && candidate.chars().count() > best_candidate.chars().count())
+                    }
+                };
+
+                if should_replace {
+                    best_match = Some(candidate_match);
+                }
+            }
+        }
+
+        best_match
+    }
+
+    fn split_message_by_embedded_speaker_markers(
+        &self,
+        user: Option<String>,
+        content: String,
+    ) -> Vec<(Option<String>, String)> {
+        let normalized_content = TeamsWatcher::normalize_text_fragment(&content);
+        if normalized_content.is_empty() {
+            return Vec::new();
+        }
+
+        let candidates = self.collect_embedded_speaker_candidates(user.as_deref());
+        if candidates.is_empty() {
+            return vec![(user, normalized_content)];
+        }
+
+        let mut split_messages = Vec::new();
+        let mut active_user = user;
+        let mut remaining = normalized_content;
+
+        while let Some((index, matched_user, matched_len)) =
+            Self::find_embedded_speaker_marker(&remaining, &candidates)
+        {
+            let prefix = remaining[..index].trim();
+            if !prefix.is_empty() {
+                split_messages.push((active_user.clone(), prefix.to_string()));
+            }
+
+            active_user = Some(matched_user);
+            remaining = Self::trim_embedded_marker_suffix(&remaining[index + matched_len..])
+                .trim()
+                .to_string();
+
+            if remaining.is_empty() {
+                break;
+            }
+        }
+
+        if !remaining.is_empty() {
+            split_messages.push((active_user, remaining));
+        }
+
+        split_messages
     }
 
     fn should_swap_user_content(&self, user: &str, content: &str) -> bool {
@@ -692,6 +943,7 @@ impl TeamsCaptionStream {
         self.pending_messages.clear();
         self.recent_signatures.clear();
         self.known_users.clear();
+        self.known_user_samples.clear();
         if !is_teams_running() {
             return Err(anyhow::anyhow!("Teams is not running."));
         }
@@ -754,11 +1006,19 @@ impl TeamsCaptionStream {
                         continue;
                     }
 
-                    if let Some(current_user) = user.as_deref() {
-                        self.remember_known_user(current_user);
-                    }
+                    for (split_user, split_content) in
+                        self.split_message_by_embedded_speaker_markers(user.clone(), content)
+                    {
+                        if split_content.trim().is_empty() {
+                            continue;
+                        }
 
-                    message_pairs.push((user, content));
+                        if let Some(current_user) = split_user.as_deref() {
+                            self.remember_known_user(current_user);
+                        }
+
+                        message_pairs.push((split_user, split_content));
+                    }
                 }
 
                 if message_pairs.is_empty() {
@@ -864,5 +1124,168 @@ mod tests {
         assert!(stream
             .known_users
             .contains(&TeamsCaptionStream::normalize_for_match("Alice Example")));
+    }
+
+    #[test]
+    fn splits_parts_when_later_speaker_appears() {
+        let parts = vec![
+            "Alice Example".to_string(),
+            "First message from Alice.".to_string(),
+            "Bob Example".to_string(),
+            "Reply from Bob.".to_string(),
+        ];
+
+        let parsed = super::TeamsWatcher::parse_message_parts(&parts);
+
+        assert_eq!(
+            parsed,
+            vec![
+                (
+                    Some("Alice Example".to_string()),
+                    "First message from Alice.".to_string(),
+                ),
+                (
+                    Some("Bob Example".to_string()),
+                    "Reply from Bob.".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_single_message_parts_together() {
+        let parts = vec![
+            "Alice Example".to_string(),
+            "First chunk".to_string(),
+            "second chunk".to_string(),
+        ];
+
+        let parsed = super::TeamsWatcher::parse_message_parts(&parts);
+
+        assert_eq!(
+            parsed,
+            vec![(
+                Some("Alice Example".to_string()),
+                "First chunk second chunk".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn supports_content_before_speaker_order() {
+        let parts = vec!["Hello from Alice.".to_string(), "Alice Example".to_string()];
+
+        let parsed = super::TeamsWatcher::parse_message_parts(&parts);
+
+        assert_eq!(
+            parsed,
+            vec![(
+                Some("Alice Example".to_string()),
+                "Hello from Alice.".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn strips_cumulative_prefix_from_later_speakers() {
+        let parts = vec![
+            "Alice Example".to_string(),
+            "Hello".to_string(),
+            "Bob Example".to_string(),
+            "Hello Hi there".to_string(),
+            "Carol Example".to_string(),
+            "Hello Hi there Nice to meet you".to_string(),
+        ];
+
+        let parsed = super::TeamsWatcher::parse_message_parts(&parts);
+
+        assert_eq!(
+            parsed,
+            vec![
+                (Some("Alice Example".to_string()), "Hello".to_string()),
+                (Some("Bob Example".to_string()), "Hi there".to_string()),
+                (
+                    Some("Carol Example".to_string()),
+                    "Nice to meet you".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn splits_repeated_same_speaker_cumulative_rows() {
+        let parts = vec![
+            "Alice Example".to_string(),
+            "First chunk".to_string(),
+            "Alice Example".to_string(),
+            "First chunk second chunk".to_string(),
+            "Alice Example".to_string(),
+            "First chunk second chunk third chunk".to_string(),
+        ];
+
+        let parsed = super::TeamsWatcher::parse_message_parts(&parts);
+
+        assert_eq!(
+            parsed,
+            vec![
+                (Some("Alice Example".to_string()), "First chunk".to_string(),),
+                (
+                    Some("Alice Example".to_string()),
+                    "second chunk".to_string(),
+                ),
+                (Some("Alice Example".to_string()), "third chunk".to_string(),),
+            ]
+        );
+    }
+
+    #[test]
+    fn splits_embedded_same_speaker_marker_from_content() {
+        let mut stream = TeamsCaptionStream::new().expect("stream");
+        stream.remember_known_user("LingMin An (Nokia)");
+
+        let parsed = stream.split_message_by_embedded_speaker_markers(
+            Some("LingMin An (Nokia)".to_string()),
+            "As the Dev OPS team send message in the chat, we can see that the add a projects use cases registration can be. LingMin An (Nokia) Closed".to_string(),
+        );
+
+        assert_eq!(
+            parsed,
+            vec![
+                (
+                    Some("LingMin An (Nokia)".to_string()),
+                    "As the Dev OPS team send message in the chat, we can see that the add a projects use cases registration can be.".to_string(),
+                ),
+                (
+                    Some("LingMin An (Nokia)".to_string()),
+                    "Closed".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn splits_embedded_known_next_speaker_marker_from_content() {
+        let mut stream = TeamsCaptionStream::new().expect("stream");
+        stream.remember_known_user("LingMin An (Nokia)");
+        stream.remember_known_user("Bob Example");
+
+        let parsed = stream.split_message_by_embedded_speaker_markers(
+            Some("LingMin An (Nokia)".to_string()),
+            "Closed. Bob Example Thanks everyone".to_string(),
+        );
+
+        assert_eq!(
+            parsed,
+            vec![
+                (
+                    Some("LingMin An (Nokia)".to_string()),
+                    "Closed.".to_string(),
+                ),
+                (
+                    Some("Bob Example".to_string()),
+                    "Thanks everyone".to_string(),
+                ),
+            ]
+        );
     }
 }
