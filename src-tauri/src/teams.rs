@@ -24,6 +24,12 @@ use windows::{
 mod runtime_id;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const REWRITE_MIN_TOKEN_COUNT: usize = 5;
+const REWRITE_MAX_TOKEN_EDITS: usize = 2;
+const REWRITE_STRONG_SIMILARITY: f32 = 0.72;
+const REWRITE_EDGE_SIMILARITY: f32 = 0.58;
+const REWRITE_LCS_RATIO_THRESHOLD: f32 = 0.70;
+const REWRITE_MIN_SHARED_RUN_TOKENS: usize = 6;
 
 /// Information about a Teams window candidate
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -866,6 +872,42 @@ impl TeamsCaptionStream {
         let distance = matrix[left.len()][right.len()];
         1.0 - distance as f32 / max_len as f32
     }
+    fn calculate_lcs_length(left: &[String], right: &[String]) -> usize {
+        if left.is_empty() || right.is_empty() {
+            return 0;
+        }
+
+        let mut matrix = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+        for i in 1..=left.len() {
+            for j in 1..=right.len() {
+                matrix[i][j] = if left[i - 1] == right[j - 1] {
+                    matrix[i - 1][j - 1] + 1
+                } else {
+                    matrix[i - 1][j].max(matrix[i][j - 1])
+                };
+            }
+        }
+
+        matrix[left.len()][right.len()]
+    }
+    fn calculate_longest_common_run_length(left: &[String], right: &[String]) -> usize {
+        if left.is_empty() || right.is_empty() {
+            return 0;
+        }
+
+        let mut matrix = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+        let mut best = 0usize;
+        for i in 1..=left.len() {
+            for j in 1..=right.len() {
+                if left[i - 1] == right[j - 1] {
+                    matrix[i][j] = matrix[i - 1][j - 1] + 1;
+                    best = best.max(matrix[i][j]);
+                }
+            }
+        }
+
+        best
+    }
     fn has_compatible_user(previous_user: Option<&str>, next_user: Option<&str>) -> bool {
         let previous = previous_user
             .map(Self::normalize_for_match)
@@ -912,15 +954,17 @@ impl TeamsCaptionStream {
         let shared_prefix_tokens = Self::count_shared_token_prefix(&previous_tokens, &next_tokens);
         let shared_suffix_tokens = Self::count_shared_token_suffix(&previous_tokens, &next_tokens);
         let shared_edge_tokens = min_token_count.min(shared_prefix_tokens + shared_suffix_tokens);
-
-        const REWRITE_MIN_TOKEN_COUNT: usize = 5;
-        const REWRITE_MAX_TOKEN_EDITS: usize = 2;
-        const REWRITE_STRONG_SIMILARITY: f32 = 0.72;
-        const REWRITE_EDGE_SIMILARITY: f32 = 0.58;
-
         let has_dominant_edge_coverage = min_token_count >= REWRITE_MIN_TOKEN_COUNT
             && shared_edge_tokens + REWRITE_MAX_TOKEN_EDITS >= min_token_count;
         let token_similarity = Self::calculate_token_similarity(&previous_tokens, &next_tokens);
+        let lcs_length = Self::calculate_lcs_length(&previous_tokens, &next_tokens);
+        let longest_shared_run =
+            Self::calculate_longest_common_run_length(&previous_tokens, &next_tokens);
+        let lcs_ratio_short = if min_token_count > 0 {
+            lcs_length as f32 / min_token_count as f32
+        } else {
+            0.0
+        };
         let has_strong_token_similarity = min_token_count >= REWRITE_MIN_TOKEN_COUNT
             && token_similarity >= REWRITE_STRONG_SIMILARITY;
         let has_edge_backed_similarity = min_token_count >= REWRITE_MIN_TOKEN_COUNT
@@ -929,11 +973,15 @@ impl TeamsCaptionStream {
                 || has_dominant_edge_coverage
                 || shared_prefix_tokens >= 3
                 || shared_suffix_tokens >= 3);
+        let has_strong_ordered_overlap = min_token_count >= REWRITE_MIN_TOKEN_COUNT
+            && lcs_ratio_short >= REWRITE_LCS_RATIO_THRESHOLD
+            && longest_shared_run >= REWRITE_MIN_SHARED_RUN_TOKENS;
 
         has_containment
             || has_dominant_edge_coverage
             || has_strong_token_similarity
             || has_edge_backed_similarity
+            || has_strong_ordered_overlap
     }
     fn find_rewrite_anchor_index(
         &self,
@@ -1531,5 +1579,27 @@ mod tests {
         let anchor_index = stream.find_rewrite_anchor_index(&message_pairs, 3);
 
         assert_eq!(anchor_index, Some(1));
+    }
+    #[test]
+    fn treats_large_middle_overlap_rewrites_as_same_message() {
+        let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            Some("Morgan Lee (Fabrikam)"),
+            "You just mean it is a version inside the package image or some archive mirror yeah basically in the base image I think we just provide a script tools and a user to let them download those builds from the mirror what they want so because yeah",
+            Some("Morgan Lee (Fabrikam)"),
+            "It just means it is a version in the package image or the archive mirror yeah basically in the package image I think we just provide a scripts tools and the user to let them download the the builds from the mirror what they want",
+        );
+
+        assert!(is_rewrite);
+    }
+    #[test]
+    fn treats_prefix_corrected_rewrites_with_long_ordered_overlap_as_same_message() {
+        let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            Some("Casey Chen (Wingtip)"),
+            "Taylor do you have a a suggestion for this I mean I do not know how platform team uses the tools so I am not sure they we are using the quite other version or not if if not we we can",
+            Some("Casey Chen (Wingtip)"),
+            "Tyler do you have a suggestion for this I mean I do not know how platform team uses the tools so I am not sure they were using the quite old version or not",
+        );
+
+        assert!(is_rewrite);
     }
 }
