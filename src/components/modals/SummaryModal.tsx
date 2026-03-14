@@ -81,8 +81,16 @@ export function SummaryModal({ isOpen, onClose, text, isLoading }: SummaryModalP
     <div className="settings-overlay open" onClick={onClose}>
       <div className="settings-drawer summary-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '800px', width: '90%' }}>
         <header className="settings-header">
-          <h2>{t("summary.title")}</h2>
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div className="summary-header-title">
+            <h2>{t("summary.title")}</h2>
+            {isLoading && (
+              <span className="summary-header-status" aria-live="polite">
+                <span className="spinner" aria-hidden="true"></span>
+                <span>{t("summary.generating")}</span>
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
             {hasText && (
               <button
                 className="btn-icon"
@@ -100,22 +108,13 @@ export function SummaryModal({ isOpen, onClose, text, isLoading }: SummaryModalP
         </header>
         <div className="settings-content summary-content" ref={contentRef} onScroll={handleSummaryScroll}>
           {isLoading && !hasText ? (
-            <div className="summary-loading" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-              <span className="spinner" style={{ display: 'inline-block', marginBottom: '10px' }}></span>
+            <div className="summary-loading summary-loading-empty" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
               <div>{t("summary.generating")}</div>
             </div>
           ) : (
-            <>
-              {isLoading && (
-                <div className="summary-loading" style={{ padding: '0 5px 12px', textAlign: 'left', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span className="spinner" style={{ display: 'inline-block' }}></span>
-                  <span>{t("summary.generating")}</span>
-                </div>
-              )}
-              <div className="summary-text markdown-body" style={{ lineHeight: '1.6', fontSize: '15px', color: 'var(--text-primary)', padding: '0 5px' }}>
-                <Markdown>{text}</Markdown>
-              </div>
-            </>
+            <div className="summary-text markdown-body" style={{ lineHeight: '1.6', fontSize: '15px', color: 'var(--text-primary)', padding: '0 5px' }}>
+              <Markdown>{text}</Markdown>
+            </div>
           )}
         </div>
       </div>
