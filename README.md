@@ -179,6 +179,8 @@ For detailed debugging information:
 - `info` - General information (default)
 - `debug` - Detailed diagnostic information
 
+When capturing Microsoft Teams with `debug` log level, the backend also writes the raw UI Automation text elements, per-container raw text parts, and emitted Teams `source_id` values without pre-filtering so rewrite/merge issues can be diagnosed from logs.
+
 **Common Issues to Check Logs For**:
 - Translation API failures (check for HTTP errors, authentication issues)
 - Caption capture problems (check Windows UI Automation errors)

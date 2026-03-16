@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::error;
+use tracing::{debug, error};
 use windows::{
     core::*,
     Win32::Foundation::{BOOL, HWND, LPARAM, TRUE},
@@ -31,6 +31,23 @@ const REWRITE_EDGE_SIMILARITY: f32 = 0.58;
 const REWRITE_LCS_RATIO_THRESHOLD: f32 = 0.70;
 const REWRITE_MIN_SHARED_RUN_TOKENS: usize = 6;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamsCaptionMessage {
+    pub source_id: String,
+    pub user: Option<String>,
+    pub content: String,
+}
+#[allow(dead_code)]
+#[derive(Debug)]
+struct TeamsUiAutomationDebugElement {
+    index: i32,
+    text_source: &'static str,
+    text_class_name: String,
+    container_class_name: Option<String>,
+    container_id: Option<String>,
+    raw_text: String,
+    normalized_text: String,
+}
 /// Information about a Teams window candidate
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamsWindowInfo {
@@ -540,7 +557,7 @@ impl TeamsWatcher {
     pub fn get_caption_text(
         &self,
         window: &IUIAutomationElement,
-    ) -> Result<(Vec<(Option<String>, String)>, Option<IUIAutomationElement>)> {
+    ) -> Result<(Vec<TeamsCaptionMessage>, Option<IUIAutomationElement>)> {
         unsafe {
             let walker = match self.automation.ControlViewWalker() {
                 Ok(w) => w,
@@ -572,46 +589,64 @@ impl TeamsWatcher {
             let count = elements.Length().unwrap_or(0);
             const MAX_ELEMENTS: i32 = 5000;
             let limited_count = count.min(MAX_ELEMENTS);
+            let log_raw_capture = tracing::enabled!(tracing::Level::DEBUG);
 
             let mut container_texts: HashMap<String, Vec<String>> = HashMap::new();
             let mut container_order: Vec<String> = Vec::new();
             let mut first_container_element: Option<IUIAutomationElement> = None;
+            let mut raw_container_texts: HashMap<String, Vec<String>> = HashMap::new();
+            let mut raw_container_order: Vec<String> = Vec::new();
+            let mut raw_elements: Vec<TeamsUiAutomationDebugElement> = Vec::new();
 
             for i in 0..limited_count {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let text_element = elements.GetElement(i).ok()?;
-
-                    let text_content = text_element
-                        .CurrentName()
+                    let text_class_name = text_element
+                        .CurrentClassName()
                         .ok()
                         .map(|s| s.to_string())
-                        .filter(|text| !text.trim().is_empty())
-                        .or_else(|| {
-                            let text_pattern_result: Result<
-                                windows::Win32::UI::Accessibility::IUIAutomationTextPattern,
-                                _,
-                            > = text_element.GetCurrentPatternAs(
-                                windows::Win32::UI::Accessibility::UIA_TextPatternId,
-                            );
+                        .unwrap_or_default();
 
-                            if let Ok(text_pattern) = text_pattern_result {
-                                if let Ok(document_range) = text_pattern.DocumentRange() {
-                                    document_range.GetText(-1).ok().map(|s| s.to_string())
-                                } else {
-                                    None
-                                }
+                    let current_name = text_element.CurrentName().ok().map(|s| s.to_string());
+                    let document_text = if current_name
+                        .as_deref()
+                        .map(|text| text.trim().is_empty())
+                        .unwrap_or(true)
+                    {
+                        let text_pattern_result: Result<
+                            windows::Win32::UI::Accessibility::IUIAutomationTextPattern,
+                            _,
+                        > = text_element.GetCurrentPatternAs(
+                            windows::Win32::UI::Accessibility::UIA_TextPatternId,
+                        );
+
+                        if let Ok(text_pattern) = text_pattern_result {
+                            if let Ok(document_range) = text_pattern.DocumentRange() {
+                                document_range.GetText(-1).ok().map(|s| s.to_string())
                             } else {
                                 None
                             }
-                        })?;
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let (text_source, text_content) =
+                        if let Some(text) = current_name.filter(|text| !text.trim().is_empty()) {
+                            ("current_name", text)
+                        } else if let Some(text) = document_text {
+                            ("document_range", text)
+                        } else {
+                            ("missing", String::new())
+                        };
 
                     let normalized_text = Self::normalize_text_fragment(&text_content);
-                    if normalized_text.is_empty() {
-                        return None;
-                    }
 
                     let mut candidate = walker.GetParentElement(&text_element).ok()?;
                     let mut found_parent = None;
+                    let mut container_class_name = None;
 
                     for _ in 0..6 {
                         let class_name = candidate
@@ -620,13 +655,35 @@ impl TeamsWatcher {
                             .map(|s| s.to_string())
                             .unwrap_or_default();
                         if Self::is_message_container_class(&class_name) {
+                            container_class_name = Some(class_name.clone());
                             found_parent = Some(candidate.clone());
                             break;
                         }
                         candidate = walker.GetParentElement(&candidate).ok()?;
                     }
 
-                    let parent = found_parent?;
+                    let container_id = found_parent
+                        .as_ref()
+                        .map(|element| runtime_id::get_runtime_id_string(element));
+                    let debug_element = if log_raw_capture {
+                        Some(TeamsUiAutomationDebugElement {
+                            index: i,
+                            text_source,
+                            text_class_name,
+                            container_class_name,
+                            container_id: container_id.clone(),
+                            raw_text: text_content.clone(),
+                            normalized_text: normalized_text.clone(),
+                        })
+                    } else {
+                        None
+                    };
+                    let raw_container_capture =
+                        container_id.clone().map(|id| (id, text_content.clone()));
+
+                    let Some(parent) = found_parent else {
+                        return Some((debug_element, raw_container_capture, None));
+                    };
                     if first_container_element.is_none() {
                         if let Ok(gp) = walker.GetParentElement(&parent) {
                             first_container_element = Some(gp);
@@ -635,11 +692,38 @@ impl TeamsWatcher {
                         }
                     }
 
+                    if normalized_text.is_empty() {
+                        return Some((debug_element, raw_container_capture, None));
+                    }
+
                     let container_id = runtime_id::get_runtime_id_string(&parent);
-                    Some((container_id, normalized_text))
+                    Some((
+                        debug_element,
+                        raw_container_capture,
+                        Some((container_id, normalized_text)),
+                    ))
                 }));
 
-                if let Ok(Some((container_id, text))) = result {
+                if let Ok(Some((debug_element, raw_container_capture, parsed_capture))) = result {
+                    if let Some(debug_element) = debug_element {
+                        raw_elements.push(debug_element);
+                    }
+
+                    if let Some((container_id, raw_text)) = raw_container_capture {
+                        if !raw_container_texts.contains_key(&container_id) {
+                            raw_container_order.push(container_id.clone());
+                            raw_container_texts.insert(container_id.clone(), Vec::new());
+                        }
+
+                        if let Some(bucket) = raw_container_texts.get_mut(&container_id) {
+                            bucket.push(raw_text);
+                        }
+                    }
+
+                    let Some((container_id, text)) = parsed_capture else {
+                        continue;
+                    };
+
                     if !container_texts.contains_key(&container_id) {
                         container_order.push(container_id.clone());
                         container_texts.insert(container_id.clone(), Vec::new());
@@ -654,10 +738,34 @@ impl TeamsWatcher {
                 }
             }
 
-            let mut messages: Vec<(Option<String>, String)> = Vec::new();
+            if log_raw_capture {
+                let raw_container_parts = raw_container_order
+                    .iter()
+                    .filter_map(|container_id| {
+                        raw_container_texts
+                            .get(container_id)
+                            .map(|parts| (container_id.clone(), parts.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                debug!(
+                    total_elements = count,
+                    scanned_elements = limited_count,
+                    raw_elements = ?raw_elements,
+                    raw_container_parts = ?raw_container_parts,
+                    "Captured Teams UI Automation raw text elements"
+                );
+            }
+
+            let mut messages: Vec<TeamsCaptionMessage> = Vec::new();
             for container_id in container_order {
                 if let Some(parts) = container_texts.remove(&container_id) {
-                    messages.extend(Self::parse_message_parts(&parts));
+                    for (user, content) in Self::parse_message_parts(&parts) {
+                        messages.push(TeamsCaptionMessage {
+                            source_id: container_id.clone(),
+                            user,
+                            content,
+                        });
+                    }
                 }
             }
 
@@ -686,8 +794,8 @@ pub struct TeamsCaptionStream {
     selected_hwnd: Option<isize>,
     running: Arc<AtomicBool>,
     last_seen_signature: Option<String>,
-    last_seen_message: Option<(Option<String>, String)>,
-    pending_messages: Vec<(Option<String>, String)>,
+    last_seen_message: Option<TeamsCaptionMessage>,
+    pending_messages: Vec<TeamsCaptionMessage>,
     recent_signatures: VecDeque<String>,
     known_users: HashSet<String>,
     known_user_samples: Vec<String>,
@@ -733,21 +841,22 @@ impl TeamsCaptionStream {
         format!("{}|{}", normalized_user, normalized_content)
     }
 
-    fn push_if_new_message(&mut self, user: Option<String>, content: String) {
-        let signature = Self::build_message_signature(user.as_deref(), &content);
+    fn push_if_new_message(&mut self, message: TeamsCaptionMessage) {
+        let signature = Self::build_message_signature(message.user.as_deref(), &message.content);
         if signature.is_empty() || signature.ends_with('|') {
             return;
         }
 
-        if let Some((pending_user, pending_content)) = self.pending_messages.last_mut() {
+        if let Some(pending_message) = self.pending_messages.last_mut() {
             if Self::is_probable_rewrite(
-                pending_user.as_deref(),
-                pending_content,
-                user.as_deref(),
-                &content,
+                Some(pending_message.source_id.as_str()),
+                pending_message.user.as_deref(),
+                &pending_message.content,
+                Some(message.source_id.as_str()),
+                message.user.as_deref(),
+                &message.content,
             ) {
-                *pending_user = user.clone();
-                *pending_content = content.clone();
+                *pending_message = message.clone();
                 if !self.recent_signatures.contains(&signature) {
                     self.recent_signatures.push_back(signature);
                     if self.recent_signatures.len() > 120 {
@@ -766,7 +875,7 @@ impl TeamsCaptionStream {
             self.recent_signatures.pop_front();
         }
 
-        self.pending_messages.push((user, content));
+        self.pending_messages.push(message);
     }
 
     fn normalize_for_match(value: &str) -> String {
@@ -784,6 +893,13 @@ impl TeamsCaptionStream {
                 )
             })
             .to_string()
+    }
+
+    fn normalize_source_id(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
     }
 
     fn tokenize_rewrite_text(value: &str) -> Vec<String> {
@@ -917,11 +1033,19 @@ impl TeamsCaptionStream {
         previous.is_empty() || next.is_empty() || previous == next
     }
     fn is_probable_rewrite(
+        previous_source_id: Option<&str>,
         previous_user: Option<&str>,
         previous_content: &str,
+        next_source_id: Option<&str>,
         next_user: Option<&str>,
         next_content: &str,
     ) -> bool {
+        let previous_source_id = Self::normalize_source_id(previous_source_id);
+        let next_source_id = Self::normalize_source_id(next_source_id);
+        if previous_source_id.is_some() && previous_source_id == next_source_id {
+            return true;
+        }
+
         if !Self::has_compatible_user(previous_user, next_user) {
             return false;
         }
@@ -965,19 +1089,25 @@ impl TeamsCaptionStream {
         } else {
             0.0
         };
-        let has_strong_token_similarity = min_token_count >= REWRITE_MIN_TOKEN_COUNT
+        let has_conflicting_source_ids = previous_source_id.is_some()
+            && next_source_id.is_some()
+            && previous_source_id != next_source_id;
+        let allow_non_edge_rewrite_paths = !has_conflicting_source_ids;
+        let has_strong_token_similarity = allow_non_edge_rewrite_paths
+            && min_token_count >= REWRITE_MIN_TOKEN_COUNT
             && token_similarity >= REWRITE_STRONG_SIMILARITY;
         let has_edge_backed_similarity = min_token_count >= REWRITE_MIN_TOKEN_COUNT
             && token_similarity >= REWRITE_EDGE_SIMILARITY
-            && (has_containment
+            && ((allow_non_edge_rewrite_paths && has_containment)
                 || has_dominant_edge_coverage
                 || shared_prefix_tokens >= 3
                 || shared_suffix_tokens >= 3);
-        let has_strong_ordered_overlap = min_token_count >= REWRITE_MIN_TOKEN_COUNT
+        let has_strong_ordered_overlap = allow_non_edge_rewrite_paths
+            && min_token_count >= REWRITE_MIN_TOKEN_COUNT
             && lcs_ratio_short >= REWRITE_LCS_RATIO_THRESHOLD
             && longest_shared_run >= REWRITE_MIN_SHARED_RUN_TOKENS;
 
-        has_containment
+        (allow_non_edge_rewrite_paths && has_containment)
             || has_dominant_edge_coverage
             || has_strong_token_similarity
             || has_edge_backed_similarity
@@ -985,19 +1115,21 @@ impl TeamsCaptionStream {
     }
     fn find_rewrite_anchor_index(
         &self,
-        message_pairs: &[(Option<String>, String)],
+        message_pairs: &[TeamsCaptionMessage],
         recovery_tail_pairs: usize,
     ) -> Option<usize> {
-        let (previous_user, previous_content) = self.last_seen_message.as_ref()?;
+        let previous = self.last_seen_message.as_ref()?;
         let start_index = message_pairs.len().saturating_sub(recovery_tail_pairs);
 
         (start_index..message_pairs.len()).rev().find(|&index| {
-            let (next_user, next_content) = &message_pairs[index];
+            let next = &message_pairs[index];
             Self::is_probable_rewrite(
-                previous_user.as_deref(),
-                previous_content,
-                next_user.as_deref(),
-                next_content,
+                Some(previous.source_id.as_str()),
+                previous.user.as_deref(),
+                &previous.content,
+                Some(next.source_id.as_str()),
+                next.user.as_deref(),
+                &next.content,
             )
         })
     }
@@ -1198,7 +1330,7 @@ impl TeamsCaptionStream {
         }
     }
 
-    pub fn get_next_caption(&mut self) -> Option<(Option<String>, String)> {
+    pub fn get_next_caption(&mut self) -> Option<TeamsCaptionMessage> {
         if !self.running.load(Ordering::SeqCst) {
             return None;
         }
@@ -1229,9 +1361,11 @@ impl TeamsCaptionStream {
                     return None;
                 }
 
-                let mut message_pairs: Vec<(Option<String>, String)> =
+                let mut message_pairs: Vec<TeamsCaptionMessage> =
                     Vec::with_capacity(message_pairs_raw.len());
-                for (mut user, mut content) in message_pairs_raw {
+                for mut message in message_pairs_raw {
+                    let mut user = message.user.take();
+                    let mut content = message.content;
                     if let Some(current_user) = user.clone() {
                         if self.should_swap_user_content(&current_user, &content) {
                             let swapped_user = content.trim().to_string();
@@ -1258,7 +1392,11 @@ impl TeamsCaptionStream {
                             self.remember_known_user(current_user);
                         }
 
-                        message_pairs.push((split_user, split_content));
+                        message_pairs.push(TeamsCaptionMessage {
+                            source_id: message.source_id.clone(),
+                            user: split_user,
+                            content: split_content,
+                        });
                     }
                 }
 
@@ -1268,7 +1406,9 @@ impl TeamsCaptionStream {
 
                 let signatures: Vec<String> = message_pairs
                     .iter()
-                    .map(|(user, content)| Self::build_message_signature(user.as_deref(), content))
+                    .map(|message| {
+                        Self::build_message_signature(message.user.as_deref(), &message.content)
+                    })
                     .collect();
 
                 const RECOVERY_TAIL_PAIRS: usize = 3;
@@ -1290,8 +1430,7 @@ impl TeamsCaptionStream {
                 }
 
                 for i in start_index..message_pairs.len() {
-                    let (user, content) = &message_pairs[i];
-                    self.push_if_new_message(user.clone(), content.clone());
+                    self.push_if_new_message(message_pairs[i].clone());
                 }
 
                 self.last_seen_signature = signatures.last().cloned();
@@ -1308,7 +1447,11 @@ impl TeamsCaptionStream {
                 self.error_count += 1;
                 if self.error_count > 5 {
                     self.running.store(false, Ordering::SeqCst);
-                    return Some((None, format!("[ERROR] Lost connection: {}", e)));
+                    return Some(TeamsCaptionMessage {
+                        source_id: String::new(),
+                        user: None,
+                        content: format!("[ERROR] Lost connection: {}", e),
+                    });
                 }
                 match self.watcher.find_teams_window_uia(self.selected_hwnd) {
                     Ok(new_window) => self.window = Some(new_window),
@@ -1332,7 +1475,7 @@ impl TeamsCaptionStream {
 
 #[cfg(test)]
 mod tests {
-    use super::TeamsCaptionStream;
+    use super::{TeamsCaptionMessage, TeamsCaptionStream};
 
     #[test]
     fn detects_swapped_pair_when_content_matches_known_user() {
@@ -1537,8 +1680,10 @@ mod tests {
     #[test]
     fn treats_same_speaker_caption_corrections_as_rewrites() {
         let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            None,
             Some("Alex Mercer (Contoso)"),
             "Review the rollout notes for the q3 migration because during the 118 planning workshop we still have an unresolved item around the service gateway and",
+            None,
             Some("Alex Mercer (Contoso)"),
             "Review the rollout notes for the q3 migration. Because during the 118 planning workshop, we still have an unresolved item around the service gateway and deployment checklist.",
         );
@@ -1548,8 +1693,10 @@ mod tests {
     #[test]
     fn keeps_distinct_same_speaker_messages_out_of_rewrite_bucket() {
         let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            None,
             Some("Alex Mercer (Contoso)"),
             "Can everyone see the dashboard update from yesterday?",
+            None,
             Some("Alex Mercer (Contoso)"),
             "Let's move on to the pipeline blockers for the next sprint.",
         );
@@ -1559,21 +1706,24 @@ mod tests {
     #[test]
     fn finds_rewrite_anchor_inside_recovery_tail() {
         let mut stream = TeamsCaptionStream::new().expect("stream");
-        stream.last_seen_message = Some((
-            Some("Alex Mercer (Contoso)".to_string()),
-            "Review the rollout notes for the q3 migration because during the 118 planning workshop we still have an unresolved item around the service gateway and".to_string(),
-        ));
+        stream.last_seen_message = Some(TeamsCaptionMessage {
+            source_id: "container-2".to_string(),
+            user: Some("Alex Mercer (Contoso)".to_string()),
+            content: "Review the rollout notes for the q3 migration because during the 118 planning workshop we still have an unresolved item around the service gateway and".to_string(),
+        });
 
         let message_pairs = vec![
-            (
-                Some("Jordan Example".to_string()),
-                "Unrelated earlier caption".to_string(),
-            ),
-            (
-                Some("Alex Mercer (Contoso)".to_string()),
-                "Review the rollout notes for the q3 migration. Because during the 118 planning workshop, we still have an unresolved item around the service gateway and deployment checklist."
+            TeamsCaptionMessage {
+                source_id: "container-1".to_string(),
+                user: Some("Jordan Example".to_string()),
+                content: "Unrelated earlier caption".to_string(),
+            },
+            TeamsCaptionMessage {
+                source_id: "container-2".to_string(),
+                user: Some("Alex Mercer (Contoso)".to_string()),
+                content: "Review the rollout notes for the q3 migration. Because during the 118 planning workshop, we still have an unresolved item around the service gateway and deployment checklist."
                     .to_string(),
-            ),
+            },
         ];
 
         let anchor_index = stream.find_rewrite_anchor_index(&message_pairs, 3);
@@ -1583,8 +1733,10 @@ mod tests {
     #[test]
     fn treats_large_middle_overlap_rewrites_as_same_message() {
         let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            Some("container-7"),
             Some("Morgan Lee (Fabrikam)"),
             "You just mean it is a version inside the package image or some archive mirror yeah basically in the base image I think we just provide a script tools and a user to let them download those builds from the mirror what they want so because yeah",
+            Some("container-7"),
             Some("Morgan Lee (Fabrikam)"),
             "It just means it is a version in the package image or the archive mirror yeah basically in the package image I think we just provide a scripts tools and the user to let them download the the builds from the mirror what they want",
         );
@@ -1594,12 +1746,27 @@ mod tests {
     #[test]
     fn treats_prefix_corrected_rewrites_with_long_ordered_overlap_as_same_message() {
         let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            Some("container-9"),
             Some("Casey Chen (Wingtip)"),
             "Taylor do you have a a suggestion for this I mean I do not know how platform team uses the tools so I am not sure they we are using the quite other version or not if if not we we can",
+            Some("container-9"),
             Some("Casey Chen (Wingtip)"),
             "Tyler do you have a suggestion for this I mean I do not know how platform team uses the tools so I am not sure they were using the quite old version or not",
         );
 
         assert!(is_rewrite);
+    }
+    #[test]
+    fn keeps_large_middle_overlap_messages_split_when_source_id_changes() {
+        let is_rewrite = TeamsCaptionStream::is_probable_rewrite(
+            Some("container-old"),
+            Some("Morgan Lee (Fabrikam)"),
+            "You just mean it is a version inside the package image or some archive mirror yeah basically in the base image I think we just provide a script tools and a user to let them download those builds from the mirror what they want so because yeah",
+            Some("container-new"),
+            Some("Morgan Lee (Fabrikam)"),
+            "It just means it is a version in the package image or the archive mirror yeah basically in the package image I think we just provide a scripts tools and the user to let them download the the builds from the mirror what they want",
+        );
+
+        assert!(!is_rewrite);
     }
 }

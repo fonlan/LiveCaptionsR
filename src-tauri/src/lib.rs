@@ -28,6 +28,7 @@ pub struct RawCaption {
     pub text: String,
     pub user: Option<String>,
     pub timestamp: u64,
+    pub source_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -951,7 +952,16 @@ fn start_livecaptions_loop(
                         text,
                         user,
                         timestamp,
+                        source_id: None,
                     };
+                    info!(
+                        source = "livecaptions",
+                        event = "caption-raw",
+                        user = ?caption.user,
+                        caption_text = %caption.text,
+                        timestamp = caption.timestamp,
+                        "Sending caption card to frontend"
+                    );
                     let _ = app.emit("caption-raw", caption);
                     had_activity = true;
                 }
@@ -1061,9 +1071,16 @@ fn start_teams_caption_loop(
 
         let mut had_activity = false;
 
-        if let Some((user, text)) = stream.get_next_caption() {
-            let current_signature =
-                format!("{}|{}", user.as_deref().unwrap_or("").trim(), text.trim());
+        if let Some(message) = stream.get_next_caption() {
+            let user = message.user;
+            let text = message.content;
+            let source_id = message.source_id.trim().to_string();
+            let current_signature = format!(
+                "{}|{}|{}",
+                source_id,
+                user.as_deref().unwrap_or("").trim(),
+                text.trim()
+            );
 
             if current_signature == last_caption_signature {
                 // No effective update, keep backing off progressively
@@ -1074,13 +1091,13 @@ fn start_teams_caption_loop(
                     let _ = app.emit("caption-error", text);
                     had_activity = true;
                 } else {
-                    // Log caption with preview (truncate to 100 chars)
-                    let preview = if text.chars().count() > 100 {
-                        format!("{}...", text.chars().take(100).collect::<String>())
-                    } else {
-                        text.clone()
-                    };
-                    debug!(user = %user.as_deref().unwrap_or("unknown"), caption_preview = %preview, "Received Teams caption");
+                    // Keep the full Teams caption in debug logs for pairing diagnostics.
+                    debug!(
+                        user = %user.as_deref().unwrap_or("unknown"),
+                        source_id = %source_id,
+                        caption_text = %text,
+                        "Received Teams caption"
+                    );
 
                     let timestamp = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1091,7 +1108,21 @@ fn start_teams_caption_loop(
                         text,
                         user,
                         timestamp,
+                        source_id: if source_id.is_empty() {
+                            None
+                        } else {
+                            Some(source_id)
+                        },
                     };
+                    info!(
+                        source = "teams",
+                        event = "caption-raw",
+                        user = ?caption.user,
+                        source_id = %caption.source_id.as_deref().unwrap_or(""),
+                        caption_text = %caption.text,
+                        timestamp = caption.timestamp,
+                        "Sending caption card to frontend"
+                    );
                     let _ = app.emit("caption-raw", caption);
                     had_activity = true;
                 }

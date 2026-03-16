@@ -4,6 +4,7 @@ export interface RawCaption {
   text: string;
   user?: string;
   timestamp: number;
+  source_id?: string;
 }
 
 export type TranslationStatus = 'translating' | 'success' | 'error';
