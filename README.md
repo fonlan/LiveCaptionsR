@@ -2,6 +2,8 @@
 
 LiveCaptionsR is a real-time subtitle translation tool built with Tauri, React, and Rust. It captures system audio captions via Windows LiveCaptions and translates them instantly using various translation providers.
 
+Current desktop app version: `0.14.0`
+
 ## ✨ Features
 
 - **Multiple Caption Sources**:
