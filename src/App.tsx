@@ -1379,9 +1379,16 @@ function App() {
 
   const clampChatSidebarWidth = useCallback((value: number): number => {
     const viewportMax = Math.floor(window.innerWidth * 0.85);
-    const maxWidth = Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(CHAT_SIDEBAR_MAX_WIDTH, viewportMax));
-    return Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(maxWidth, Math.round(value)));
-  }, []);
+    const occupiedSessionSidebarWidth = isSidebarOpen ? sessionSidebarWidth : 0;
+    const layoutMax = Math.max(
+      0,
+      Math.floor(window.innerWidth - occupiedSessionSidebarWidth - SESSION_SIDEBAR_MIN_MAIN_WIDTH),
+    );
+    const maxWidth = Math.min(CHAT_SIDEBAR_MAX_WIDTH, viewportMax, layoutMax);
+    const minWidth = Math.min(CHAT_SIDEBAR_MIN_WIDTH, maxWidth);
+
+    return Math.max(minWidth, Math.min(maxWidth, Math.round(value)));
+  }, [isSidebarOpen, sessionSidebarWidth]);
 
   const clampSessionSidebarWidth = useCallback((value: number): number => {
     const availableWidth = window.innerWidth - (isChatOpen ? chatSidebarWidth : 0) - SESSION_SIDEBAR_MIN_MAIN_WIDTH;
@@ -2939,96 +2946,94 @@ function App() {
 
           </div>
 
-          <div className="flex-1 overflow-hidden relative">
-            {isCardSearchOpen && (
-              <div
-                className="pointer-events-none absolute right-4 top-4 z-20 max-w-[calc(100%-2rem)] animate-slide-in"
-                style={{
-                  right: isChatOpen ? `${chatSidebarWidth + 16}px` : '16px',
-                }}
-              >
-                <div className="pointer-events-auto relative h-10 w-[320px] max-w-full overflow-hidden rounded-xl border border-border/90 bg-input/95 shadow-[0_12px_28px_rgba(0,0,0,0.35)] backdrop-blur-sm transition-colors focus-within:border-primary">
-                  <input
-                    id="caption-card-search"
-                    ref={cardSearchInputRef}
-                    type="text"
-                    className="h-full w-full border-none bg-transparent pl-3 pr-14 text-sm text-text-primary outline-none placeholder:text-text-muted"
-                    value={cardSearchQuery}
-                    onChange={event => setCardSearchQuery(event.target.value)}
-                    onKeyDown={handleCardSearchKeyDown}
-                    placeholder={t('headerSearch.placeholder')}
-                    aria-label={t('headerSearch.placeholder')}
-                  />
-                  <div className="absolute inset-y-0 right-0 flex w-8 flex-col overflow-hidden border-l border-border bg-bg-secondary/85">
-                    <button
-                      type="button"
-                      className="flex flex-1 items-center justify-center border-none bg-transparent text-text-secondary transition-colors hover:bg-card-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
-                      onClick={() => handleNavigateCardSearch('prev')}
-                      title={t('headerSearch.previous')}
-                      aria-label={t('headerSearch.previous')}
-                      disabled={!normalizedCardSearchQuery || cardSearchMatches.length === 0}
-                    >
-                      <IconChevronDown className="rotate-180" size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="flex flex-1 items-center justify-center border-none border-t border-border bg-transparent text-text-secondary transition-colors hover:bg-card-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
-                      onClick={() => handleNavigateCardSearch('next')}
-                      title={t('headerSearch.next')}
-                      aria-label={t('headerSearch.next')}
-                      disabled={!normalizedCardSearchQuery || cardSearchMatches.length === 0}
-                    >
-                      <IconChevronDown size={16} />
-                    </button>
+          <div className="flex-1 overflow-hidden">
+            <div className="flex h-full overflow-hidden">
+              <div className="relative flex-1 min-w-0 overflow-hidden">
+                {isCardSearchOpen && (
+                  <div className="pointer-events-none absolute right-4 top-4 z-20 max-w-[calc(100%-2rem)] animate-slide-in">
+                    <div className="pointer-events-auto relative h-10 w-[320px] max-w-full overflow-hidden rounded-xl border border-border/90 bg-input/95 shadow-[0_12px_28px_rgba(0,0,0,0.35)] backdrop-blur-sm transition-colors focus-within:border-primary">
+                      <input
+                        id="caption-card-search"
+                        ref={cardSearchInputRef}
+                        type="text"
+                        className="h-full w-full border-none bg-transparent pl-3 pr-14 text-sm text-text-primary outline-none placeholder:text-text-muted"
+                        value={cardSearchQuery}
+                        onChange={event => setCardSearchQuery(event.target.value)}
+                        onKeyDown={handleCardSearchKeyDown}
+                        placeholder={t('headerSearch.placeholder')}
+                        aria-label={t('headerSearch.placeholder')}
+                      />
+                      <div className="absolute inset-y-0 right-0 flex w-8 flex-col overflow-hidden border-l border-border bg-bg-secondary/85">
+                        <button
+                          type="button"
+                          className="flex flex-1 items-center justify-center border-none bg-transparent text-text-secondary transition-colors hover:bg-card-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                          onClick={() => handleNavigateCardSearch('prev')}
+                          title={t('headerSearch.previous')}
+                          aria-label={t('headerSearch.previous')}
+                          disabled={!normalizedCardSearchQuery || cardSearchMatches.length === 0}
+                        >
+                          <IconChevronDown className="rotate-180" size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          className="flex flex-1 items-center justify-center border-none border-t border-border bg-transparent text-text-secondary transition-colors hover:bg-card-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                          onClick={() => handleNavigateCardSearch('next')}
+                          title={t('headerSearch.next')}
+                          aria-label={t('headerSearch.next')}
+                          disabled={!normalizedCardSearchQuery || cardSearchMatches.length === 0}
+                        >
+                          <IconChevronDown size={16} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
+                )}
+                <div
+                  className="h-full overflow-y-auto p-4 flex flex-col"
+                  ref={scrollContainerRef}
+                  onWheel={handleScrollWheel}
+                  style={{
+                    overflowAnchor: 'none',
+                  }}
+                >
+                  <CaptionsList
+                    addToast={addToast}
+                    cards={cards}
+                    hasActiveSession={!!activeSessionId}
+                    isTeamsMode={config.caption_source === 'teams'}
+                    onRetryTranslation={retryTranslation}
+                    partialText={partialText}
+                    scrollTop={listScrollTop}
+                    viewportHeight={listViewportHeight}
+                    tempTranslations={tempTranslations}
+                    highlightedCardId={highlightedCardId}
+                  />
+                  <div ref={historyEndRef} />
                 </div>
               </div>
-            )}
-            <div
-              className="h-full overflow-y-auto p-4 flex flex-col transition-[padding-right] duration-300"
-              ref={scrollContainerRef}
-              onWheel={handleScrollWheel}
-              style={{
-                overflowAnchor: 'none',
-                paddingRight: isChatOpen ? `${chatSidebarWidth + 16}px` : undefined,
-              }}
-            >
-              <CaptionsList
-                addToast={addToast}
-                cards={cards}
+              <ChatSidebar
+                isOpen={isChatOpen}
+                width={chatSidebarWidth}
+                messages={chatMessages}
+                input={chatInput}
+                isSending={isChatSending}
+                models={config.ai_models}
+                chatSessions={chatSessions}
+                activeChatSessionId={activeChatSessionId}
                 hasActiveSession={!!activeSessionId}
-                isTeamsMode={config.caption_source === 'teams'}
-                onRetryTranslation={retryTranslation}
-                partialText={partialText}
-                scrollTop={listScrollTop}
-                viewportHeight={listViewportHeight}
-                tempTranslations={tempTranslations}
-                highlightedCardId={highlightedCardId}
+                selectedModelId={chatModelId}
+                addToast={addToast}
+                onInputChange={setChatInput}
+                onModelChange={setChatModelId}
+                onNewSession={() => void handleStartNewChatSession()}
+                onSelectChatSession={id => void handleSelectChatSession(id)}
+                onSend={() => void handleSendChatMessage()}
+                onStop={handleStopChatMessage}
+                onResizeStart={handleChatSidebarResizeStart}
+                onCardReferenceClick={handleChatCardReferenceClick}
+                getModelLabel={model => getAIModelLabel(model.id)}
               />
-              <div ref={historyEndRef} />
             </div>
-            <ChatSidebar
-              isOpen={isChatOpen}
-              width={chatSidebarWidth}
-              messages={chatMessages}
-              input={chatInput}
-              isSending={isChatSending}
-              models={config.ai_models}
-              chatSessions={chatSessions}
-              activeChatSessionId={activeChatSessionId}
-              hasActiveSession={!!activeSessionId}
-              selectedModelId={chatModelId}
-              addToast={addToast}
-              onInputChange={setChatInput}
-              onModelChange={setChatModelId}
-              onNewSession={() => void handleStartNewChatSession()}
-              onSelectChatSession={id => void handleSelectChatSession(id)}
-              onSend={() => void handleSendChatMessage()}
-              onStop={handleStopChatMessage}
-              onResizeStart={handleChatSidebarResizeStart}
-              onCardReferenceClick={handleChatCardReferenceClick}
-              getModelLabel={model => getAIModelLabel(model.id)}
-            />
           </div>
 
           <footer className="h-[60px] bg-panel border-t border-border flex items-center justify-between px-6 relative z-10">

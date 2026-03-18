@@ -309,8 +309,8 @@ export function ChatSidebar({
 
   return (
     <aside
-      className={`absolute top-0 right-0 h-full max-w-[85vw] border-l border-border bg-panel/95 backdrop-blur-sm flex flex-col shadow-[-8px_0_24px_rgba(0,0,0,0.2)] transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${isOpen ? "translate-x-0" : "translate-x-full pointer-events-none"}`}
-      style={{ width: `${width}px` }}
+      className={`relative h-full shrink-0 max-w-[85vw] bg-panel/95 backdrop-blur-sm flex flex-col overflow-hidden shadow-[-8px_0_24px_rgba(0,0,0,0.2)] transition-[width,opacity,border-color] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${isOpen ? "border-l border-border opacity-100" : "border-l-0 opacity-0 pointer-events-none"}`}
+      style={{ width: isOpen ? `${width}px` : "0px" }}
     >
       <div
         className="absolute left-0 top-0 h-full w-2 -translate-x-1 cursor-col-resize select-none"
