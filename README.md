@@ -136,13 +136,13 @@ Each provider has independent proxy settings:
 ## 🛠️ Architecture
 
 - **Frontend**: React + TypeScript + Vite
-  - Handles UI, settings, caption segmentation, and display logic.
+  - Handles UI, settings, LiveCaptions segmentation, backend-ID-driven Teams card updates, and display logic.
   - Calculates text similarity for deduplication.
   - Includes `ChatSidebar.tsx` for caption-grounded AI Q&A with Markdown rendering, selectable/copyable bubbles, clickable card reference links, and resizable sidebar width.
 
 - **Backend**: Rust (Tauri)
   - `livecaptions.rs`: Manages Windows UI Automation and LiveCaptions process control.
-  - `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation.
+- `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation, anchors visible parsed messages against cached history, discards punctuation-only split fragments, and emits targeted card updates with stable per-session card IDs.
   - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot), summary generation, and caption-chat completion routing.
   - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`, `summary-stream`), including session-level summarization and AI chat from captured cards.
   - `storage.rs`: Persists translation sessions/cards plus AI chat sessions/messages (bound to translation session IDs) in SQLite.
@@ -179,7 +179,7 @@ For detailed debugging information:
 - `info` - General information (default)
 - `debug` - Detailed diagnostic information
 
-When capturing Microsoft Teams with `debug` log level, the backend also writes the raw UI Automation text elements, per-container raw text parts, and emitted Teams `source_id` values without pre-filtering so rewrite/merge issues can be diagnosed from logs.
+When capturing Microsoft Teams with `debug` log level, the backend writes per-container raw UI Automation parts, visible-anchor/cache update summaries, and emitted Teams `card_id` / `source_id` values so backend card assignment issues can be diagnosed without re-enabling the full raw text element dump.
 
 **Common Issues to Check Logs For**:
 - Translation API failures (check for HTTP errors, authentication issues)

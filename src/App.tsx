@@ -63,7 +63,6 @@ import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
 import { ChatSidebar } from "./components/ChatSidebar";
 import {
-  calculateSimilarity,
   shouldOverwrite,
   getLatestCaption,
   generateId
@@ -84,13 +83,6 @@ const WHEEL_MAX_STEP_PX = 92;
 const RECENT_SENTENCE_DEDUP_WINDOW_MS = 45_000;
 const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
-const TEAMS_REWRITE_MAX_AGE_SECONDS = 15;
-const TEAMS_REWRITE_SIMILARITY_THRESHOLD = 0.72;
-const TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD = 0.58;
-const TEAMS_REWRITE_MIN_TOKEN_COUNT = 5;
-const TEAMS_REWRITE_MAX_TOKEN_EDITS = 2;
-const TEAMS_REWRITE_LCS_RATIO_THRESHOLD = 0.7;
-const TEAMS_REWRITE_MIN_SHARED_RUN_TOKENS = 6;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
 const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
@@ -338,10 +330,7 @@ function App() {
   const summaryFinalTextRef = useRef("");
 
   const lastFullTextRef = useRef<string>("");
-  const lastCaptionUserRef = useRef<string | null>(null);
-  const lastOriginalTextRef = useRef<string>("");
   const lastProcessedCardRef = useRef<SentenceCard | null>(null);
-  const lastTeamsSourceIdRef = useRef<string | null>(null);
   const pendingTranslationCardIdRef = useRef<string | null>(null); // Teams mode: card waiting for translation
   const translationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const idleCountRef = useRef<number>(0);
@@ -470,223 +459,7 @@ function App() {
       .toLowerCase();
   };
 
-  const tokenizeTeamsRewriteText = (text: string): string[] => {
-    const normalized = text
-      .normalize("NFKC")
-      .replace(/[’]/g, "'")
-      .toLowerCase();
 
-    return normalized.match(/[\p{L}\p{N}]+(?:'[\p{L}\p{N}]+)*/gu) ?? [];
-  };
-
-  const normalizeTeamsRewriteText = (text: string): string => {
-    return tokenizeTeamsRewriteText(text).join(" ");
-  };
-  const normalizeTeamsSourceId = (value?: string | null): string | null => {
-    const trimmed = value?.trim();
-    return trimmed ? trimmed : null;
-  };
-
-  const countSharedTokenPrefix = (left: string[], right: string[]): number => {
-    const limit = Math.min(left.length, right.length);
-    let count = 0;
-    while (count < limit && left[count] === right[count]) {
-      count += 1;
-    }
-    return count;
-  };
-
-  const countSharedTokenSuffix = (left: string[], right: string[]): number => {
-    const limit = Math.min(left.length, right.length);
-    let count = 0;
-    while (
-      count < limit &&
-      left[left.length - 1 - count] === right[right.length - 1 - count]
-    ) {
-      count += 1;
-    }
-    return count;
-  };
-
-  const calculateSequenceSimilarity = (left: string[], right: string[]): number => {
-    if (left.length === 0 && right.length === 0) {
-      return 1;
-    }
-    if (left.length === 0 || right.length === 0) {
-      return 0;
-    }
-
-    const matrix = Array.from({ length: left.length + 1 }, (_, rowIndex) =>
-      Array.from({ length: right.length + 1 }, (_, columnIndex) => {
-        if (rowIndex === 0) return columnIndex;
-        if (columnIndex === 0) return rowIndex;
-        return 0;
-      }),
-    );
-
-    for (let i = 1; i <= left.length; i += 1) {
-      for (let j = 1; j <= right.length; j += 1) {
-        const cost = left[i - 1] === right[j - 1] ? 0 : 1;
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j - 1] + cost,
-        );
-      }
-    }
-
-    const distance = matrix[left.length][right.length];
-    const maxLength = Math.max(left.length, right.length);
-    return 1 - distance / maxLength;
-  };
-  const calculateLongestCommonSubsequenceLength = (left: string[], right: string[]): number => {
-    if (left.length === 0 || right.length === 0) {
-      return 0;
-    }
-
-    const matrix = Array.from({ length: left.length + 1 }, () =>
-      Array.from({ length: right.length + 1 }, () => 0),
-    );
-
-    for (let i = 1; i <= left.length; i += 1) {
-      for (let j = 1; j <= right.length; j += 1) {
-        matrix[i][j] = left[i - 1] === right[j - 1]
-          ? matrix[i - 1][j - 1] + 1
-          : Math.max(matrix[i - 1][j], matrix[i][j - 1]);
-      }
-    }
-
-    return matrix[left.length][right.length];
-  };
-  const calculateLongestCommonTokenRunLength = (left: string[], right: string[]): number => {
-    if (left.length === 0 || right.length === 0) {
-      return 0;
-    }
-
-    const matrix = Array.from({ length: left.length + 1 }, () =>
-      Array.from({ length: right.length + 1 }, () => 0),
-    );
-    let best = 0;
-
-    for (let i = 1; i <= left.length; i += 1) {
-      for (let j = 1; j <= right.length; j += 1) {
-        if (left[i - 1] === right[j - 1]) {
-          matrix[i][j] = matrix[i - 1][j - 1] + 1;
-          best = Math.max(best, matrix[i][j]);
-        }
-      }
-    }
-
-    return best;
-  };
-  const shouldOverwriteTeamsCard = (
-    previousText: string,
-    nextText: string,
-    ageSeconds: number,
-    previousSourceId?: string | null,
-    nextSourceId?: string | null,
-  ): boolean => {
-    const normalizedPreviousSourceId = normalizeTeamsSourceId(previousSourceId);
-    const normalizedNextSourceId = normalizeTeamsSourceId(nextSourceId);
-    if (
-      normalizedPreviousSourceId &&
-      normalizedPreviousSourceId === normalizedNextSourceId &&
-      ageSeconds <= TEAMS_REWRITE_MAX_AGE_SECONDS
-    ) {
-      return true;
-    }
-    const hasConflictingSourceIds =
-      !!normalizedPreviousSourceId &&
-      !!normalizedNextSourceId &&
-      normalizedPreviousSourceId !== normalizedNextSourceId;
-    if (ageSeconds > TEAMS_REWRITE_MAX_AGE_SECONDS) {
-      return false;
-    }
-
-    const previousNormalized = normalizeTeamsRewriteText(previousText);
-    const nextNormalized = normalizeTeamsRewriteText(nextText);
-    if (!previousNormalized || !nextNormalized) {
-      return false;
-    }
-
-    if (previousNormalized === nextNormalized) {
-      return !hasConflictingSourceIds;
-    }
-
-    const previousTokens = tokenizeTeamsRewriteText(previousText);
-    const nextTokens = tokenizeTeamsRewriteText(nextText);
-    const minTokenCount = Math.min(previousTokens.length, nextTokens.length);
-    const sharedPrefixTokens = countSharedTokenPrefix(previousTokens, nextTokens);
-    const sharedSuffixTokens = countSharedTokenSuffix(previousTokens, nextTokens);
-    const sharedEdgeTokens = Math.min(minTokenCount, sharedPrefixTokens + sharedSuffixTokens);
-    const shorterText = previousNormalized.length <= nextNormalized.length
-      ? previousNormalized
-      : nextNormalized;
-    const longerText = previousNormalized.length > nextNormalized.length
-      ? previousNormalized
-      : nextNormalized;
-    const hasContainment = shorterText.length >= 8 && longerText.includes(shorterText);
-    const fullySharedEdge = minTokenCount > 0 && (
-      sharedPrefixTokens === minTokenCount || sharedSuffixTokens === minTokenCount
-    );
-    const allowNonEdgeRewritePaths = !hasConflictingSourceIds;
-    const hasDominantEdgeCoverage =
-      minTokenCount >= TEAMS_REWRITE_MIN_TOKEN_COUNT &&
-      sharedEdgeTokens + TEAMS_REWRITE_MAX_TOKEN_EDITS >= minTokenCount;
-    const normalizedSimilarity = calculateSimilarity(previousNormalized, nextNormalized);
-    const tokenSimilarity = calculateSequenceSimilarity(previousTokens, nextTokens);
-    const lcsLength = calculateLongestCommonSubsequenceLength(previousTokens, nextTokens);
-    const longestSharedRun = calculateLongestCommonTokenRunLength(previousTokens, nextTokens);
-    const lcsRatioShort = minTokenCount > 0 ? lcsLength / minTokenCount : 0;
-    const hasStrongSimilarity =
-      allowNonEdgeRewritePaths &&
-      normalizedSimilarity >= TEAMS_REWRITE_SIMILARITY_THRESHOLD;
-    const hasEdgeBackedSimilarity =
-      normalizedSimilarity >= TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD && (
-        (allowNonEdgeRewritePaths && hasContainment) ||
-        fullySharedEdge ||
-        hasDominantEdgeCoverage ||
-        sharedPrefixTokens >= 2 ||
-        sharedSuffixTokens >= 2
-      );
-
-    const hasStrongTokenSimilarity =
-      allowNonEdgeRewritePaths &&
-      minTokenCount >= TEAMS_REWRITE_MIN_TOKEN_COUNT &&
-      tokenSimilarity >= TEAMS_REWRITE_SIMILARITY_THRESHOLD;
-    const hasEdgeBackedTokenSimilarity =
-      minTokenCount >= TEAMS_REWRITE_MIN_TOKEN_COUNT &&
-      tokenSimilarity >= TEAMS_REWRITE_EDGE_SIMILARITY_THRESHOLD && (
-        (allowNonEdgeRewritePaths && hasContainment) ||
-        hasDominantEdgeCoverage ||
-        sharedPrefixTokens >= 3 ||
-        sharedSuffixTokens >= 3
-      );
-    const hasStrongOrderedOverlap =
-      allowNonEdgeRewritePaths &&
-      minTokenCount >= TEAMS_REWRITE_MIN_TOKEN_COUNT &&
-      lcsRatioShort >= TEAMS_REWRITE_LCS_RATIO_THRESHOLD &&
-      longestSharedRun >= TEAMS_REWRITE_MIN_SHARED_RUN_TOKENS;
-    if (
-      hasStrongSimilarity ||
-      hasEdgeBackedSimilarity ||
-      hasStrongTokenSimilarity ||
-      hasEdgeBackedTokenSimilarity ||
-      hasDominantEdgeCoverage ||
-      hasStrongOrderedOverlap
-    ) {
-      return true;
-    }
-
-    return shouldOverwrite(previousText, nextText) && (
-      (allowNonEdgeRewritePaths && hasContainment) ||
-      fullySharedEdge ||
-      hasDominantEdgeCoverage ||
-      hasStrongOrderedOverlap ||
-      sharedPrefixTokens >= 3 ||
-      sharedSuffixTokens >= 3
-    );
-  };
 
   const shouldSkipRecentSentence = (text: string, user?: string): boolean => {
     const normalizedText = normalizeSentenceForDedup(text);
@@ -1113,12 +886,12 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(true);
       lastProcessedCardRef.current = null;
-      lastTeamsSourceIdRef.current = null;
       resetRecentSentenceDedup();
 
       setPartialText("");
       lastFullTextRef.current = "";
-      lastCaptionUserRef.current = null;
+      pendingTranslationCardIdRef.current = null;
+      clearTeamsTranslationTimer();
       return session.id;
     } catch (e) {
       console.error("Failed to create session:", e);
@@ -1161,10 +934,11 @@ function App() {
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
       lastProcessedCardRef.current = normalized.cards.length > 0 ? normalized.cards[normalized.cards.length - 1] : null;
-      lastTeamsSourceIdRef.current = null;
       resetRecentSentenceDedup();
 
       setPartialText("");
+      pendingTranslationCardIdRef.current = null;
+      clearTeamsTranslationTimer();
     } catch (e) {
       console.error("Failed to load session:", e);
       addToast('error', "Failed to load session data");
@@ -1185,10 +959,10 @@ function App() {
         dispatchCards({ type: "reset", cards: [] });
         setTempTranslations({}); // Clear temp translations
         lastProcessedCardRef.current = null;
-        lastTeamsSourceIdRef.current = null;
         resetRecentSentenceDedup();
         setPartialText("");
-        lastCaptionUserRef.current = null;
+        pendingTranslationCardIdRef.current = null;
+        clearTeamsTranslationTimer();
       }
       addToast('success', t("session.deleted"));
     } catch (err) {
@@ -1212,10 +986,10 @@ function App() {
       dispatchCards({ type: "reset", cards: [] });
       setTempTranslations({});
       lastProcessedCardRef.current = null;
-      lastTeamsSourceIdRef.current = null;
       resetRecentSentenceDedup();
       setPartialText("");
-      lastCaptionUserRef.current = null;
+      pendingTranslationCardIdRef.current = null;
+      clearTeamsTranslationTimer();
       
       addToast('success', t("session.deleted"));
     } catch (e) {
@@ -1746,6 +1520,79 @@ function App() {
   const performTranslation = async (cardId: string, text: string) => {
     await enqueueTranslation(cardId, text, false, 'live');
   };
+  const appendCardLocally = (card: SentenceCard) => {
+    const nextCards = [...cardsRef.current, card];
+    cardsRef.current = nextCards;
+    cardIndexRef.current = {
+      ...cardIndexRef.current,
+      [card.id]: nextCards.length - 1,
+    };
+    lastProcessedCardRef.current = card;
+    dispatchCards({ type: "append", card });
+  };
+  const patchCardLocally = (
+    cardId: string,
+    patch: CardPatch,
+    expectedOriginal?: string,
+  ): SentenceCard | null => {
+    const index = cardIndexRef.current[cardId];
+    if (index === undefined) return null;
+    const current = cardsRef.current[index];
+    if (expectedOriginal !== undefined && current.original !== expectedOriginal) {
+      return null;
+    }
+    let changed = false;
+    for (const key in patch) {
+      const patchKey = key as keyof CardPatch;
+      if (current[patchKey] !== patch[patchKey]) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) {
+      return null;
+    }
+    const nextCard = { ...current, ...patch };
+    const nextCards = cardsRef.current.slice();
+    nextCards[index] = nextCard;
+    cardsRef.current = nextCards;
+    if (index === nextCards.length - 1) {
+      lastProcessedCardRef.current = nextCard;
+    }
+    dispatchCards({ type: "patch", cardId, patch, expectedOriginal });
+    return nextCard;
+  };
+  const clearTeamsTranslationTimer = () => {
+    if (translationTimerRef.current) {
+      clearTimeout(translationTimerRef.current);
+      translationTimerRef.current = null;
+    }
+  };
+  const triggerTeamsCardTranslation = (cardId: string) => {
+    if (!configRef.current.translation_enabled) return;
+    const cardIndex = cardIndexRef.current[cardId];
+    const card = cardIndex === undefined ? undefined : cardsRef.current[cardIndex];
+    if (!card) return;
+    patchCardLocally(cardId, { translated: null, status: 'translating' });
+    void performTranslation(cardId, card.original);
+  };
+  const queueTeamsCardForDelayedTranslation = (cardId: string | null) => {
+    clearTeamsTranslationTimer();
+    if (!configRef.current.translation_enabled || !cardId) {
+      pendingTranslationCardIdRef.current = null;
+      return;
+    }
+    pendingTranslationCardIdRef.current = cardId;
+    translationTimerRef.current = setTimeout(() => {
+      const pendingCardId = pendingTranslationCardIdRef.current;
+      pendingTranslationCardIdRef.current = null;
+      clearTeamsTranslationTimer();
+      if (!pendingCardId) {
+        return;
+      }
+      triggerTeamsCardTranslation(pendingCardId);
+    }, 3000);
+  };
 
   const translateAndDisplay = async (originalText: string, allowDuplicate: boolean = false, user?: string) => {
     if (!originalText.trim()) return;
@@ -1782,7 +1629,6 @@ function App() {
     };
 
     lastProcessedCardRef.current = newCard;
-    lastOriginalTextRef.current = originalText;
     syncCountRef.current = 0;
 
 
@@ -1944,117 +1790,63 @@ function App() {
     const unlistenRaw = listen<RawCaption>("caption-raw", async (event) => {
       const fullText = event.payload.text;
       const user = event.payload.user;
-      const sourceId = normalizeTeamsSourceId(event.payload.source_id);
+      if (configRef.current.caption_source === 'teams') {
+        const backendCardId = event.payload.card_id?.trim();
+        if (!backendCardId || !fullText.trim()) {
+          return;
+        }
+
+        const normalizedUser = (user ?? "").trim();
+        const nextUser = normalizedUser ? normalizedUser : undefined;
+        const existingIndex = cardIndexRef.current[backendCardId];
+
+        if (existingIndex !== undefined) {
+          const currentCard = cardsRef.current[existingIndex];
+          const isLatestCard = existingIndex === cardsRef.current.length - 1;
+          const updatedCard = patchCardLocally(backendCardId, {
+            original: fullText,
+            translated: null,
+            status: 'success',
+            user: nextUser ?? currentCard.user,
+          });
+
+          if (!updatedCard) {
+            return;
+          }
+
+          if (isLatestCard) {
+            setPartialText(updatedCard.original);
+            queueTeamsCardForDelayedTranslation(backendCardId);
+          } else if (configRef.current.translation_enabled) {
+            triggerTeamsCardTranslation(backendCardId);
+          }
+          return;
+        }
+
+        if (pendingTranslationCardIdRef.current && pendingTranslationCardIdRef.current !== backendCardId) {
+          const previousPendingCardId = pendingTranslationCardIdRef.current;
+          pendingTranslationCardIdRef.current = null;
+          clearTeamsTranslationTimer();
+          triggerTeamsCardTranslation(previousPendingCardId);
+        }
+
+        const newCard: SentenceCard = {
+          id: backendCardId,
+          original: fullText,
+          translated: null,
+          status: 'success',
+          user: nextUser,
+          timestamp: event.payload.timestamp,
+        };
+        appendCardLocally(newCard);
+        setPartialText(fullText);
+        queueTeamsCardForDelayedTranslation(newCard.id);
+        return;
+      }
 
       if (isFirstCaptionRef.current) {
         isFirstCaptionRef.current = false;
         lastFullTextRef.current = fullText;
-        const initialUser = (user ?? "").trim();
-        lastCaptionUserRef.current = initialUser ? initialUser : null;
-        lastTeamsSourceIdRef.current = sourceId;
-        return;
-      }
-
-      // Teams Mode: Delayed translation strategy with Overwrite support & 3s Timeout
-      if (configRef.current.caption_source === 'teams') {
-        const normalizedUser = (user ?? "").trim();
-        const hasSourceChanged = sourceId !== lastTeamsSourceIdRef.current;
-        const hasKnownSpeaker = normalizedUser.length > 0;
-        const lastUser = (lastCaptionUserRef.current ?? "").trim();
-        const hasSpeakerChanged = hasKnownSpeaker && normalizedUser !== lastUser;
-
-        if ((fullText !== lastFullTextRef.current || hasSpeakerChanged || hasSourceChanged) && fullText.trim()) {
-          // Clear any existing 3s timer
-          if (translationTimerRef.current) {
-            clearTimeout(translationTimerRef.current);
-          }
-
-          const lastCard = lastProcessedCardRef.current;
-          const lastCardUser = (lastCard?.user ?? "").trim();
-          const lastCardSourceId = lastTeamsSourceIdRef.current;
-          const continuationUser = hasKnownSpeaker ? normalizedUser : lastCardUser;
-          const sanitizedUser = continuationUser ? continuationUser : undefined;
-          const cardAgeSeconds = lastCard
-            ? Math.max(0, Math.floor(Date.now() / 1000) - lastCard.timestamp)
-            : Number.POSITIVE_INFINITY;
-          const shouldTreatAsContinuation =
-            !!lastCard &&
-            !hasSpeakerChanged &&
-            (!hasKnownSpeaker || normalizedUser === lastCardUser) &&
-            shouldOverwriteTeamsCard(
-              lastCard.original,
-              fullText,
-              cardAgeSeconds,
-              lastCardSourceId,
-              sourceId,
-            );
-          
-          // Helper to trigger translation for a pending card
-          const triggerTranslation = (cardId: string) => {
-             if (!configRef.current.translation_enabled) return;
-             
-             // IMPORTANT: Only now show the loading dots
-             dispatchCards({ type: "patch", cardId, patch: { status: 'translating' } });
-
-             const cardIndex = cardIndexRef.current[cardId];
-             const card = cardIndex === undefined ? undefined : cardsRef.current[cardIndex];
-             if (card) {
-               performTranslation(cardId, card.original);
-             }
-          };
-
-          // Check if this is an incremental update (continuation) of the last card
-          if (shouldTreatAsContinuation && lastCard) {
-            // Update the existing card, but keep status 'success' to hide dots
-            dispatchCards({
-              type: "patch",
-              cardId: lastCard.id,
-              patch: { original: fullText, user: sanitizedUser, status: 'success', translated: null },
-            });
-            
-            pendingTranslationCardIdRef.current = lastCard.id;
-            lastProcessedCardRef.current = { ...lastCard, original: fullText, user: sanitizedUser };
-            lastTeamsSourceIdRef.current = sourceId ?? lastCardSourceId;
-          } else {
-            // NEW message bubble or person
-            // 1. Immediately trigger translation for the PREVIOUS finalized card
-            if (pendingTranslationCardIdRef.current) {
-              triggerTranslation(pendingTranslationCardIdRef.current);
-            }
-
-            // 2. Create NEW card (initially 'success' status to hide dots)
-            const newId = generateId();
-            const timestamp = Math.floor(Date.now() / 1000);
-            const newCard: SentenceCard = {
-              id: newId,
-              original: fullText,
-              translated: null,
-              status: 'success', 
-              user: sanitizedUser,
-              timestamp
-            };
-
-            dispatchCards({ type: "append", card: newCard });
-            pendingTranslationCardIdRef.current = newId;
-            lastProcessedCardRef.current = newCard;
-            lastTeamsSourceIdRef.current = sourceId;
-          }
-
-          // Start a 3-second timer to trigger translation if no more updates arrive
-          translationTimerRef.current = setTimeout(() => {
-            if (pendingTranslationCardIdRef.current) {
-              triggerTranslation(pendingTranslationCardIdRef.current);
-              pendingTranslationCardIdRef.current = null; // Mark as done
-            }
-          }, 3000);
-
-          setPartialText(fullText);
-          lastFullTextRef.current = fullText;
-          if (hasKnownSpeaker) {
-            lastCaptionUserRef.current = normalizedUser;
-          }
-          lastTeamsSourceIdRef.current = sourceId;
-        }
         return;
       }
 

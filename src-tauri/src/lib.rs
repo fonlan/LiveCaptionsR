@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -28,6 +28,7 @@ pub struct RawCaption {
     pub text: String,
     pub user: Option<String>,
     pub timestamp: u64,
+    pub card_id: Option<String>,
     pub source_id: Option<String>,
 }
 
@@ -863,8 +864,6 @@ fn start_livecaptions_loop(
     include_microphone: bool,
     hwnd_override: Option<isize>,
 ) {
-    use std::time::SystemTime;
-
     let mut stream = match livecaptions::CaptionStream::new() {
         Ok(s) => s,
         Err(e) => {
@@ -952,6 +951,7 @@ fn start_livecaptions_loop(
                         text,
                         user,
                         timestamp,
+                        card_id: None,
                         source_id: None,
                     };
                     info!(
@@ -1009,8 +1009,6 @@ fn start_teams_caption_loop(
     rx: Receiver<CaptionThreadCommand>,
     selected_hwnd: Option<isize>,
 ) {
-    use std::time::SystemTime;
-
     let mut stream = match teams::TeamsCaptionStream::new() {
         Ok(s) => s,
         Err(e) => {
@@ -1074,9 +1072,12 @@ fn start_teams_caption_loop(
         if let Some(message) = stream.get_next_caption() {
             let user = message.user;
             let text = message.content;
+            let card_id = message.card_id.trim().to_string();
+            let card_index = message.card_index;
             let source_id = message.source_id.trim().to_string();
             let current_signature = format!(
-                "{}|{}|{}",
+                "{}|{}|{}|{}",
+                card_id,
                 source_id,
                 user.as_deref().unwrap_or("").trim(),
                 text.trim()
@@ -1093,21 +1094,23 @@ fn start_teams_caption_loop(
                 } else {
                     // Keep the full Teams caption in debug logs for pairing diagnostics.
                     debug!(
+                        card_id = %card_id,
+                        card_index,
                         user = %user.as_deref().unwrap_or("unknown"),
                         source_id = %source_id,
                         caption_text = %text,
                         "Received Teams caption"
                     );
 
-                    let timestamp = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-
                     let caption = RawCaption {
                         text,
                         user,
-                        timestamp,
+                        timestamp: message.timestamp,
+                        card_id: if card_id.is_empty() {
+                            None
+                        } else {
+                            Some(card_id)
+                        },
                         source_id: if source_id.is_empty() {
                             None
                         } else {
@@ -1117,6 +1120,8 @@ fn start_teams_caption_loop(
                     info!(
                         source = "teams",
                         event = "caption-raw",
+                        card_id = %caption.card_id.as_deref().unwrap_or(""),
+                        card_index,
                         user = ?caption.user,
                         source_id = %caption.source_id.as_deref().unwrap_or(""),
                         caption_text = %caption.text,

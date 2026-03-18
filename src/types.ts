@@ -4,6 +4,7 @@ export interface RawCaption {
   text: string;
   user?: string;
   timestamp: number;
+  card_id?: string;
   source_id?: string;
 }
 
