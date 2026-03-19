@@ -35,7 +35,7 @@ Current desktop app version: `0.14.0`
 - **Modern UI**:
   - Dark mode Cyber-noir aesthetic.
   - "Always on Top" mode for overlay usage.
-  - Auto-scrolling history.
+  - Auto-scrolling history that stays pinned unless the user intentionally scrolls away.
   - Native splash startup window while the main webview initializes.
   - Startup windows are centered on the monitor under the current mouse cursor (active screen), not fixed to the primary display.
 

@@ -61,7 +61,6 @@ import {
 } from "./components/Sidebar";
 import { CaptionsList } from "./components/CaptionsList";
 import { CopyButton } from "./components/CopyButton";
-import { ChatSidebar } from "./components/ChatSidebar";
 import {
   shouldOverwrite,
   getLatestCaption,
@@ -76,6 +75,8 @@ const MAX_TRANSLATION_BATCH_SIZE = 10;
 const STICK_TO_BOTTOM_EPSILON = 4;
 const AUTO_FOLLOW_ENABLE_THRESHOLD = 8;
 const AUTO_FOLLOW_DISABLE_THRESHOLD = 120;
+const AUTO_FOLLOW_DRIFT_GUARD_MS = 240;
+const USER_SCROLL_INTENT_TIMEOUT_MS = 450;
 const WHEEL_LINE_HEIGHT_PX = 20;
 const WHEEL_PAGE_RATIO = 0.88;
 const WHEEL_CLASSIC_DELTA_THRESHOLD = 40;
@@ -89,6 +90,7 @@ const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
 const CHAT_SIDEBAR_DEFAULT_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MIN_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MAX_WIDTH = 920;
+const loadChatSidebar = () => import("./components/ChatSidebar");
 
 const SettingsForm = lazy(async () => {
   const module = await import("./components/settings/SettingsForm");
@@ -109,6 +111,10 @@ const TeamsSelectionModal = lazy(async () => {
 const DeviceAuthModal = lazy(async () => {
   const module = await import("./components/modals/DeviceAuthModal");
   return { default: module.DeviceAuthModal };
+});
+const ChatSidebar = lazy(async () => {
+  const module = await loadChatSidebar();
+  return { default: module.ChatSidebar };
 });
 
 type TranslationResultEvent = {
@@ -142,6 +148,28 @@ type PendingTranslationRequest = {
   mode: 'live' | 'manual' | 'session';
   batchId?: string;
 };
+
+type ChatSidebarFallbackProps = {
+  width: number;
+};
+
+function ChatSidebarFallback({ width }: ChatSidebarFallbackProps) {
+  return (
+    <aside
+      className="relative h-full shrink-0 max-w-[85vw] bg-panel/95 backdrop-blur-sm flex flex-col overflow-hidden border-l border-border"
+      style={{ width: `${width}px` }}
+      aria-hidden="true"
+    >
+      <div className="flex-1 p-4">
+        <div className="h-full min-h-[180px] rounded-2xl border border-border/70 bg-card/55 animate-pulse" />
+      </div>
+      <div className="shrink-0 border-t border-border p-3 bg-panel">
+        <div className="h-9 rounded-lg border border-border/70 bg-input/70 animate-pulse" />
+        <div className="mt-2 h-[84px] rounded-xl border border-border/70 bg-input/70 animate-pulse" />
+      </div>
+    </aside>
+  );
+}
 
 type CardSearchMatch = {
   cardId: string;
@@ -349,6 +377,8 @@ function App() {
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
   const autoFollowRef = useRef<boolean>(true);
   const lastScrollTopRef = useRef<number>(0);
+  const lastAutoFollowSyncAtRef = useRef<number>(0);
+  const lastUserScrollIntentAtRef = useRef<number>(0);
   const scrollRafRef = useRef<number | null>(null);
   const queuedScrollTopRef = useRef<number>(0);
   const queuedViewportHeightRef = useRef<number>(0);
@@ -493,6 +523,27 @@ function App() {
     recentSentenceSeenAtRef.current.clear();
   };
 
+  const markUserScrollIntent = useCallback(() => {
+    lastUserScrollIntentAtRef.current = window.performance.now();
+  }, []);
+
+  const hasRecentUserScrollIntent = useCallback(() => {
+    return window.performance.now() - lastUserScrollIntentAtRef.current <= USER_SCROLL_INTENT_TIMEOUT_MS;
+  }, []);
+
+  const snapToBottomIfNeeded = useCallback((container: HTMLDivElement) => {
+    const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const distanceToBottom = targetTop - container.scrollTop;
+
+    if (distanceToBottom > STICK_TO_BOTTOM_EPSILON) {
+      lastAutoFollowSyncAtRef.current = window.performance.now();
+      container.scrollTo({ top: targetTop, behavior: "auto" });
+      return true;
+    }
+
+    return false;
+  }, []);
+
   const normalizeWheelDelta = (event: ReactWheelEvent<HTMLDivElement>, container: HTMLDivElement): number => {
     if (event.deltaMode === 1) {
       return event.deltaY * WHEEL_LINE_HEIGHT_PX;
@@ -508,6 +559,8 @@ function App() {
 
     const container = scrollContainerRef.current;
     if (!container) return;
+
+    markUserScrollIntent();
 
     const normalizedDelta = normalizeWheelDelta(event, container);
     const isClassicWheel =
@@ -1049,14 +1102,11 @@ function App() {
     if (autoFollow) {
       const container = scrollContainerRef.current;
       if (container) {
-        const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
-        const distanceToBottom = targetTop - container.scrollTop;
-        if (distanceToBottom > STICK_TO_BOTTOM_EPSILON) {
-          container.scrollTo({ top: targetTop, behavior: "auto" });
-        }
+        lastAutoFollowSyncAtRef.current = window.performance.now();
+        snapToBottomIfNeeded(container);
       }
     }
-  }, [cards, cardsState.indexById, partialText, autoFollow]);
+  }, [cards, cardsState.indexById, partialText, autoFollow, snapToBottomIfNeeded]);
 
   useEffect(() => {
     autoFollowRef.current = autoFollow;
@@ -1387,6 +1437,9 @@ function App() {
       const { scrollTop, scrollHeight, clientHeight } = container;
       const distanceToBottom = scrollHeight - scrollTop - clientHeight;
       const scrollingUp = scrollTop + 2 < lastScrollTopRef.current;
+      const userScrollLikely = hasRecentUserScrollIntent();
+      const recentAutoFollowSync =
+        window.performance.now() - lastAutoFollowSyncAtRef.current <= AUTO_FOLLOW_DRIFT_GUARD_MS;
       lastScrollTopRef.current = scrollTop;
 
       queuedScrollTopRef.current = scrollTop;
@@ -1402,6 +1455,11 @@ function App() {
       }
 
       if (autoFollowRef.current) {
+        if (!userScrollLikely && recentAutoFollowSync) {
+          snapToBottomIfNeeded(container);
+          return;
+        }
+
         if (scrollingUp && distanceToBottom > AUTO_FOLLOW_ENABLE_THRESHOLD) {
           autoFollowRef.current = false;
           setAutoFollow(false);
@@ -1412,6 +1470,7 @@ function App() {
           setAutoFollow(false);
         }
       } else if (distanceToBottom <= AUTO_FOLLOW_ENABLE_THRESHOLD) {
+        lastAutoFollowSyncAtRef.current = window.performance.now();
         autoFollowRef.current = true;
         setAutoFollow(true);
       }
@@ -1434,7 +1493,7 @@ function App() {
       container.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', handleResize);
     };
-  }, []);
+  }, [hasRecentUserScrollIntent, markUserScrollIntent, snapToBottomIfNeeded]);
 
   // Disable Context Menu in Production
   useEffect(() => {
@@ -2090,6 +2149,10 @@ function App() {
     setIsChatSidebarResizing(true);
   };
 
+  const preloadChatSidebar = useCallback(() => {
+    void loadChatSidebar();
+  }, []);
+
   const buildChatCardsSnapshot = (): CaptionChatCardInput[] => {
     return cardsRef.current
       .filter(card => card.original.trim().length > 0)
@@ -2729,6 +2792,8 @@ function App() {
                   }
                   setIsChatOpen(prev => !prev);
                 }}
+                onMouseEnter={config.ai_models.length > 0 ? preloadChatSidebar : undefined}
+                onFocus={config.ai_models.length > 0 ? preloadChatSidebar : undefined}
                 title={t("chat.tooltip")}
               >
                 <IconMessageSquare />
@@ -2803,28 +2868,32 @@ function App() {
                   <div ref={historyEndRef} />
                 </div>
               </div>
-              <ChatSidebar
-                isOpen={isChatOpen}
-                width={chatSidebarWidth}
-                messages={chatMessages}
-                input={chatInput}
-                isSending={isChatSending}
-                models={config.ai_models}
-                chatSessions={chatSessions}
-                activeChatSessionId={activeChatSessionId}
-                hasActiveSession={!!activeSessionId}
-                selectedModelId={chatModelId}
-                addToast={addToast}
-                onInputChange={setChatInput}
-                onModelChange={setChatModelId}
-                onNewSession={() => void handleStartNewChatSession()}
-                onSelectChatSession={id => void handleSelectChatSession(id)}
-                onSend={() => void handleSendChatMessage()}
-                onStop={handleStopChatMessage}
-                onResizeStart={handleChatSidebarResizeStart}
-                onCardReferenceClick={handleChatCardReferenceClick}
-                getModelLabel={model => getAIModelLabel(model.id)}
-              />
+              {isChatOpen && (
+                <Suspense fallback={<ChatSidebarFallback width={chatSidebarWidth} />}>
+                  <ChatSidebar
+                    isOpen={isChatOpen}
+                    width={chatSidebarWidth}
+                    messages={chatMessages}
+                    input={chatInput}
+                    isSending={isChatSending}
+                    models={config.ai_models}
+                    chatSessions={chatSessions}
+                    activeChatSessionId={activeChatSessionId}
+                    hasActiveSession={!!activeSessionId}
+                    selectedModelId={chatModelId}
+                    addToast={addToast}
+                    onInputChange={setChatInput}
+                    onModelChange={setChatModelId}
+                    onNewSession={() => void handleStartNewChatSession()}
+                    onSelectChatSession={id => void handleSelectChatSession(id)}
+                    onSend={() => void handleSendChatMessage()}
+                    onStop={handleStopChatMessage}
+                    onResizeStart={handleChatSidebarResizeStart}
+                    onCardReferenceClick={handleChatCardReferenceClick}
+                    getModelLabel={model => getAIModelLabel(model.id)}
+                  />
+                </Suspense>
+              )}
             </div>
           </div>
 
