@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -88,6 +89,7 @@ const RECENT_SENTENCE_MIN_LENGTH = 8;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
 const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
+const FOOTER_HORIZONTAL_PADDING_PX = 48;
 const CHAT_SIDEBAR_DEFAULT_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MIN_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MAX_WIDTH = 920;
@@ -307,6 +309,7 @@ function App() {
   const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
   const [isChatSidebarResizing, setIsChatSidebarResizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
+  const [isFooterToggleLabelCollapsed, setIsFooterToggleLabelCollapsed] = useState(false);
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
   const [isSessionTranslating, setIsSessionTranslating] = useState(false);
@@ -344,6 +347,10 @@ function App() {
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const cardSearchInputRef = useRef<HTMLInputElement>(null);
+  const footerRef = useRef<HTMLElement>(null);
+  const footerStatusRef = useRef<HTMLDivElement>(null);
+  const footerTrailingRef = useRef<HTMLDivElement>(null);
+  const footerExpandedControlsMeasureRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const cardIndexRef = useRef<Record<string, number>>({});
   const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
@@ -390,6 +397,44 @@ function App() {
     () => normalizeCardSearchKeyword(cardSearchQuery),
     [cardSearchQuery],
   );
+  const toggleWatcherLabel = isRunning ? t("controls.stop") : t("controls.start");
+  const isSummaryDisabled = cards.length === 0 || !config.summary_provider?.trim();
+
+  useLayoutEffect(() => {
+    const footer = footerRef.current;
+    const statusNode = footerStatusRef.current;
+    const trailingNode = footerTrailingRef.current;
+    const measureNode = footerExpandedControlsMeasureRef.current;
+
+    if (!footer || !statusNode || !trailingNode || !measureNode || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const syncFooterToggleLabelCollapse = () => {
+      const footerWidth = footer.clientWidth;
+      const expandedControlsWidth = measureNode.offsetWidth;
+
+      if (footerWidth === 0 || expandedControlsWidth === 0) {
+        setIsFooterToggleLabelCollapsed(false);
+        return;
+      }
+
+      const maxSideWidth = Math.max(statusNode.offsetWidth, trailingNode.offsetWidth);
+      const centeredWidthBudget = Math.max(0, footerWidth - maxSideWidth * 2 - FOOTER_HORIZONTAL_PADDING_PX);
+      setIsFooterToggleLabelCollapsed(expandedControlsWidth > centeredWidthBudget);
+    };
+
+    const observer = new ResizeObserver(syncFooterToggleLabelCollapse);
+    observer.observe(footer);
+    observer.observe(statusNode);
+    observer.observe(trailingNode);
+    observer.observe(measureNode);
+    syncFooterToggleLabelCollapse();
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [appVersion, i18n.language, status, toggleWatcherLabel]);
 
   const cardSearchMatches = useMemo<CardSearchMatch[]>(() => {
     if (!isCardSearchOpen || !normalizedCardSearchQuery) {
@@ -2899,41 +2944,57 @@ function App() {
             </div>
           </div>
 
-          <footer className="h-[60px] bg-panel border-t border-border flex items-center justify-between px-6 relative z-10">
-              <div className="flex items-center gap-2 max-w-[calc(50%-80px)] pr-4">
+          <footer ref={footerRef} className="h-[60px] bg-panel border-t border-border flex items-center justify-between px-6 relative z-10">
+              <div ref={footerStatusRef} className="flex items-center gap-2 max-w-[calc(50%-80px)] pr-4">
                 <div className={`w-2 h-2 rounded-full shrink-0 ${isRunning ? 'bg-success shadow-[0_0_10px_var(--success)]' : 'bg-text-muted'}`} />
                 <span className={`text-[11px] text-text-secondary truncate leading-[1.2] line-clamp-2 hover:line-clamp-none hover:overflow-visible hover:bg-panel hover:z-[100] hover:shadow-lg hover:p-1 hover:rounded ${status.startsWith('Error') ? 'text-error' : ''}`} title={status}>{status}</span>
               </div>
-              <div className="flex items-center justify-center absolute left-1/2 -translate-x-1/2 pointer-events-none [&>*]:pointer-events-auto">
-              {config.caption_source !== 'teams' ? (
-                <button
-                    className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 mr-3 ${!isRunning ? 'text-text-muted cursor-not-allowed opacity-50' : (isWindowVisible ? 'text-text-primary' : 'text-text-muted')} ${isRunning ? 'cursor-pointer opacity-100 hover:brightness-110' : ''}`}
-                    onClick={toggleVisibility}
-                    disabled={!isRunning}
-                    title={isWindowVisible ? t("controls.hideWindow") : t("controls.showWindow")}
-                >
-                    {isWindowVisible ? <IconEye /> : <IconEyeOff />}
-                </button>
-              ) : (
-                <div className="h-10 w-10 mr-3" aria-hidden="true" />
-              )}
-              <button 
-                className={`h-10 px-5 rounded-[20px] border-none flex items-center gap-2.5 font-bold tracking-[0.5px] cursor-pointer transition-all duration-200 shadow-md hover:-translate-y-0.5 hover:shadow-[0_0_20px_var(--primary-glow)] ${isRunning ? 'bg-bg-secondary border border-error text-error hover:bg-error/10' : 'bg-primary text-black'}`} 
-                onClick={toggleWatcher}
-              >
-                  {isRunning ? <IconSquare /> : <IconPlay />}
-                  <span>{isRunning ? t("controls.stop") : t("controls.start")}</span>
-              </button>
-              <button
-                  className={`h-10 w-10 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 ml-3 ${(cards.length === 0 || !config.summary_provider?.trim()) ? 'text-text-muted cursor-not-allowed' : 'text-text-primary cursor-pointer hover:brightness-110'}`}
-                  onClick={handleSummarize}
-                  disabled={cards.length === 0 || !config.summary_provider?.trim()}
-                  title={config.summary_provider?.trim() ? t("controls.summarize") : t("settings.summary.selectProvider")}
-              >
-                  <IconFileText />
-              </button>
+              <div aria-hidden="true" className="absolute inset-0 overflow-hidden pointer-events-none">
+                <div ref={footerExpandedControlsMeasureRef} className="absolute left-0 top-0 invisible flex items-center">
+                  <div className="h-10 w-10 mr-3 shrink-0" />
+                  <div
+                    className={`h-10 rounded-[20px] border-none flex shrink-0 items-center gap-2.5 px-5 font-bold tracking-[0.5px] whitespace-nowrap ${isRunning ? 'bg-bg-secondary border border-error text-error' : 'bg-primary text-black'}`}
+                  >
+                    {isRunning ? <IconSquare /> : <IconPlay />}
+                    <span className="whitespace-nowrap">{toggleWatcherLabel}</span>
+                  </div>
+                  <div className="h-10 w-10 ml-3 shrink-0" />
+                </div>
               </div>
-              <div className="w-[120px] flex justify-end items-center gap-3">
+              <div className="absolute inset-x-0 flex justify-center px-6 pointer-events-none">
+                <div className="flex items-center justify-center [&>*]:pointer-events-auto">
+                {config.caption_source !== 'teams' ? (
+                  <button
+                      className={`h-10 w-10 shrink-0 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 mr-3 ${!isRunning ? 'text-text-muted cursor-not-allowed opacity-50' : (isWindowVisible ? 'text-text-primary' : 'text-text-muted')} ${isRunning ? 'cursor-pointer opacity-100 hover:brightness-110' : ''}`}
+                      onClick={toggleVisibility}
+                      disabled={!isRunning}
+                      title={isWindowVisible ? t("controls.hideWindow") : t("controls.showWindow")}
+                  >
+                      {isWindowVisible ? <IconEye /> : <IconEyeOff />}
+                  </button>
+                ) : (
+                  <div className="h-10 w-10 mr-3 shrink-0" aria-hidden="true" />
+                )}
+                <button 
+                  className={`h-10 rounded-[20px] border-none flex shrink-0 items-center font-bold tracking-[0.5px] whitespace-nowrap cursor-pointer transition-all duration-200 shadow-md hover:-translate-y-0.5 hover:shadow-[0_0_20px_var(--primary-glow)] ${isFooterToggleLabelCollapsed ? 'w-10 justify-center' : 'gap-2.5 px-5'} ${isRunning ? 'bg-bg-secondary border border-error text-error hover:bg-error/10' : 'bg-primary text-black'}`} 
+                  onClick={toggleWatcher}
+                  title={toggleWatcherLabel}
+                  aria-label={toggleWatcherLabel}
+                >
+                    {isRunning ? <IconSquare /> : <IconPlay />}
+                    {!isFooterToggleLabelCollapsed && <span className="whitespace-nowrap">{toggleWatcherLabel}</span>}
+                </button>
+                <button
+                    className={`h-10 w-10 shrink-0 rounded-[20px] border-none bg-bg-secondary flex items-center justify-center transition-all duration-200 ml-3 ${isSummaryDisabled ? 'text-text-muted cursor-not-allowed' : 'text-text-primary cursor-pointer hover:brightness-110'}`}
+                    onClick={handleSummarize}
+                    disabled={isSummaryDisabled}
+                    title={config.summary_provider?.trim() ? t("controls.summarize") : t("settings.summary.selectProvider")}
+                >
+                    <IconFileText />
+                </button>
+                </div>
+              </div>
+              <div ref={footerTrailingRef} className="w-[120px] flex justify-end items-center gap-3">
               {appVersion && <span className="text-[11px] text-text-muted">v{appVersion}</span>}
               <button className="bg-transparent border-none text-text-secondary cursor-pointer p-2 rounded-full transition-all flex items-center justify-center hover:bg-card-hover hover:text-text-primary" onClick={() => setIsSettingsOpen(true)} title={t("controls.settings")}>
                   <IconSettings />
