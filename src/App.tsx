@@ -2897,16 +2897,18 @@ function App() {
                   ref={scrollContainerRef}
                   onWheel={handleScrollWheel}
                   style={{
-                    overflowAnchor: 'none',
+                    overflowAnchor: autoFollow ? 'none' : 'auto',
                   }}
                 >
                   <CaptionsList
                     addToast={addToast}
+                    autoFollow={autoFollow}
                     cards={cards}
                     hasActiveSession={!!activeSessionId}
                     isTeamsMode={config.caption_source === 'teams'}
                     onRetryTranslation={retryTranslation}
                     partialText={partialText}
+                    scrollContainerRef={scrollContainerRef}
                     scrollTop={listScrollTop}
                     viewportHeight={listViewportHeight}
                     tempTranslations={tempTranslations}

@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type RefObject,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { IconCopy, IconRetry, IconUser } from "./Icons";
@@ -17,6 +18,7 @@ const ITEM_ESTIMATED_HEIGHT = 110;
 const CARD_VERTICAL_GAP = 12;
 const OVERSCAN_ITEMS = 6;
 const STABLE_RENDER_THRESHOLD = 700;
+const HEIGHT_ESTIMATE_SAMPLE_LIMIT = 24;
 const CARD_CONTEXT_MENU_VIEWPORT_PADDING = 12;
 
 function lowerBound(offsets: number[], target: number): number {
@@ -53,11 +55,13 @@ function upperBound(offsets: number[], target: number): number {
 
 interface CaptionsListProps {
   addToast: (type: "success" | "error", message: string) => void;
+  autoFollow: boolean;
   cards: SentenceCard[];
   hasActiveSession: boolean;
   isTeamsMode: boolean;
   onRetryTranslation: (cardId: string, originalText: string) => void;
   partialText: string;
+  scrollContainerRef: RefObject<HTMLDivElement | null>;
   scrollTop: number;
   viewportHeight: number;
   tempTranslations: Record<string, TempTranslation>;
@@ -273,10 +277,12 @@ function areCaptionsListPropsEqual(
   next: Readonly<CaptionsListProps>
 ): boolean {
   if (prev.addToast !== next.addToast) return false;
+  if (prev.autoFollow !== next.autoFollow) return false;
   if (prev.cards !== next.cards) return false;
   if (prev.hasActiveSession !== next.hasActiveSession) return false;
   if (prev.isTeamsMode !== next.isTeamsMode) return false;
   if (prev.partialText !== next.partialText) return false;
+  if (prev.scrollContainerRef !== next.scrollContainerRef) return false;
   if (prev.tempTranslations !== next.tempTranslations) return false;
   if (prev.highlightedCardId !== next.highlightedCardId) return false;
 
@@ -292,11 +298,13 @@ function areCaptionsListPropsEqual(
 
 export const CaptionsList = memo(function CaptionsList({
   addToast,
+  autoFollow,
   cards,
   hasActiveSession,
   isTeamsMode,
   onRetryTranslation,
   partialText,
+  scrollContainerRef,
   scrollTop,
   viewportHeight,
   tempTranslations,
@@ -304,9 +312,12 @@ export const CaptionsList = memo(function CaptionsList({
 }: CaptionsListProps) {
   const { t } = useTranslation();
   const measuredHeightsRef = useRef<Record<string, number>>({});
-  const avgMeasuredHeightRef = useRef<number>(ITEM_ESTIMATED_HEIGHT);
+  const estimatedHeightRef = useRef<number>(ITEM_ESTIMATED_HEIGHT);
+  const heightEstimateSampleCountRef = useRef(0);
+  const heightEstimateSampleTotalRef = useRef(0);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef(scrollTop);
+  const previousPrefixHeightsRef = useRef<number[]>([]);
   const [heightVersion, setHeightVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState<CardContextMenuState | null>(null);
   const shouldVirtualize = cards.length > STABLE_RENDER_THRESHOLD && viewportHeight > 0;
@@ -322,14 +333,18 @@ export const CaptionsList = memo(function CaptionsList({
       return;
     }
 
-    measuredHeightsRef.current[cardId] = height;
-
-    const measuredValues = Object.values(measuredHeightsRef.current);
-    if (measuredValues.length > 0) {
-      const sum = measuredValues.reduce((acc, value) => acc + value, 0);
-      const avg = Math.round(sum / measuredValues.length);
-      avgMeasuredHeightRef.current = Math.max(72, Math.min(220, avg));
+    if (
+      previous === undefined
+      && heightEstimateSampleCountRef.current < HEIGHT_ESTIMATE_SAMPLE_LIMIT
+    ) {
+      heightEstimateSampleCountRef.current += 1;
+      heightEstimateSampleTotalRef.current += height;
+      const avg = Math.round(
+        heightEstimateSampleTotalRef.current / heightEstimateSampleCountRef.current
+      );
+      estimatedHeightRef.current = Math.max(72, Math.min(220, avg));
     }
+    measuredHeightsRef.current[cardId] = height;
 
     setHeightVersion(prev => prev + 1);
   }, []);
@@ -374,6 +389,13 @@ export const CaptionsList = memo(function CaptionsList({
         delete measuredHeightsRef.current[id];
         changed = true;
       }
+    }
+
+    if (Object.keys(measuredHeightsRef.current).length === 0) {
+      estimatedHeightRef.current = ITEM_ESTIMATED_HEIGHT;
+      heightEstimateSampleCountRef.current = 0;
+      heightEstimateSampleTotalRef.current = 0;
+      previousPrefixHeightsRef.current = [];
     }
 
     if (changed) {
@@ -464,12 +486,42 @@ export const CaptionsList = memo(function CaptionsList({
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       const measured = measuredHeightsRef.current[card.id];
-      const itemHeight = (measured ?? avgMeasuredHeightRef.current) + CARD_VERTICAL_GAP;
+      const itemHeight = (measured ?? estimatedHeightRef.current) + CARD_VERTICAL_GAP;
       offsets[i + 1] = offsets[i] + itemHeight;
     }
 
     return offsets;
   }, [cards, heightVersion]);
+
+  useLayoutEffect(() => {
+    if (!shouldVirtualize || autoFollow || totalItems === 0) {
+      previousPrefixHeightsRef.current = prefixHeights;
+      return;
+    }
+
+    const previousPrefixHeights = previousPrefixHeightsRef.current;
+    const container = scrollContainerRef.current;
+    if (!container || previousPrefixHeights.length === 0) {
+      previousPrefixHeightsRef.current = prefixHeights;
+      return;
+    }
+
+    const anchorScrollTop = container.scrollTop;
+    const rawAnchorIndex = Math.max(0, upperBound(previousPrefixHeights, anchorScrollTop) - 1);
+    const anchorIndex = Math.min(totalItems - 1, rawAnchorIndex);
+    const previousAnchorTop = previousPrefixHeights[anchorIndex] ?? 0;
+    const nextAnchorTop = prefixHeights[anchorIndex] ?? previousAnchorTop;
+    const nextScrollTop = nextAnchorTop + (anchorScrollTop - previousAnchorTop);
+    const maxScrollTop = Math.max(0, prefixHeights[totalItems] - container.clientHeight);
+    const clampedScrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
+
+    // Keep the current viewport anchored while earlier cards grow or shrink after measurement.
+    if (Math.abs(clampedScrollTop - anchorScrollTop) > 1) {
+      container.scrollTop = clampedScrollTop;
+    }
+
+    previousPrefixHeightsRef.current = prefixHeights;
+  }, [autoFollow, prefixHeights, scrollContainerRef, shouldVirtualize, totalItems]);
 
   const viewportBottom = scrollTop + viewportHeight;
   const startBaseIndex = shouldVirtualize
