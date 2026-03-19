@@ -15,6 +15,16 @@ const STREAM_REQUEST_TIMEOUT_SECS: u64 = 300;
 const SUMMARY_MAX_OUTPUT_TOKENS: u32 = 4096;
 const CAPTION_CHAT_MAX_OUTPUT_TOKENS: u32 = 4096;
 
+pub fn default_translation_prompt() -> String {
+    "You are a professional translator for live captions and speech-to-text transcripts.\n\n\
+     Translate the current sentence from {source_lang} to {target_lang}.\n\
+     If previous sentences are provided, use them only for context and disambiguation. Do not translate or mention them separately.\n\
+     Correct obvious speech recognition mistakes only when the intended meaning is clear from context.\n\
+     Preserve the original meaning, tone, and speaker intent.\n\n\
+     Return only the translation in {target_lang}. Do not include explanations, labels, quotation marks, or extra formatting."
+        .to_string()
+}
+
 /// Proxy configuration for translation services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProxyConfig {
@@ -85,6 +95,7 @@ pub struct TranslationConfig {
     pub source_lang: String,
     pub target_lang: String,
     pub summary_prompt: Option<String>,
+    pub translation_prompt: String,
     // Google Translate proxy
     pub google_proxy: ProxyConfig,
     // Microsoft Translator
@@ -139,6 +150,7 @@ impl Default for TranslationConfig {
             source_lang: "en".to_string(),
             target_lang: "zh-CN".to_string(),
             summary_prompt: None,
+            translation_prompt: default_translation_prompt(),
             google_proxy: ProxyConfig::default(),
             microsoft_api_key: None,
             microsoft_region: None,
@@ -289,6 +301,8 @@ impl TranslationService {
         Self::provider_cache_tag(provider).hash(&mut hasher);
         self.config.source_lang.hash(&mut hasher);
         target_lang.hash(&mut hasher);
+        self.effective_translation_prompt_template()
+            .hash(&mut hasher);
         text.hash(&mut hasher);
 
         if let Some(ctx) = context {
@@ -337,6 +351,28 @@ impl TranslationService {
         Ok(())
     }
 
+    fn effective_translation_prompt_template(&self) -> String {
+        if self.config.translation_prompt.trim().is_empty() {
+            default_translation_prompt()
+        } else {
+            self.config.translation_prompt.clone()
+        }
+    }
+    fn build_translation_system_prompt(&self, target_lang: &str) -> String {
+        let source_lang_name = if self.config.source_lang == "auto" {
+            "any language".to_string()
+        } else {
+            Self::get_lang_name(&self.config.source_lang)
+        };
+        let target_lang_name = Self::get_lang_name(target_lang);
+        self.effective_translation_prompt_template()
+            .replace("{source_lang_code}", &self.config.source_lang)
+            .replace("{target_lang_code}", target_lang)
+            .replace("{source_lang_name}", &source_lang_name)
+            .replace("{target_lang_name}", &target_lang_name)
+            .replace("{source_lang}", &source_lang_name)
+            .replace("{target_lang}", &target_lang_name)
+    }
     pub async fn translate(
         &self,
         text: &str,
@@ -1360,6 +1396,7 @@ impl TranslationService {
             .or(self.config.github_token.as_deref())
             .context("GitHub Copilot not logged in")?;
         let proxy_config = proxy_config.unwrap_or(&self.config.copilot_proxy);
+        let configured_system_prompt = self.build_translation_system_prompt(target_lang);
         let source_lang_desc = if self.config.source_lang == "auto" {
             "any language".to_string()
         } else {
@@ -1367,7 +1404,7 @@ impl TranslationService {
         };
         let target_lang_name = Self::get_lang_name(target_lang);
 
-        let system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
+        let _legacy_system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
             format!(
                 "You are a translator. Translate the current sentence from {} to {}. \
                  The previous sentences are provided ONLY for context/disambiguation. \
@@ -1383,6 +1420,7 @@ impl TranslationService {
             )
         };
 
+        let system_prompt = configured_system_prompt;
         let user_content = if let Some(ctx) = context {
             if ctx.is_empty() {
                 text.to_string()
@@ -1455,6 +1493,7 @@ impl TranslationService {
             text.to_string()
         };
 
+        let configured_system_prompt = self.build_translation_system_prompt(target_lang);
         let source_lang_desc = if self.config.source_lang == "auto" {
             "any language".to_string()
         } else {
@@ -1463,7 +1502,7 @@ impl TranslationService {
 
         let target_lang_name = Self::get_lang_name(target_lang);
 
-        let system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
+        let _legacy_system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
             format!(
                 "You are a translator. Translate the current sentence from {} to {}. \
                  The previous sentences are provided ONLY for context/disambiguation. \
@@ -1479,6 +1518,7 @@ impl TranslationService {
             )
         };
 
+        let system_prompt = configured_system_prompt;
         self.send_openai_request(endpoint, &system_prompt, &user_content, None)
             .await
     }

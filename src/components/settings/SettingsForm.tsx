@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { AppConfig, LANGUAGES, LogLevel } from "../../types";
+import { AppConfig, DEFAULT_TRANSLATION_PROMPT, LANGUAGES, LogLevel } from "../../types";
 import { ProxyConfigForm } from "./ProxyConfigForm";
 import { ChannelsTab } from "./ChannelsTab";
 import { ModelsTab } from "./ModelsTab";
@@ -337,6 +337,12 @@ export function SettingsForm({ config, onSave, onConfigChange, onStartCopilotAut
       {(() => {
           // Show context setting for AI models (OpenAI or Copilot), not for Google/Microsoft
           const isAIModel = formData.provider !== 'google' && formData.provider !== 'microsoft';
+          const showTranslationPrompt = formData.translation_enabled !== false && isAIModel;
+          const effectiveTranslationPrompt = formData.translation_prompt?.trim()
+            ? formData.translation_prompt
+            : DEFAULT_TRANSLATION_PROMPT;
+          const isUsingDefaultTranslationPrompt = !formData.translation_prompt?.trim()
+            || formData.translation_prompt === DEFAULT_TRANSLATION_PROMPT;
 
           return isAIModel && (
             <div className="endpoint-card" style={{ marginTop: '0px' }}>
@@ -358,6 +364,46 @@ export function SettingsForm({ config, onSave, onConfigChange, onStartCopilotAut
                   style={{ width: '100%', accentColor: 'var(--primary)', cursor: 'pointer' }}
                 />
               </div>
+              {showTranslationPrompt && (
+                <div className="form-group">
+                  <label>{t("settings.translation.prompt")}</label>
+                  <textarea
+                    className="summary-prompt-textarea"
+                    value={effectiveTranslationPrompt}
+                    onChange={e => {
+                      const newConfig = { ...formData, translation_prompt: e.target.value };
+                      setFormData(newConfig);
+                      autoSave(newConfig);
+                    }}
+                    rows={8}
+                  />
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                    {t("settings.translation.promptHint")}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newConfig = { ...formData, translation_prompt: '' };
+                        setFormData(newConfig);
+                        autoSave(newConfig);
+                      }}
+                      disabled={isUsingDefaultTranslationPrompt}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border-color)',
+                        background: isUsingDefaultTranslationPrompt ? 'var(--bg-input)' : 'var(--bg-card-hover)',
+                        color: isUsingDefaultTranslationPrompt ? 'var(--text-muted)' : 'var(--text-primary)',
+                        cursor: isUsingDefaultTranslationPrompt ? 'not-allowed' : 'pointer',
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      {t("settings.translation.restoreDefault")}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
       })()}

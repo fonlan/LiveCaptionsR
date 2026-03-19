@@ -139,6 +139,7 @@ export interface AppConfig {
   ai_channels: AIChannel[];
   ai_models: AIModel[];
   openai_context_count: number;
+  translation_prompt: string;
   opacity: number;
   language: string;
   translation_enabled: boolean;
@@ -147,6 +148,8 @@ export interface AppConfig {
 }
 
 export const DEFAULT_PROXY: ProxyConfig = { url: "", enabled: false };
+
+export const DEFAULT_TRANSLATION_PROMPT = "You are a professional translator for live captions and speech-to-text transcripts.\n\nTranslate the current sentence from {source_lang} to {target_lang}.\nIf previous sentences are provided, use them only for context and disambiguation. Do not translate or mention them separately.\nCorrect obvious speech recognition mistakes only when the intended meaning is clear from context.\nPreserve the original meaning, tone, and speaker intent.\n\nReturn only the translation in {target_lang}. Do not include explanations, labels, quotation marks, or extra formatting.";
 
 export const DEFAULT_SUMMARY_PROMPT = "You are an expert summarizer. The input text is a speech-to-text transcript (Windows LiveCaptions) and likely contains recognition errors, missing words, or typos. \n\n Please follow these steps:\n 1. Analyze the context to infer and correct any errors or missing information in the transcript.\n 2. Generate a clear and concise summary of the corrected content in {target_lang}.\n \n Output using Markdown formatting.";
 
@@ -169,6 +172,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   ai_channels: [],
   ai_models: [],
   openai_context_count: 2,
+  translation_prompt: DEFAULT_TRANSLATION_PROMPT,
   opacity: 1.0,
   language: "en",
   translation_enabled: true,

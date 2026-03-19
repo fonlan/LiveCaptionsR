@@ -143,6 +143,9 @@ pub struct AppConfig {
     /// Number of previous captions to include as context for OpenAI translation (default: 2)
     #[serde(default = "default_openai_context_count")]
     pub openai_context_count: u32,
+    /// Custom system prompt for AI translation providers
+    #[serde(default = "translation::default_translation_prompt")]
+    pub translation_prompt: String,
     /// UI Language (en, zh-CN)
     #[serde(default = "default_language")]
     pub language: String,
@@ -216,6 +219,7 @@ impl Default for AppConfig {
             openai_endpoints: vec![],
             opacity: 1.0,
             openai_context_count: 2,
+            translation_prompt: translation::default_translation_prompt(),
             language: "en".to_string(),
             translation_enabled: true,
             max_concurrent_translations: 2,
@@ -513,6 +517,7 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         source_lang: config.source_lang.clone(),
         target_lang: config.target_lang.clone(),
         summary_prompt: config.summary_prompt.clone(),
+        translation_prompt: config.translation_prompt.clone(),
         google_proxy: ProxyConfig {
             url: config.google_proxy.url.clone(),
             enabled: config.google_proxy.enabled,

@@ -108,6 +108,7 @@ Click the **Settings** icon in the bottom-right corner to configure:
    - Supports official OpenAI API or any compatible endpoint (e.g., LocalAI, Ollama).
    - Configure multiple endpoints (e.g., "GPT-4o" and "Local Llama 3").
    - Set custom `Base URL` and `Model`.
+   - When translation is enabled and an AI model is selected as the translation provider, you can customize the persisted translation prompt template used for AI caption translation.
 
 4. **GitHub Copilot**:
    - Requires a GitHub Copilot subscription.
@@ -126,6 +127,7 @@ Each provider has independent proxy settings:
 - **Hide System LiveCaptions Window**: Keeps the native caption bar hidden while capturing.
 - **Always on Top**: Keeps the LiveCaptionsR window above other applications.
 - **Session Summaries**: Generate AI-powered summaries using OpenAI or Copilot with streaming, typewriter-style output, while the active "generating" indicator stays pinned beside the summary title in the modal header during scrolling.
+- **AI Translation Prompt**: When live translation is enabled and the translation provider is an AI model, Settings > Translation exposes a built-in prompt template that can be customized, saved to local config, and uses `{source_lang}` / `{target_lang}` style placeholders.
 - **AI Chat Sidebar**: Opens from the right side of the main view (without covering header/footer), sits beside the current caption list instead of overlaying it, supports model selection, sends all captured original cards (Teams speaker names included when available) with each question, allows selecting bubble text, supports one-click per-bubble Markdown copy, supports clickable `#card-number` references that jump to the corresponding caption card, supports mouse drag width resizing, yields width to the left session sidebar and caption list on narrow windows instead of covering them, and persists AI chat sessions locally with a history switcher scoped to the current translation session.
 - **Session Sidebar Filters**: The left history session sidebar supports keyword matching against session title plus captured original/translated text, a custom start/end date range (date-only), and mouse drag width resizing.
 - **Clear Saved Sessions**: The destructive "clear all sessions" action lives in Settings > General.
@@ -143,7 +145,7 @@ Each provider has independent proxy settings:
 - **Backend**: Rust (Tauri)
   - `livecaptions.rs`: Manages Windows UI Automation and LiveCaptions process control.
 - `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation, anchors visible parsed messages against cached history, discards punctuation-only split fragments, and emits targeted card updates with stable per-session card IDs.
-  - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot), summary generation, and caption-chat completion routing.
+  - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot), configurable AI translation prompts, summary generation, and caption-chat completion routing.
   - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`, `summary-stream`), including session-level summarization and AI chat from captured cards.
   - `storage.rs`: Persists translation sessions/cards plus AI chat sessions/messages (bound to translation session IDs) in SQLite.
 

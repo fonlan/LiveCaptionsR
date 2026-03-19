@@ -26,6 +26,7 @@ import {
   DEFAULT_CONFIG, 
   DEFAULT_PROXY,
   DEFAULT_SUMMARY_PROMPT,
+  DEFAULT_TRANSLATION_PROMPT,
   RawCaption, 
   SentenceCard, 
   Session, 
@@ -1330,6 +1331,7 @@ function App() {
           ...DEFAULT_CONFIG,
           ...savedConfig,
           summary_prompt: savedConfig.summary_prompt || DEFAULT_SUMMARY_PROMPT, // Ensure default prompt if empty
+          translation_prompt: savedConfig.translation_prompt ?? DEFAULT_TRANSLATION_PROMPT,
           google_proxy: savedConfig.google_proxy || DEFAULT_PROXY,
           microsoft_proxy: savedConfig.microsoft_proxy || DEFAULT_PROXY,
         });
