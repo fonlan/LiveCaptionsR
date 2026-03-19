@@ -26,6 +26,7 @@
   },
   "translation": {
     "failed": "翻译失败",
+    "retranslate": "重新翻译",
     "retry": "重试翻译",
     "retrying": "重试中..."
   },

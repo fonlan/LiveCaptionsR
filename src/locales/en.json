@@ -26,6 +26,7 @@
   },
   "translation": {
     "failed": "Translation failed",
+    "retranslate": "Retranslate",
     "retry": "Retry translation",
     "retrying": "Retrying..."
   },

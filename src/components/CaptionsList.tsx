@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { IconCopy, IconRetry, IconUser } from "./Icons";
 import { SentenceCard, TranslationStatus } from "../types";
@@ -8,6 +17,7 @@ const ITEM_ESTIMATED_HEIGHT = 110;
 const CARD_VERTICAL_GAP = 12;
 const OVERSCAN_ITEMS = 6;
 const STABLE_RENDER_THRESHOLD = 700;
+const CARD_CONTEXT_MENU_VIEWPORT_PADDING = 12;
 
 function lowerBound(offsets: number[], target: number): number {
   let low = 0;
@@ -61,10 +71,25 @@ interface CaptionCardItemProps {
   isTeamsMode: boolean;
   isVirtualized?: boolean;
   isHighlighted?: boolean;
+  onOpenContextMenu: (
+    event: ReactMouseEvent<HTMLDivElement>,
+    card: SentenceCard,
+    displayStatus: TranslationStatus | undefined,
+  ) => void;
   onRetryTranslation: (cardId: string, originalText: string) => void;
   onMeasuredHeight?: (cardId: string, height: number) => void;
   tempTranslation?: TempTranslation;
 }
+
+type CardContextMenuState = {
+  cardId: string;
+  originalText: string;
+  retryLabel: string;
+  retrying: boolean;
+  retryDisabled: boolean;
+  x: number;
+  y: number;
+};
 
 function areCaptionCardItemPropsEqual(
   prev: Readonly<CaptionCardItemProps>,
@@ -77,6 +102,7 @@ function areCaptionCardItemPropsEqual(
     && prev.isTeamsMode === next.isTeamsMode
     && prev.isHighlighted === next.isHighlighted
     && prev.isVirtualized === next.isVirtualized
+    && prev.onOpenContextMenu === next.onOpenContextMenu
     && prev.onMeasuredHeight === next.onMeasuredHeight
     && prev.tempTranslation === next.tempTranslation
   );
@@ -89,6 +115,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
   isTeamsMode,
   isVirtualized,
   isHighlighted,
+  onOpenContextMenu,
   onRetryTranslation,
   onMeasuredHeight,
   tempTranslation,
@@ -175,6 +202,7 @@ const CaptionCardItem = memo(function CaptionCardItem({
       ref={itemRef}
       data-card-number={cardNumber}
       className={`${isVirtualized ? 'caption-virtual-item ' : ''}bg-card rounded-lg p-3 pr-11 border border-transparent ${motionClass} relative hover:bg-card-hover hover:border-border mb-3 ${displayStatus === 'error' || (!displayStatus && displayTranslated === null) ? 'border-l-[3px] border-l-error' : ''} ${isHighlighted ? 'chat-card-jump-highlight bg-card-hover border-primary/80 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]' : ''}`}
+      onContextMenu={(event) => onOpenContextMenu(event, card, displayStatus)}
     >
       <div className="pointer-events-none absolute right-2 top-2 inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/35 px-2 py-0.5 text-[10px] font-semibold leading-none tracking-[0.3px] text-text-muted tabular-nums select-none">
         <span className="opacity-70">#</span>
@@ -277,9 +305,16 @@ export const CaptionsList = memo(function CaptionsList({
   const { t } = useTranslation();
   const measuredHeightsRef = useRef<Record<string, number>>({});
   const avgMeasuredHeightRef = useRef<number>(ITEM_ESTIMATED_HEIGHT);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = useRef(scrollTop);
   const [heightVersion, setHeightVersion] = useState(0);
+  const [contextMenu, setContextMenu] = useState<CardContextMenuState | null>(null);
   const shouldVirtualize = cards.length > STABLE_RENDER_THRESHOLD && viewportHeight > 0;
   const totalItems = cards.length;
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
 
   const handleMeasuredHeight = useCallback((cardId: string, height: number) => {
     const previous = measuredHeightsRef.current[cardId];
@@ -299,6 +334,37 @@ export const CaptionsList = memo(function CaptionsList({
     setHeightVersion(prev => prev + 1);
   }, []);
 
+  const handleOpenContextMenu = useCallback((
+    event: ReactMouseEvent<HTMLDivElement>,
+    card: SentenceCard,
+    displayStatus: TranslationStatus | undefined,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const retrying = !!card.retrying;
+    const retryDisabled = retrying || displayStatus === "translating" || !card.original.trim();
+
+    setContextMenu({
+      cardId: card.id,
+      originalText: card.original,
+      retryLabel: retrying ? t("translation.retrying") : t("translation.retranslate"),
+      retrying,
+      retryDisabled,
+      x: Math.max(CARD_CONTEXT_MENU_VIEWPORT_PADDING, event.clientX),
+      y: Math.max(CARD_CONTEXT_MENU_VIEWPORT_PADDING, event.clientY),
+    });
+  }, [t]);
+
+  const handleContextMenuRetry = useCallback(() => {
+    if (!contextMenu || contextMenu.retryDisabled) {
+      return;
+    }
+
+    void Promise.resolve(onRetryTranslation(contextMenu.cardId, contextMenu.originalText));
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, onRetryTranslation]);
+
   useEffect(() => {
     const validIds = new Set(cards.map(card => card.id));
     let changed = false;
@@ -314,6 +380,82 @@ export const CaptionsList = memo(function CaptionsList({
       setHeightVersion(prev => prev + 1);
     }
   }, [cards]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      closeContextMenu();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    };
+
+    const handleWheel = () => {
+      closeContextMenu();
+    };
+
+    window.addEventListener("blur", closeContextMenu);
+    window.addEventListener("resize", closeContextMenu);
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("wheel", handleWheel, { passive: true });
+
+    return () => {
+      window.removeEventListener("blur", closeContextMenu);
+      window.removeEventListener("resize", closeContextMenu);
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("wheel", handleWheel);
+    };
+  }, [closeContextMenu, contextMenu]);
+
+  useEffect(() => {
+    const previousScrollTop = lastScrollTopRef.current;
+    lastScrollTopRef.current = scrollTop;
+
+    if (!contextMenu || previousScrollTop === scrollTop) {
+      return;
+    }
+
+    closeContextMenu();
+  }, [closeContextMenu, contextMenu, scrollTop]);
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) {
+      return;
+    }
+
+    const rect = contextMenuRef.current.getBoundingClientRect();
+    const maxX = Math.max(CARD_CONTEXT_MENU_VIEWPORT_PADDING, window.innerWidth - rect.width - CARD_CONTEXT_MENU_VIEWPORT_PADDING);
+    const maxY = Math.max(CARD_CONTEXT_MENU_VIEWPORT_PADDING, window.innerHeight - rect.height - CARD_CONTEXT_MENU_VIEWPORT_PADDING);
+    const nextX = Math.min(contextMenu.x, maxX);
+    const nextY = Math.min(contextMenu.y, maxY);
+
+    if (nextX === contextMenu.x && nextY === contextMenu.y) {
+      return;
+    }
+
+    setContextMenu(prev => {
+      if (!prev) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        x: nextX,
+        y: nextY,
+      };
+    });
+  }, [contextMenu]);
 
   const prefixHeights = useMemo(() => {
     const offsets = new Array(cards.length + 1);
@@ -372,6 +514,7 @@ export const CaptionsList = memo(function CaptionsList({
             isTeamsMode={isTeamsMode}
             isVirtualized={shouldVirtualize}
             isHighlighted={item.id === highlightedCardId}
+            onOpenContextMenu={handleOpenContextMenu}
             onMeasuredHeight={shouldVirtualize ? handleMeasuredHeight : undefined}
             tempTranslation={tempTranslations[item.id]}
             onRetryTranslation={onRetryTranslation}
@@ -383,6 +526,29 @@ export const CaptionsList = memo(function CaptionsList({
         <div className="bg-primary-dim rounded-lg p-3 border-l-[3px] border-primary transition-colors duration-200 animate-slide-in relative mb-3">
           <div className="text-[13px] text-text-secondary mb-1.5 leading-[1.4] select-text">{partialText}</div>
           <div className="text-base text-primary animate-pulse">...</div>
+        </div>
+      )}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="fixed z-[120] min-w-[180px] rounded-xl border border-border bg-panel/95 p-1 shadow-2xl backdrop-blur-sm"
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          role="menu"
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-text-primary transition-colors hover:bg-card-hover disabled:cursor-not-allowed disabled:text-text-muted disabled:hover:bg-transparent"
+            onClick={handleContextMenuRetry}
+            disabled={contextMenu.retryDisabled}
+            role="menuitem"
+          >
+            {contextMenu.retrying ? (
+              <span className="block h-4 w-4 shrink-0 rounded-full border-2 border-current/15 border-t-current animate-spin" />
+            ) : (
+              <IconRetry size={14} className="shrink-0" />
+            )}
+            <span>{contextMenu.retryLabel}</span>
+          </button>
         </div>
       )}
     </>
