@@ -79,10 +79,6 @@ const AUTO_FOLLOW_ENABLE_THRESHOLD = 8;
 const AUTO_FOLLOW_DISABLE_THRESHOLD = 120;
 const AUTO_FOLLOW_DRIFT_GUARD_MS = 240;
 const USER_SCROLL_INTENT_TIMEOUT_MS = 450;
-const WHEEL_LINE_HEIGHT_PX = 20;
-const WHEEL_PAGE_RATIO = 0.88;
-const WHEEL_CLASSIC_DELTA_THRESHOLD = 40;
-const WHEEL_MAX_STEP_PX = 92;
 const RECENT_SENTENCE_DEDUP_WINDOW_MS = 45_000;
 const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
@@ -590,37 +586,11 @@ function App() {
     return false;
   }, []);
 
-  const normalizeWheelDelta = (event: ReactWheelEvent<HTMLDivElement>, container: HTMLDivElement): number => {
-    if (event.deltaMode === 1) {
-      return event.deltaY * WHEEL_LINE_HEIGHT_PX;
-    }
-    if (event.deltaMode === 2) {
-      return event.deltaY * container.clientHeight * WHEEL_PAGE_RATIO;
-    }
-    return event.deltaY;
-  };
-
   const handleScrollWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (event.ctrlKey) return;
-
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    markUserScrollIntent();
-
-    const normalizedDelta = normalizeWheelDelta(event, container);
-    const isClassicWheel =
-      event.deltaMode !== 0 || Math.abs(normalizedDelta) >= WHEEL_CLASSIC_DELTA_THRESHOLD;
-
-    if (!isClassicWheel) return;
-
-    event.preventDefault();
-
-    const appliedDelta = Math.max(-WHEEL_MAX_STEP_PX, Math.min(WHEEL_MAX_STEP_PX, normalizedDelta));
-    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    const nextScrollTop = Math.max(0, Math.min(maxScrollTop, container.scrollTop + appliedDelta));
-
-    container.scrollTo({ top: nextScrollTop, behavior: "auto" });
+    if (!event.ctrlKey) {
+      // Keep native wheel physics so Windows mouse-wheel feel follows OS/browser settings.
+      markUserScrollIntent();
+    }
   };
 
   const resetSessionTranslationProgress = () => {
