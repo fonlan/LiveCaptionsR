@@ -321,6 +321,7 @@ impl TeamsWatcher {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_caption_container(
         &self,
         text_element: &IUIAutomationElement,
@@ -616,7 +617,7 @@ impl TeamsWatcher {
 
             let mut container_texts: HashMap<String, Vec<String>> = HashMap::new();
             let mut container_order: Vec<String> = Vec::new();
-            let mut first_container_element: Option<IUIAutomationElement> = None;
+            let mut first_scope_element: Option<IUIAutomationElement> = None;
             let mut raw_container_texts: HashMap<String, Vec<String>> = HashMap::new();
             let mut raw_container_order: Vec<String> = Vec::new();
 
@@ -679,18 +680,21 @@ impl TeamsWatcher {
 
                     let container_id = found_parent
                         .as_ref()
-                        .map(|element| runtime_id::get_runtime_id_string(element));
+                        .and_then(|element| runtime_id::get_runtime_id_string(element));
                     let raw_container_capture =
                         container_id.clone().map(|id| (id, text_content.clone()));
 
                     let Some(parent) = found_parent else {
                         return Some((raw_container_capture, None));
                     };
-                    if first_container_element.is_none() {
+                    if first_scope_element.is_none() {
+                        // Keep the narrowed search scope at the immediate ancestor of the
+                        // first chat-message container. Climbing higher can swallow backlog
+                        // panels and replay historical cards as fresh ones.
                         if let Ok(gp) = walker.GetParentElement(&parent) {
-                            first_container_element = Some(gp);
+                            first_scope_element = Some(gp);
                         } else {
-                            first_container_element = Some(parent.clone());
+                            first_scope_element = Some(parent.clone());
                         }
                     }
 
@@ -698,7 +702,7 @@ impl TeamsWatcher {
                         return Some((raw_container_capture, None));
                     }
 
-                    let container_id = runtime_id::get_runtime_id_string(&parent);
+                    let container_id = runtime_id::get_runtime_id_string(&parent)?;
                     Some((raw_container_capture, Some((container_id, normalized_text))))
                 }));
 
@@ -764,7 +768,7 @@ impl TeamsWatcher {
                 }
             }
 
-            Ok((messages, first_container_element))
+            Ok((messages, first_scope_element))
         }
     }
 
@@ -850,11 +854,16 @@ impl TeamsCaptionStream {
         cached_message: &CachedTeamsCaptionMessage,
         visible_message: &TeamsCaptionMessage,
     ) -> bool {
+        let cached_source_id = Self::normalize_source_id(Some(cached_message.source_id.as_str()));
+        let visible_source_id = Self::normalize_source_id(Some(visible_message.source_id.as_str()));
+        if cached_source_id.is_some() && cached_source_id == visible_source_id {
+            return true;
+        }
         Self::is_probable_rewrite(
-            None,
+            Some(cached_message.source_id.as_str()),
             cached_message.user.as_deref(),
             &cached_message.content,
-            None,
+            Some(visible_message.source_id.as_str()),
             visible_message.user.as_deref(),
             &visible_message.content,
         )
@@ -1615,10 +1624,8 @@ impl TeamsCaptionStream {
             Ok((message_pairs_raw, first_element)) => {
                 self.error_count = 0;
                 if !message_pairs_raw.is_empty() && self.caption_parent.is_none() {
-                    if let Some(element) = first_element {
-                        if let Ok(container) = self.watcher.get_caption_container(&element) {
-                            self.caption_parent = Some(container);
-                        }
+                    if let Some(scope_element) = first_element {
+                        self.caption_parent = Some(scope_element);
                     }
                 }
 
@@ -1718,7 +1725,7 @@ impl TeamsCaptionStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{TeamsCaptionMessage, TeamsCaptionStream};
+    use super::{CachedTeamsCaptionMessage, TeamsCaptionMessage, TeamsCaptionStream};
 
     #[test]
     fn detects_swapped_pair_when_content_matches_known_user() {
@@ -2038,5 +2045,26 @@ mod tests {
         );
 
         assert!(!is_rewrite);
+    }
+    #[test]
+    fn anchor_match_uses_exact_source_id_before_text_similarity() {
+        let cached_message = CachedTeamsCaptionMessage {
+            card_id: "teams-stream-7".to_string(),
+            source_id: "rid:42.7.108".to_string(),
+            user: Some("Harper Lane (Summit)".to_string()),
+            content: "Earlier OCR draft of the same bubble".to_string(),
+            timestamp: 0,
+        };
+        let visible_message = TeamsCaptionMessage {
+            source_id: "rid:42.7.108".to_string(),
+            user: Some("Harper Lane (Summit)".to_string()),
+            content: "This bubble was heavily corrected after the next scan and now reads very differently."
+                .to_string(),
+        };
+
+        assert!(TeamsCaptionStream::is_anchor_match(
+            &cached_message,
+            &visible_message
+        ));
     }
 }

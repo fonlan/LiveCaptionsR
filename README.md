@@ -144,7 +144,7 @@ Each provider has independent proxy settings:
 
 - **Backend**: Rust (Tauri)
   - `livecaptions.rs`: Manages Windows UI Automation and LiveCaptions process control.
-- `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation, anchors visible parsed messages against cached history, discards punctuation-only split fragments, and emits targeted card updates with stable per-session card IDs.
+- `teams.rs`: Captures captions from Microsoft Teams meetings via process hierarchy detection and UI Automation, anchors visible parsed messages against cached history using stable UIA RuntimeId-backed `source_id` values, keeps the narrowed search scope at the immediate caption-feed ancestor instead of broad backlog containers, discards punctuation-only split fragments, and emits targeted card updates with stable per-session card IDs.
   - `translation.rs`: Handles HTTP requests to translation APIs (Google, Azure, OpenAI, Copilot), configurable AI translation prompts, summary generation, and caption-chat completion routing.
   - `lib.rs`: Bridges frontend/backend commands and emits streaming events (`caption-raw`, `translation-result`, `summary-stream`), including session-level summarization and AI chat from captured cards.
   - `storage.rs`: Persists translation sessions/cards plus AI chat sessions/messages (bound to translation session IDs) in SQLite.
@@ -181,7 +181,7 @@ For detailed debugging information:
 - `info` - General information (default)
 - `debug` - Detailed diagnostic information
 
-When capturing Microsoft Teams with `debug` log level, the backend writes per-container raw UI Automation parts, visible-anchor/cache update summaries, and emitted Teams `card_id` / `source_id` values so backend card assignment issues can be diagnosed without re-enabling the full raw text element dump.
+When capturing Microsoft Teams with `debug` log level, the backend writes per-container raw UI Automation parts, visible-anchor/cache update summaries, and emitted Teams `card_id` / RuntimeId-backed `source_id` values so backend card assignment issues can be diagnosed without re-enabling the full raw text element dump.
 
 **Common Issues to Check Logs For**:
 - Translation API failures (check for HTTP errors, authentication issues)
