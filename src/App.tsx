@@ -2785,7 +2785,7 @@ function App() {
       {/* Custom Titlebar */}
       <div data-tauri-drag-region className="h-8 bg-panel flex justify-between items-center select-none border-b border-border z-50">
         <div className="flex-1 h-full flex items-center pl-3" data-tauri-drag-region>
-          <span className="text-xs font-semibold text-text-secondary tracking-[0.5px]">{t("title")}</span>
+          <span className="text-xs font-semibold text-text-secondary tracking-[0.5px]">{t("app.title")}</span>
         </div>
         <div className="flex h-full">
           <button
