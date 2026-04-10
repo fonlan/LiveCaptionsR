@@ -601,6 +601,25 @@ async fn translate_text(
 }
 
 #[tauri::command]
+fn cancel_translation_requests(
+    request_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<usize, AppError> {
+    let mut active_requests = state.active_translation_requests.lock()?;
+    let mut cancelled = 0_usize;
+
+    for request_id in request_ids {
+        if let Some(cancel_sender) = active_requests.remove(&request_id) {
+            let _ = cancel_sender.send(());
+            cancelled += 1;
+        }
+    }
+
+    debug!(cancelled, "Cancelled active translation requests");
+
+    Ok(cancelled)
+}
+#[tauri::command]
 async fn translate_text_async(
     request_id: String,
     card_id: String,
@@ -614,38 +633,74 @@ async fn translate_text_async(
 ) -> Result<(), AppError> {
     let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
 
+    let active_translation_requests = state.active_translation_requests.clone();
+    let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel::<()>();
+    {
+        let mut active_requests = state.active_translation_requests.lock()?;
+        if let Some(existing_cancel) = active_requests.insert(request_id.clone(), cancel_sender) {
+            let _ = existing_cancel.send(());
+        }
+    }
+    let request_id_for_task = request_id.clone();
     tokio::spawn(async move {
-        let event = match svc
-            .translate(
-                &text,
-                context.as_deref(),
-                target_lang_override.as_deref(),
-                provider_override.as_deref(),
-            )
-            .await
-        {
-            Ok(translated) => TranslationResultEvent {
-                request_id,
-                card_id,
-                original_text: text,
-                translated: Some(translated),
-                status: "success".to_string(),
-                error: None,
-                is_retry,
-            },
-            Err(e) => TranslationResultEvent {
-                request_id,
-                card_id,
-                original_text: text,
-                translated: None,
-                status: "error".to_string(),
-                error: Some(e.to_string()),
-                is_retry,
-            },
+        let translation = svc.translate(
+            &text,
+            context.as_deref(),
+            target_lang_override.as_deref(),
+            provider_override.as_deref(),
+        );
+        tokio::pin!(translation);
+
+        let event = tokio::select! {
+            _ = cancel_receiver => {
+                debug!(
+                    request_id = %request_id_for_task,
+                    card_id = %card_id,
+                    "Translation request cancelled before completion"
+                );
+                None
+            }
+            result = &mut translation => {
+                Some(match result {
+                    Ok(translated) => TranslationResultEvent {
+                        request_id: request_id_for_task.clone(),
+                        card_id: card_id.clone(),
+                        original_text: text.clone(),
+                        translated: Some(translated),
+                        status: "success".to_string(),
+                        error: None,
+                        is_retry,
+                    },
+                    Err(e) => TranslationResultEvent {
+                        request_id: request_id_for_task.clone(),
+                        card_id: card_id.clone(),
+                        original_text: text.clone(),
+                        translated: None,
+                        status: "error".to_string(),
+                        error: Some(e.to_string()),
+                        is_retry,
+                    },
+                })
+            }
         };
 
-        if let Err(e) = app.emit("translation-result", event) {
-            error!("Failed to emit translation-result event: {}", e);
+        match active_translation_requests.lock() {
+            Ok(mut active_requests) => {
+                active_requests.remove(&request_id_for_task);
+            }
+            Err(err) => {
+                error!(
+                    request_id = %request_id_for_task,
+                    error = %err,
+                    "Failed to clear finished translation request handle"
+                );
+            }
+        }
+
+        if let Some(event) = event {
+            if let Err(e) = app.emit("translation-result", event) {
+                error!("Failed to emit translation-result event: {}", e);
+            }
         }
     });
 
@@ -1568,6 +1623,7 @@ pub fn run() {
             toggle_livecaptions_visibility,
             get_teams_windows,
             translate_text,
+            cancel_translation_requests,
             translate_text_async,
             summarize_session_by_id,
             summarize_session_by_id_stream,

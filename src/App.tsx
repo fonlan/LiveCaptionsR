@@ -148,6 +148,8 @@ type PendingTranslationRequest = {
   batchId?: string;
 };
 
+type LiveTranslationRestartRequest = Pick<PendingTranslationRequest, "cardId" | "text" | "isRetry">;
+
 type ChatSidebarFallbackProps = {
   width: number;
 };
@@ -522,6 +524,92 @@ function App() {
     pendingTranslationRequestsRef.current = filtered;
   };
 
+  const removePendingTranslationRequests = (requestIds: string[]) => {
+    if (requestIds.length === 0) {
+      return;
+    }
+
+    const cancelledIds = new Set(requestIds);
+    const retainedRequests: Record<string, PendingTranslationRequest> = {};
+
+    for (const requestId in pendingTranslationRequestsRef.current) {
+      if (!cancelledIds.has(requestId)) {
+        retainedRequests[requestId] = pendingTranslationRequestsRef.current[requestId];
+      }
+    }
+
+    pendingTranslationRequestsRef.current = retainedRequests;
+  };
+
+  const cancelTranslationRequests = async (requestIds: string[]) => {
+    if (requestIds.length === 0) {
+      return;
+    }
+
+    try {
+      await invoke<number>("cancel_translation_requests", { requestIds });
+    } catch (error) {
+      console.error("Failed to cancel translation requests:", error);
+    }
+  };
+
+  const collectRestartableLiveTranslations = (): {
+    requestIds: string[];
+    restartRequests: LiveTranslationRestartRequest[];
+  } => {
+    const requestIds: string[] = [];
+    const restartByCardId = new Map<string, LiveTranslationRestartRequest>();
+
+    for (const requestId in pendingTranslationRequestsRef.current) {
+      const pending = pendingTranslationRequestsRef.current[requestId];
+      if (pending.mode !== 'live') {
+        continue;
+      }
+
+      requestIds.push(requestId);
+
+      const cardIndex = cardIndexRef.current[pending.cardId];
+      const card = cardIndex === undefined ? undefined : cardsRef.current[cardIndex];
+      if (!card || card.original !== pending.text || restartByCardId.has(pending.cardId)) {
+        continue;
+      }
+
+      restartByCardId.set(pending.cardId, {
+        cardId: pending.cardId,
+        text: pending.text,
+        isRetry: pending.isRetry,
+      });
+    }
+
+    return {
+      requestIds,
+      restartRequests: Array.from(restartByCardId.values()),
+    };
+  };
+
+  const rerouteLiveTranslationsToProvider = async (providerId: string) => {
+    const { requestIds, restartRequests } = collectRestartableLiveTranslations();
+    if (requestIds.length === 0) {
+      return;
+    }
+
+    removePendingTranslationRequests(requestIds);
+    await cancelTranslationRequests(requestIds);
+
+    await Promise.all(
+      restartRequests.map(request =>
+        enqueueTranslation(
+          request.cardId,
+          request.text,
+          request.isRetry,
+          'live',
+          undefined,
+          providerId,
+        ),
+      ),
+    );
+  };
+
   const normalizeSentenceForDedup = (text: string): string => {
     return text
       .normalize("NFKC")
@@ -623,8 +711,12 @@ function App() {
     return false;
   };
 
-  const finalizePendingLiveTranslationsOnStop = (): SentenceCard[] => {
+  const finalizePendingLiveTranslationsOnStop = (): {
+    cards: SentenceCard[];
+    requestIds: string[];
+  } => {
     const pendingCards = new Map<string, string | undefined>();
+    const requestIds: string[] = [];
 
     if (translationTimerRef.current) {
       clearTimeout(translationTimerRef.current);
@@ -643,6 +735,7 @@ function App() {
     for (const requestId in pendingTranslationRequestsRef.current) {
       const pending = pendingTranslationRequestsRef.current[requestId];
       if (pending.mode === 'live') {
+        requestIds.push(requestId);
         pendingCards.set(pending.cardId, pending.text);
       } else {
         retainedRequests[requestId] = pending;
@@ -651,7 +744,7 @@ function App() {
     pendingTranslationRequestsRef.current = retainedRequests;
 
     if (pendingCards.size === 0) {
-      return cardsRef.current;
+      return { cards: cardsRef.current, requestIds };
     }
 
     let changed = false;
@@ -680,10 +773,10 @@ function App() {
 
     if (changed) {
       dispatchCards({ type: "reset", cards: nextCards });
-      return nextCards;
+      return { cards: nextCards, requestIds };
     }
 
-    return cardsRef.current;
+    return { cards: cardsRef.current, requestIds };
   };
 
   const saveActiveSessionSnapshot = async (cardsOverride?: SentenceCard[]) => {
@@ -717,7 +810,8 @@ function App() {
     }
 
     const stopTask = (async () => {
-      const finalizedCards = finalizePendingLiveTranslationsOnStop();
+      const { cards: finalizedCards, requestIds } = finalizePendingLiveTranslationsOnStop();
+      await cancelTranslationRequests(requestIds);
       setIsRunning(false);
       isRunningRef.current = false;
       setPartialText("");
@@ -2084,9 +2178,19 @@ function App() {
 
 
   const saveConfig = async (newConfig: AppConfig, silent = false) => {
+    const previousConfig = configRef.current;
+    const shouldRerouteLiveTranslations =
+      isRunningRef.current
+      && previousConfig.provider !== newConfig.provider
+      && newConfig.translation_enabled !== false;
+
     try {
       await invoke("save_config", { config: newConfig });
+      configRef.current = newConfig;
       setConfig(newConfig);
+      if (shouldRerouteLiveTranslations) {
+        await rerouteLiveTranslationsToProvider(newConfig.provider);
+      }
       if (!silent) {
         addToast('success', t("toast.configSaved"));
       }
