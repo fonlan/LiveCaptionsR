@@ -91,7 +91,9 @@ impl DateBasedRollingWriter {
         self.current_file.take();
 
         let archive_count = self.max_filecount.max(1);
-        Self::ignore_missing(fs::remove_file(self.filename_for_archive(date, archive_count)))?;
+        Self::ignore_missing(fs::remove_file(
+            self.filename_for_archive(date, archive_count),
+        ))?;
         for index in (1..archive_count).rev() {
             Self::ignore_missing(fs::rename(
                 self.filename_for_archive(date, index),
@@ -125,10 +127,7 @@ impl DateBasedRollingWriter {
 
         if self.max_file_size > 0
             && self.current_file_size > 0
-            && self
-                .current_file_size
-                .saturating_add(buf.len() as u64)
-                > self.max_file_size
+            && self.current_file_size.saturating_add(buf.len() as u64) > self.max_file_size
         {
             let current_date = self
                 .current_date
@@ -386,10 +385,16 @@ mod tests {
         drop(subscriber_guard);
         drop(guard);
 
-        let current_log = test_dir.join("test-".to_string() + &Local::now().format("%Y-%m-%d").to_string() + ".log");
+        let current_log = test_dir
+            .join("test-".to_string() + &Local::now().format("%Y-%m-%d").to_string() + ".log");
         let log_contents = fs::read_to_string(current_log).unwrap();
 
-        assert_eq!(log_contents.matches("UNIQUE-NON-BLOCKING-LOGGER-TOKEN").count(), 1);
+        assert_eq!(
+            log_contents
+                .matches("UNIQUE-NON-BLOCKING-LOGGER-TOKEN")
+                .count(),
+            1
+        );
 
         let _ = fs::remove_dir_all(&test_dir);
     }

@@ -22,7 +22,8 @@ impl Drop for SafeArrayGuard {
 }
 
 fn format_runtime_id_parts(parts: &[i32]) -> String {
-    parts.iter()
+    parts
+        .iter()
         .map(i32::to_string)
         .collect::<Vec<_>>()
         .join(".")
