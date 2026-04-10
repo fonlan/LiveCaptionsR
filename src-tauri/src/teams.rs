@@ -32,6 +32,8 @@ const REWRITE_EDGE_SIMILARITY: f32 = 0.58;
 const REWRITE_LCS_RATIO_THRESHOLD: f32 = 0.70;
 const REWRITE_MIN_SHARED_RUN_TOKENS: usize = 6;
 const ANCHOR_SEARCH_TAIL_LIMIT: usize = 128;
+const VISIBLE_REALIGN_SEARCH_BACK_LIMIT: usize = 2;
+const VISIBLE_REALIGN_SEARCH_AHEAD_LIMIT: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamsCaptionMessage {
@@ -537,6 +539,9 @@ impl TeamsWatcher {
         }
 
         if normalized_parts.len() == 1 {
+            if Self::looks_like_speaker(&normalized_parts[0]) {
+                return Vec::new();
+            }
             return vec![(None, normalized_parts[0].clone())];
         }
 
@@ -923,6 +928,39 @@ impl TeamsCaptionStream {
             strategy: "append-after-tail",
         }
     }
+
+    fn resolve_visible_message_index(
+        &self,
+        visible_message: &TeamsCaptionMessage,
+        expected_index: usize,
+        previous_resolved_index: Option<usize>,
+    ) -> usize {
+        let Some(last_cached_index) = self.cached_messages.len().checked_sub(1) else {
+            return expected_index;
+        };
+
+        let search_start = previous_resolved_index
+            .map(|index| index.saturating_add(1))
+            .unwrap_or_else(|| expected_index.saturating_sub(VISIBLE_REALIGN_SEARCH_BACK_LIMIT));
+        let search_end = expected_index
+            .saturating_add(VISIBLE_REALIGN_SEARCH_AHEAD_LIMIT)
+            .min(last_cached_index);
+
+        if search_start > search_end {
+            return expected_index;
+        }
+
+        for candidate_index in search_start..=search_end {
+            if let Some(cached_message) = self.cached_messages.get(candidate_index) {
+                if Self::is_anchor_match(cached_message, visible_message) {
+                    return candidate_index;
+                }
+            }
+        }
+
+        expected_index
+    }
+
     fn cache_visible_messages(&mut self, visible_messages: Vec<TeamsCaptionMessage>) {
         if visible_messages.is_empty() {
             self.last_visible_start_index = None;
@@ -977,14 +1015,25 @@ impl TeamsCaptionStream {
                 "Resolved Teams visible message anchor"
             );
         }
-        self.last_visible_start_index = Some(start_index);
         let mut visible_updates = if log_cache_debug {
             Some(Vec::with_capacity(visible_count))
         } else {
             None
         };
+        let mut next_logical_index = start_index;
+        let mut previous_resolved_index = None;
+        let mut resolved_start_index = None;
         for (offset, visible_message) in visible_messages.into_iter().enumerate() {
-            let logical_index = start_index + offset;
+            let logical_index = self.resolve_visible_message_index(
+                &visible_message,
+                next_logical_index,
+                previous_resolved_index,
+            );
+            if resolved_start_index.is_none() {
+                resolved_start_index = Some(logical_index);
+            }
+            previous_resolved_index = Some(logical_index);
+            next_logical_index = logical_index.saturating_add(1);
             let debug_preview = if log_cache_debug {
                 TeamsWatcher::preview_text_for_debug(&visible_message.content, 96)
             } else {
@@ -1074,6 +1123,7 @@ impl TeamsCaptionStream {
                 self.pending_events.push(event);
             }
         }
+        self.last_visible_start_index = Some(resolved_start_index.unwrap_or(start_index));
         if log_cache_debug {
             debug!(
                 cached_count_before,
@@ -2066,5 +2116,84 @@ mod tests {
             &cached_message,
             &visible_message
         ));
+    }
+
+    #[test]
+    fn ignores_single_part_speaker_only_container() {
+        let parts = vec!["Azat Garifullin (Nokia)".to_string()];
+        let parsed = super::TeamsWatcher::parse_message_parts(&parts);
+
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn cache_visible_messages_realigns_after_missing_visible_row() {
+        let mut stream = TeamsCaptionStream::new().expect("stream");
+        stream.cached_messages = vec![
+            CachedTeamsCaptionMessage {
+                card_id: "teams-stream-0".to_string(),
+                source_id: "rid:0".to_string(),
+                user: Some("Speaker A".to_string()),
+                content: "Line 0".to_string(),
+                timestamp: 0,
+            },
+            CachedTeamsCaptionMessage {
+                card_id: "teams-stream-1".to_string(),
+                source_id: "rid:1".to_string(),
+                user: Some("Speaker B".to_string()),
+                content: "Line 1".to_string(),
+                timestamp: 0,
+            },
+            CachedTeamsCaptionMessage {
+                card_id: "teams-stream-2".to_string(),
+                source_id: "rid:2".to_string(),
+                user: Some("Speaker C".to_string()),
+                content: "Line 2".to_string(),
+                timestamp: 0,
+            },
+            CachedTeamsCaptionMessage {
+                card_id: "teams-stream-3".to_string(),
+                source_id: "rid:3".to_string(),
+                user: Some("Speaker D".to_string()),
+                content: "Line 3".to_string(),
+                timestamp: 0,
+            },
+            CachedTeamsCaptionMessage {
+                card_id: "teams-stream-4".to_string(),
+                source_id: "rid:4".to_string(),
+                user: Some("Speaker E".to_string()),
+                content: "Line 4".to_string(),
+                timestamp: 0,
+            },
+        ];
+        stream.last_visible_start_index = Some(0);
+
+        stream.cache_visible_messages(vec![
+            TeamsCaptionMessage {
+                source_id: "rid:0".to_string(),
+                user: Some("Speaker A".to_string()),
+                content: "Line 0".to_string(),
+            },
+            TeamsCaptionMessage {
+                source_id: "rid:2".to_string(),
+                user: Some("Speaker C".to_string()),
+                content: "Line 2".to_string(),
+            },
+            TeamsCaptionMessage {
+                source_id: "rid:3".to_string(),
+                user: Some("Speaker D".to_string()),
+                content: "Line 3".to_string(),
+            },
+            TeamsCaptionMessage {
+                source_id: "rid:4".to_string(),
+                user: Some("Speaker E".to_string()),
+                content: "Line 4".to_string(),
+            },
+        ]);
+
+        assert!(stream.pending_events.is_empty());
+        assert_eq!(stream.cached_messages[1].source_id, "rid:1");
+        assert_eq!(stream.cached_messages[1].content, "Line 1");
+        assert_eq!(stream.last_visible_start_index, Some(0));
     }
 }
