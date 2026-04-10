@@ -44,7 +44,6 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "ansi"] }
 tracing-appender = "0.2"
-tracing-rolling-file = { version = "0.1", features = ["non-blocking"] }
 thiserror = "2.0.18"
 
 [profile.release]
