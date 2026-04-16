@@ -1,7 +1,6 @@
 #![cfg(windows)]
 
 use anyhow::{Context, Result};
-use std::collections::VecDeque;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -17,59 +16,6 @@ use windows::{
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-/// Helper function to check if a character is an end-of-sentence punctuation
-fn is_eos_punctuation(text: &str, index: usize) -> bool {
-    if index >= text.len() {
-        return false;
-    }
-    let c = text.chars().nth(index).unwrap_or('\0');
-    match c {
-        '!' | '?' | '。' | '！' | '？' => true,
-        '.' => {
-            // Check if it's a decimal point
-            if index > 0 && index < text.len() - 1 {
-                let prev = text.chars().nth(index - 1).unwrap_or('\0');
-                let next = text.chars().nth(index + 1).unwrap_or('\0');
-                !(prev.is_ascii_digit() && next.is_ascii_digit())
-            } else {
-                true
-            }
-        }
-        _ => false,
-    }
-}
-
-/// Split text into complete sentences and return the trailing incomplete part
-fn split_into_sentences(text: &str) -> (Vec<String>, String) {
-    let mut sentences = Vec::new();
-    let mut start = 0;
-    let chars: Vec<char> = text.chars().collect();
-
-    for i in 0..chars.len() {
-        if is_eos_punctuation(text, i) {
-            let sentence: String = chars[start..=i]
-                .iter()
-                .collect::<String>()
-                .trim()
-                .to_string();
-            if !sentence.is_empty() {
-                sentences.push(sentence);
-            }
-            start = i + 1;
-        }
-    }
-
-    // Get the trailing incomplete sentence
-    let trailing: String = if start < chars.len() {
-        chars[start..].iter().collect::<String>().trim().to_string()
-    } else {
-        String::new()
-    };
-
-    (sentences, trailing)
-}
-
 // Global flag to signal when LiveCaptions window has been found (and optionally hidden)
 static WINDOW_READY: OnceLock<std::sync::Mutex<bool>> = OnceLock::new();
 static WINDOW_FOUND_BY_HOOK: AtomicBool = AtomicBool::new(false);
@@ -621,7 +567,6 @@ pub struct CaptionStream {
     last_user: Option<String>,
     window_hidden: bool,
     error_count: u32,
-    sent_sentences: VecDeque<String>,
 }
 
 impl CaptionStream {
@@ -635,7 +580,6 @@ impl CaptionStream {
             last_user: None,
             window_hidden: false,
             error_count: 0,
-            sent_sentences: VecDeque::with_capacity(20),
         })
     }
 
@@ -709,40 +653,10 @@ impl CaptionStream {
                 }
                 self.error_count = 0;
 
-                // Clear sent sentences buffer if user changes, to avoid cross-user deduplication issues
-                if user != self.last_user {
-                    self.sent_sentences.clear();
-                }
-
                 if !text.is_empty() && (text != self.last_text || user != self.last_user) {
                     self.last_text = text.clone();
                     self.last_user = user.clone();
-
-                    // Sentence-level deduplication for LiveCaptions
-                    let (sentences, trailing) = split_into_sentences(&text);
-                    let mut result_parts = Vec::new();
-
-                    // Filter duplicate complete sentences
-                    for sentence in sentences {
-                        if !self.sent_sentences.contains(&sentence) {
-                            result_parts.push(sentence.clone());
-                            self.sent_sentences.push_back(sentence);
-
-                            // Keep only the last 20 sentences
-                            if self.sent_sentences.len() > 20 {
-                                self.sent_sentences.pop_front();
-                            }
-                        }
-                    }
-
-                    // Always include the trailing incomplete part
-                    if !trailing.is_empty() {
-                        result_parts.push(trailing);
-                    }
-
-                    if !result_parts.is_empty() {
-                        return Some((user, result_parts.join(" ")));
-                    }
+                    return Some((user, text));
                 }
             }
             Err(e) => {

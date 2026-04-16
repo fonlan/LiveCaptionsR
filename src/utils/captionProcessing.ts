@@ -1,6 +1,19 @@
 
 import { isEOSPunctuation, calculateSimilarity } from "./textUtils";
 
+function normalizeSentenceForHistory(text: string): string {
+    return text
+        .normalize("NFKC")
+        .replace(/\s+/g, " ")
+        .replace(/[.!?。！？,，;；:：]+$/g, "")
+        .trim()
+        .toLowerCase();
+}
+
+function isMeaningfulSentence(text: string): boolean {
+    return normalizeSentenceForHistory(text).length > 0;
+}
+
 /**
  * Splits a continuous text block into an array of complete sentences.
  * Ignores any trailing incomplete sentence.
@@ -14,7 +27,7 @@ export function splitIntoSentences(text: string): string[] {
         if (isEOSPunctuation(text, i)) {
             // Found a sentence boundary
             const sentence = text.slice(start, i + 1).trim();
-            if (sentence) {
+            if (sentence && isMeaningfulSentence(sentence)) {
                 sentences.push(sentence);
             }
             start = i + 1;
@@ -92,6 +105,10 @@ export function filterDuplicateSentences(existingSentences: string[], newSentenc
     // Look back at most 10 sentences to check for duplicate sequences
     const lookback = Math.min(existingSentences.length, 10);
     const recentExisting = existingSentences.slice(-lookback);
+    const recentHistory = existingSentences
+        .map(normalizeSentenceForHistory)
+        .filter(Boolean);
+    const recentHistorySet = new Set(recentHistory);
 
     // 1. Forward check: Check if newSentences starts with the end of existingSentences
     // Existing: [A, B, C]
@@ -162,6 +179,23 @@ export function filterDuplicateSentences(existingSentences: string[], newSentenc
             }
         }
     }
-    
-    return newSentences;
+
+    // If the current snapshot replayed older history, anchor at the last recently emitted
+    // sentence we can find anywhere in the candidate list, then keep only the suffix after it.
+    for (let i = newSentences.length - 1; i >= 0; i--) {
+        const normalized = normalizeSentenceForHistory(newSentences[i]);
+        if (normalized && recentHistorySet.has(normalized)) {
+            return newSentences
+                .slice(i + 1)
+                .filter(sentence => {
+                    const candidate = normalizeSentenceForHistory(sentence);
+                    return candidate.length > 0 && !recentHistorySet.has(candidate);
+                });
+        }
+    }
+
+    return newSentences.filter(sentence => {
+        const normalized = normalizeSentenceForHistory(sentence);
+        return normalized.length > 0 && !recentHistorySet.has(normalized);
+    });
 }
