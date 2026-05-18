@@ -69,6 +69,7 @@ import { useCardSearch } from "./hooks/useCardSearch";
 import { useAutoFollowScroll } from "./hooks/useAutoFollowScroll";
 import { useSessions } from "./hooks/useSessions";
 import { useAIChat, buildChatSessionTitleFromQuestion } from "./hooks/useAIChat";
+import { useCaptionVisibility } from "./hooks/useCaptionVisibility";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -271,15 +272,10 @@ function App() {
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [status, setStatus] = useState<string>(t("status.ready"));
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [isWindowVisible, setIsWindowVisible] = useState<boolean>(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
   const [summaryText, setSummaryText] = useState<string>("");
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
-  const [sessionSidebarWidth, setSessionSidebarWidth] = useState<number>(SESSION_SIDEBAR_DEFAULT_WIDTH);
-  const [isSessionSidebarResizing, setIsSessionSidebarResizing] = useState<boolean>(false);
-  const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
-  const [isChatSidebarResizing, setIsChatSidebarResizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
@@ -291,7 +287,11 @@ function App() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  
+  const [sessionSidebarWidth, setSessionSidebarWidth] = useState<number>(SESSION_SIDEBAR_DEFAULT_WIDTH);
+  const [isSessionSidebarResizing, setIsSessionSidebarResizing] = useState<boolean>(false);
+  const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
+  const [isChatSidebarResizing, setIsChatSidebarResizing] = useState<boolean>(false);
+
   const [cardsState, dispatchCards] = useReducer(cardsReducer, EMPTY_CARDS_STATE);
   const cards = cardsState.cards;
   const [partialText, setPartialText] = useState<string>("");
@@ -306,6 +306,8 @@ function App() {
   const [authChannelId, setAuthChannelId] = useState<string | null>(null);
 
   const historyEndRef = useRef<HTMLDivElement>(null);
+  const sessionSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const cardIndexRef = useRef<Record<string, number>>({});
   const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
@@ -327,8 +329,6 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
-  const sessionSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const chatCardJumpTimerRef = useRef<number | null>(null);
   const chatCardHighlightClearTimerRef = useRef<number | null>(null);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
@@ -1610,23 +1610,14 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const unlistenVisibility = listen<boolean>("caption-visibility", (event) => {
-      setIsWindowVisible(event.payload);
-    });
-    return () => {
-        unlistenVisibility.then(f => f());
-    }
-  }, []);
-
-  useEffect(() => {
     return () => {
       stopSummaryTypewriter();
     };
   }, []);
 
-  useEffect(() => {
-      setIsWindowVisible(!config.hide_system_window);
-  }, [config.hide_system_window]);
+  const { isWindowVisible } = useCaptionVisibility({
+    hideSystemWindow: config.hide_system_window ?? false,
+  });
 
   const toggleVisibility = async () => {
     if (!isRunning) return;
