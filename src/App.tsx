@@ -3,8 +3,6 @@ import {
   lazy,
   useCallback,
   useEffect,
-  useLayoutEffect,
-  useMemo,
   useReducer,
   useRef,
   useState,
@@ -69,6 +67,8 @@ import {
 } from "./utils/textUtils";
 import { filterDuplicateSentences, getNewSentences } from "./utils/captionProcessing";
 import { useToasts } from "./hooks/useToasts";
+import { useFooterLayout } from "./hooks/useFooterLayout";
+import { useCardSearch } from "./hooks/useCardSearch";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -85,7 +85,6 @@ const RECENT_SENTENCE_MIN_LENGTH = 8;
 const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
 const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
 const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
-const FOOTER_HORIZONTAL_PADDING_PX = 48;
 const CHAT_SIDEBAR_DEFAULT_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MIN_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MAX_WIDTH = 920;
@@ -172,11 +171,6 @@ function ChatSidebarFallback({ width }: ChatSidebarFallbackProps) {
   );
 }
 
-type CardSearchMatch = {
-  cardId: string;
-  cardNumber: number;
-};
-
 type CardsState = {
   cards: SentenceCard[];
   indexById: Record<string, number>;
@@ -201,12 +195,6 @@ const buildCardIndex = (cards: SentenceCard[]): Record<string, number> => {
     indexById[cards[i].id] = i;
   }
   return indexById;
-};
-
-const normalizeCardSearchKeyword = (value: string): string => value.trim().toLocaleLowerCase();
-
-const buildCardSearchHaystack = (card: SentenceCard, translatedText?: string | null): string => {
-  return `${card.user ?? ""}\n${card.original}\n${translatedText ?? ""}`.toLocaleLowerCase();
 };
 
 const cardsReducer = (state: CardsState, action: CardsAction): CardsState => {
@@ -307,7 +295,6 @@ function App() {
   const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
   const [isChatSidebarResizing, setIsChatSidebarResizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
-  const [isFooterToggleLabelCollapsed, setIsFooterToggleLabelCollapsed] = useState(false);
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
   const [isSessionTranslating, setIsSessionTranslating] = useState(false);
@@ -331,9 +318,6 @@ function App() {
   const [listScrollTop, setListScrollTop] = useState(0);
   const [listViewportHeight, setListViewportHeight] = useState(0);
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
-  const [isCardSearchOpen, setIsCardSearchOpen] = useState(false);
-  const [cardSearchQuery, setCardSearchQuery] = useState("");
-  const [activeCardSearchMatchIndex, setActiveCardSearchMatchIndex] = useState(-1);
    
    // Teams Modal State
   const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
@@ -344,11 +328,6 @@ function App() {
 
   const historyEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const cardSearchInputRef = useRef<HTMLInputElement>(null);
-  const footerRef = useRef<HTMLElement>(null);
-  const footerStatusRef = useRef<HTMLDivElement>(null);
-  const footerTrailingRef = useRef<HTMLDivElement>(null);
-  const footerExpandedControlsMeasureRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const cardIndexRef = useRef<Record<string, number>>({});
   const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
@@ -394,68 +373,18 @@ function App() {
   const activeSessionCreatedAtRef = useRef<number>(0);
   const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
 
-  const normalizedCardSearchQuery = useMemo(
-    () => normalizeCardSearchKeyword(cardSearchQuery),
-    [cardSearchQuery],
-  );
   const toggleWatcherLabel = isRunning ? t("controls.stop") : t("controls.start");
   const isSummaryDisabled = cards.length === 0 || !config.summary_provider?.trim();
 
-  useLayoutEffect(() => {
-    const footer = footerRef.current;
-    const statusNode = footerStatusRef.current;
-    const trailingNode = footerTrailingRef.current;
-    const measureNode = footerExpandedControlsMeasureRef.current;
-
-    if (!footer || !statusNode || !trailingNode || !measureNode || typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const syncFooterToggleLabelCollapse = () => {
-      const footerWidth = footer.clientWidth;
-      const expandedControlsWidth = measureNode.offsetWidth;
-
-      if (footerWidth === 0 || expandedControlsWidth === 0) {
-        setIsFooterToggleLabelCollapsed(false);
-        return;
-      }
-
-      const maxSideWidth = Math.max(statusNode.offsetWidth, trailingNode.offsetWidth);
-      const centeredWidthBudget = Math.max(0, footerWidth - maxSideWidth * 2 - FOOTER_HORIZONTAL_PADDING_PX);
-      setIsFooterToggleLabelCollapsed(expandedControlsWidth > centeredWidthBudget);
-    };
-
-    const observer = new ResizeObserver(syncFooterToggleLabelCollapse);
-    observer.observe(footer);
-    observer.observe(statusNode);
-    observer.observe(trailingNode);
-    observer.observe(measureNode);
-    syncFooterToggleLabelCollapse();
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [appVersion, i18n.language, status, toggleWatcherLabel]);
-
-  const cardSearchMatches = useMemo<CardSearchMatch[]>(() => {
-    if (!isCardSearchOpen || !normalizedCardSearchQuery) {
-      return [];
-    }
-
-    return cards.reduce<CardSearchMatch[]>((matches, card, index) => {
-      const translatedText = tempTranslations[card.id]?.translated ?? card.translated;
-      const haystack = buildCardSearchHaystack(card, translatedText);
-
-      if (haystack.includes(normalizedCardSearchQuery)) {
-        matches.push({
-          cardId: card.id,
-          cardNumber: index + 1,
-        });
-      }
-
-      return matches;
-    }, []);
-  }, [cards, isCardSearchOpen, normalizedCardSearchQuery, tempTranslations]);
+  const {
+    footerRef,
+    footerStatusRef,
+    footerTrailingRef,
+    footerExpandedControlsMeasureRef,
+    isFooterToggleLabelCollapsed,
+  } = useFooterLayout({
+    signals: [appVersion, i18n.language, status, toggleWatcherLabel],
+  });
 
   const stopSummaryTypewriter = () => {
     if (summaryTypingTimerRef.current) {
@@ -1486,47 +1415,6 @@ function App() {
     document.documentElement.style.setProperty('--app-opacity', (config.opacity ?? 1.0).toString());
   }, [config.opacity]);
 
-  useEffect(() => {
-    setIsCardSearchOpen(false);
-    setCardSearchQuery("");
-    setActiveCardSearchMatchIndex(-1);
-  }, [activeSessionId]);
-
-  useEffect(() => {
-    if (!isCardSearchOpen) {
-      return;
-    }
-
-    const frameId = window.requestAnimationFrame(() => {
-      cardSearchInputRef.current?.focus();
-      cardSearchInputRef.current?.select();
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [isCardSearchOpen]);
-
-  useEffect(() => {
-    setActiveCardSearchMatchIndex(-1);
-  }, [normalizedCardSearchQuery]);
-
-  useEffect(() => {
-    setActiveCardSearchMatchIndex(prev => {
-      if (!normalizedCardSearchQuery || cardSearchMatches.length === 0) {
-        return -1;
-      }
-
-      if (prev < 0) {
-        return prev;
-      }
-
-      return Math.min(prev, cardSearchMatches.length - 1);
-    });
-  }, [cardSearchMatches.length]);
-
-
-
   // Handle scroll detection for auto-follow
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -2414,88 +2302,25 @@ function App() {
     jumpToCardByNumber(cardNumber);
   };
 
-  const handleOpenCardSearch = useCallback(() => {
-    setIsCardSearchOpen(true);
-
-    window.requestAnimationFrame(() => {
-      cardSearchInputRef.current?.focus();
-      cardSearchInputRef.current?.select();
-    });
-  }, []);
-
-  const handleCloseCardSearch = useCallback(() => {
-    setIsCardSearchOpen(false);
-    cardSearchInputRef.current?.blur();
-  }, []);
-
-  const handleToggleCardSearch = useCallback(() => {
-    setIsCardSearchOpen(prev => {
-      const next = !prev;
-      if (next) {
-        window.requestAnimationFrame(() => {
-          cardSearchInputRef.current?.focus();
-          cardSearchInputRef.current?.select();
-        });
-      }
-      return next;
-    });
-  }, []);
-
-  const handleNavigateCardSearch = useCallback((direction: 'next' | 'prev') => {
-    if (!normalizedCardSearchQuery) {
-      cardSearchInputRef.current?.focus();
-      return;
-    }
-
-    if (cardSearchMatches.length === 0) {
-      addToast('error', t('headerSearch.noResults'));
-      return;
-    }
-
-    const nextIndex = activeCardSearchMatchIndex < 0
-      ? (direction === 'next' ? 0 : cardSearchMatches.length - 1)
-      : (activeCardSearchMatchIndex + (direction === 'next' ? 1 : -1) + cardSearchMatches.length) % cardSearchMatches.length;
-
-    setActiveCardSearchMatchIndex(nextIndex);
-    jumpToCardByNumber(cardSearchMatches[nextIndex].cardNumber);
-  }, [activeCardSearchMatchIndex, addToast, cardSearchMatches, jumpToCardByNumber, normalizedCardSearchQuery, t]);
-
-  const handleCardSearchKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== 'Enter') {
-      return;
-    }
-
-    event.preventDefault();
-    handleNavigateCardSearch(event.shiftKey ? 'prev' : 'next');
-  }, [handleNavigateCardSearch]);
-
-  useEffect(() => {
-    const handleGlobalKeyDown = (event: KeyboardEvent) => {
-      if (isSettingsOpen || isSummaryOpen || isTranslateModalOpen || isTeamsModalOpen || isDeviceAuthOpen) {
-        return;
-      }
-
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && (event.key === 'Escape' || event.key === 'Esc') && isCardSearchOpen) {
-        event.preventDefault();
-        handleCloseCardSearch();
-        return;
-      }
-
-      const isFindShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f';
-      if (!isFindShortcut) {
-        return;
-      }
-
-      event.preventDefault();
-      handleOpenCardSearch();
-    };
-
-    document.addEventListener('keydown', handleGlobalKeyDown);
-
-    return () => {
-      document.removeEventListener('keydown', handleGlobalKeyDown);
-    };
-  }, [handleCloseCardSearch, handleOpenCardSearch, isCardSearchOpen, isDeviceAuthOpen, isSettingsOpen, isSummaryOpen, isTeamsModalOpen, isTranslateModalOpen]);
+  const {
+    isCardSearchOpen,
+    cardSearchQuery,
+    setCardSearchQuery,
+    normalizedCardSearchQuery,
+    cardSearchMatches,
+    cardSearchInputRef,
+    handleToggleCardSearch,
+    handleNavigateCardSearch,
+    handleCardSearchKeyDown,
+  } = useCardSearch({
+    cards,
+    tempTranslations,
+    activeSessionId,
+    jumpToCardByNumber,
+    addToast,
+    t,
+    modalFlags: [isSettingsOpen, isSummaryOpen, isTranslateModalOpen, isTeamsModalOpen, isDeviceAuthOpen],
+  });
 
   const handleHeaderBlankDoubleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) {
