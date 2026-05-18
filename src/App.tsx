@@ -12,7 +12,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import "./App.css";
 import "./App.legacy.css";
@@ -73,6 +72,7 @@ import { useCaptionVisibility } from "./hooks/useCaptionVisibility";
 import { useSummaryStream } from "./hooks/useSummaryStream";
 import { useCardJump } from "./hooks/useCardJump";
 import { useSessionTranslationProgress } from "./hooks/useSessionTranslationProgress";
+import { useWindowActions } from "./hooks/useWindowActions";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -1488,6 +1488,12 @@ function App() {
     resetSessionTranslationProgress,
   } = useSessionTranslationProgress({ addToast, t });
 
+  const {
+    handleWindowMinimize,
+    handleWindowMaximize,
+    handleWindowClose,
+  } = useWindowActions();
+
   const toggleVisibility = async () => {
     if (!isRunning) return;
     try {
@@ -1929,25 +1935,6 @@ function App() {
       console.error("Failed to toggle always on top:", err);
       addToast('error', t("toast.configSaveFailed", { error: String(err) }));
     }
-  };
-
-  const runWindowAction = async (action: (appWindow: ReturnType<typeof getCurrentWindow>) => Promise<void>) => {
-    try {
-      const appWindow = getCurrentWindow();
-      await action(appWindow);
-    } catch (err) {
-      console.error("Window action failed:", err);
-    }
-  };
-
-  const handleWindowMinimize = () => {
-    void runWindowAction(window => window.minimize());
-  };
-  const handleWindowMaximize = () => {
-    void runWindowAction(window => window.toggleMaximize());
-  };
-  const handleWindowClose = () => {
-    void runWindowAction(window => window.close());
   };
 
   return (
