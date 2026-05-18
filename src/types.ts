@@ -64,6 +64,12 @@ export interface AIChatSessionMetadata {
   preview: string;
 }
 
+export interface CaptionChatCardInput {
+  original: string;
+  user?: string;
+  timestamp: number;
+}
+
 export interface TeamsWindowInfo {
   hwnd: number;
   pid: number;
