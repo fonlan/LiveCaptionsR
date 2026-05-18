@@ -6,8 +6,7 @@ import {
   useReducer,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
-  type WheelEvent as ReactWheelEvent
+  type MouseEvent as ReactMouseEvent
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
@@ -69,16 +68,12 @@ import { filterDuplicateSentences, getNewSentences } from "./utils/captionProces
 import { useToasts } from "./hooks/useToasts";
 import { useFooterLayout } from "./hooks/useFooterLayout";
 import { useCardSearch } from "./hooks/useCardSearch";
+import { useAutoFollowScroll } from "./hooks/useAutoFollowScroll";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
 const MAX_SYNC_INTERVAL = 20;
 const MAX_TRANSLATION_BATCH_SIZE = 10;
-const STICK_TO_BOTTOM_EPSILON = 4;
-const AUTO_FOLLOW_ENABLE_THRESHOLD = 8;
-const AUTO_FOLLOW_DISABLE_THRESHOLD = 120;
-const AUTO_FOLLOW_DRIFT_GUARD_MS = 240;
-const USER_SCROLL_INTENT_TIMEOUT_MS = 450;
 const RECENT_SENTENCE_DEDUP_WINDOW_MS = 45_000;
 const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
@@ -314,9 +309,6 @@ function App() {
   const cards = cardsState.cards;
   const [partialText, setPartialText] = useState<string>("");
   const { toasts, addToast } = useToasts();
-  const [autoFollow, setAutoFollow] = useState<boolean>(true);
-  const [listScrollTop, setListScrollTop] = useState(0);
-  const [listViewportHeight, setListViewportHeight] = useState(0);
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
    
    // Teams Modal State
@@ -327,7 +319,6 @@ function App() {
   const [authChannelId, setAuthChannelId] = useState<string | null>(null);
 
   const historyEndRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const cardIndexRef = useRef<Record<string, number>>({});
   const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
@@ -360,13 +351,6 @@ function App() {
   const activeChatSessionCreatedAtRef = useRef<number>(0);
   const chatMessagesRef = useRef<AIChatMessage[]>([]);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
-  const autoFollowRef = useRef<boolean>(true);
-  const lastScrollTopRef = useRef<number>(0);
-  const lastAutoFollowSyncAtRef = useRef<number>(0);
-  const lastUserScrollIntentAtRef = useRef<number>(0);
-  const scrollRafRef = useRef<number | null>(null);
-  const queuedScrollTopRef = useRef<number>(0);
-  const queuedViewportHeightRef = useRef<number>(0);
   const isRunningRef = useRef<boolean>(false);
   const activeSessionIdRef = useRef<string | null>(null);
   const activeSessionNameRef = useRef<string>("");
@@ -384,6 +368,18 @@ function App() {
     isFooterToggleLabelCollapsed,
   } = useFooterLayout({
     signals: [appVersion, i18n.language, status, toggleWatcherLabel],
+  });
+
+  const {
+    scrollContainerRef,
+    autoFollow,
+    setAutoFollow,
+    disableAutoFollow,
+    listScrollTop,
+    listViewportHeight,
+    handleScrollWheel,
+  } = useAutoFollowScroll({
+    contentSignals: [cards, cardsState.indexById, partialText],
   });
 
   const stopSummaryTypewriter = () => {
@@ -571,34 +567,6 @@ function App() {
 
   const resetRecentSentenceDedup = () => {
     recentSentenceSeenAtRef.current.clear();
-  };
-
-  const markUserScrollIntent = useCallback(() => {
-    lastUserScrollIntentAtRef.current = window.performance.now();
-  }, []);
-
-  const hasRecentUserScrollIntent = useCallback(() => {
-    return window.performance.now() - lastUserScrollIntentAtRef.current <= USER_SCROLL_INTENT_TIMEOUT_MS;
-  }, []);
-
-  const snapToBottomIfNeeded = useCallback((container: HTMLDivElement) => {
-    const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    const distanceToBottom = targetTop - container.scrollTop;
-
-    if (distanceToBottom > STICK_TO_BOTTOM_EPSILON) {
-      lastAutoFollowSyncAtRef.current = window.performance.now();
-      container.scrollTo({ top: targetTop, behavior: "auto" });
-      return true;
-    }
-
-    return false;
-  }, []);
-
-  const handleScrollWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.ctrlKey) {
-      // Keep native wheel physics so Windows mouse-wheel feel follows OS/browser settings.
-      markUserScrollIntent();
-    }
   };
 
   const resetSessionTranslationProgress = () => {
@@ -1129,18 +1097,7 @@ function App() {
   useEffect(() => {
     cardsRef.current = cards;
     cardIndexRef.current = cardsState.indexById;
-    if (autoFollow) {
-      const container = scrollContainerRef.current;
-      if (container) {
-        lastAutoFollowSyncAtRef.current = window.performance.now();
-        snapToBottomIfNeeded(container);
-      }
-    }
-  }, [cards, cardsState.indexById, partialText, autoFollow, snapToBottomIfNeeded]);
-
-  useEffect(() => {
-    autoFollowRef.current = autoFollow;
-  }, [autoFollow]);
+  }, [cards, cardsState.indexById]);
 
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -1414,76 +1371,6 @@ function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--app-opacity', (config.opacity ?? 1.0).toString());
   }, [config.opacity]);
-
-  // Handle scroll detection for auto-follow
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    setListViewportHeight(container.clientHeight);
-    lastScrollTopRef.current = container.scrollTop;
-
-    const handleScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      const distanceToBottom = scrollHeight - scrollTop - clientHeight;
-      const scrollingUp = scrollTop + 2 < lastScrollTopRef.current;
-      const userScrollLikely = hasRecentUserScrollIntent();
-      const recentAutoFollowSync =
-        window.performance.now() - lastAutoFollowSyncAtRef.current <= AUTO_FOLLOW_DRIFT_GUARD_MS;
-      lastScrollTopRef.current = scrollTop;
-
-      queuedScrollTopRef.current = scrollTop;
-      queuedViewportHeightRef.current = clientHeight;
-      if (scrollRafRef.current === null) {
-        scrollRafRef.current = window.requestAnimationFrame(() => {
-          setListScrollTop(queuedScrollTopRef.current);
-          setListViewportHeight(prev => (
-            prev === queuedViewportHeightRef.current ? prev : queuedViewportHeightRef.current
-          ));
-          scrollRafRef.current = null;
-        });
-      }
-
-      if (autoFollowRef.current) {
-        if (!userScrollLikely && recentAutoFollowSync) {
-          snapToBottomIfNeeded(container);
-          return;
-        }
-
-        if (scrollingUp && distanceToBottom > AUTO_FOLLOW_ENABLE_THRESHOLD) {
-          autoFollowRef.current = false;
-          setAutoFollow(false);
-          return;
-        }
-        if (distanceToBottom > AUTO_FOLLOW_DISABLE_THRESHOLD) {
-          autoFollowRef.current = false;
-          setAutoFollow(false);
-        }
-      } else if (distanceToBottom <= AUTO_FOLLOW_ENABLE_THRESHOLD) {
-        lastAutoFollowSyncAtRef.current = window.performance.now();
-        autoFollowRef.current = true;
-        setAutoFollow(true);
-      }
-    };
-
-    const handleResize = () => {
-      const nextHeight = container.clientHeight;
-      setListViewportHeight(prev => (prev === nextHeight ? prev : nextHeight));
-    };
-
-    container.addEventListener('scroll', handleScroll);
-    window.addEventListener('resize', handleResize);
-
-    handleScroll();
-
-    return () => {
-      if (scrollRafRef.current !== null) {
-        window.cancelAnimationFrame(scrollRafRef.current);
-      }
-      container.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('resize', handleResize);
-    };
-  }, [hasRecentUserScrollIntent, markUserScrollIntent, snapToBottomIfNeeded]);
 
   // Disable Context Menu in Production
   useEffect(() => {
@@ -2231,8 +2118,7 @@ function App() {
       chatCardJumpTimerRef.current = null;
     }
 
-    setAutoFollow(false);
-    autoFollowRef.current = false;
+    disableAutoFollow();
 
     const totalCards = cardsRef.current.length;
     const maxAttempts = 48;
@@ -2336,8 +2222,7 @@ function App() {
       return;
     }
 
-    setAutoFollow(false);
-    autoFollowRef.current = false;
+    disableAutoFollow();
     container.scrollTo({ top: 0, behavior: "smooth" });
 
     const firstCardId = cardsRef.current[0]?.id;
