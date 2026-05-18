@@ -45,34 +45,19 @@ impl ProxyConfig {
     }
 }
 
-/// OpenAI-compatible endpoint configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenAIEndpoint {
-    /// Unique identifier for this endpoint
-    pub id: String,
-    /// Display name for UI
+/// Runtime-resolved OpenAI-compatible model.
+///
+/// Built on demand from `ai_channels` + `ai_models` (the only configured source
+/// of truth). Not persisted or serialized; lives only during a single
+/// translation/summary/chat request.
+#[derive(Debug, Clone)]
+pub struct ResolvedAIModel {
+    /// Display name used in log/error messages (mirrors the source model name).
     pub name: String,
-    /// API key
     pub api_key: String,
-    /// Base URL (e.g., "https://api.openai.com/v1")
     pub base_url: String,
-    /// Model name
     pub model: String,
-    /// Proxy configuration for this endpoint
     pub proxy: ProxyConfig,
-}
-
-impl Default for OpenAIEndpoint {
-    fn default() -> Self {
-        Self {
-            id: "default".to_string(),
-            name: "OpenAI".to_string(),
-            api_key: String::new(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4o-mini".to_string(),
-            proxy: ProxyConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,8 +87,6 @@ pub struct TranslationConfig {
     pub microsoft_api_key: Option<String>,
     pub microsoft_region: Option<String>,
     pub microsoft_proxy: ProxyConfig,
-    // Multiple OpenAI-compatible endpoints
-    pub openai_endpoints: Vec<OpenAIEndpoint>,
     /// Maximum concurrent translation requests
     pub max_concurrent_translations: u32,
     /// GitHub OAuth Token for Copilot (legacy, for backward compatibility)
@@ -124,6 +107,11 @@ pub struct AIChannel {
     pub id: String,
     #[serde(rename = "type")]
     pub channel_type: String,
+    /// API key (used by OpenAI-compatible channels)
+    pub api_key: Option<String>,
+    /// Base URL (used by OpenAI-compatible channels)
+    pub base_url: Option<String>,
+    /// Persistent token (used by Copilot channels for OAuth)
     pub token: Option<String>,
     pub proxy: ProxyConfig,
 }
@@ -155,7 +143,6 @@ impl Default for TranslationConfig {
             microsoft_api_key: None,
             microsoft_region: None,
             microsoft_proxy: ProxyConfig::default(),
-            openai_endpoints: vec![OpenAIEndpoint::default()],
             max_concurrent_translations: 2,
             github_token: None,
             copilot_model: "gpt-4".to_string(),
@@ -215,8 +202,27 @@ impl TranslationService {
         })
     }
 
-    #[allow(dead_code)]
+    /// Update configuration in-place while preserving caches (copilot tokens,
+    /// HTTP client cache, translation cache). Rebuilds the semaphore only when
+    /// the concurrency limit changes.
     pub fn update_config(&mut self, config: TranslationConfig) {
+        let prev_max = self.config.max_concurrent_translations;
+        let new_max = if config.max_concurrent_translations > 0 {
+            config.max_concurrent_translations
+        } else {
+            2
+        };
+
+        if new_max != prev_max {
+            self.semaphore = Arc::new(Semaphore::new(new_max as usize));
+        }
+
+        info!(
+            provider = ?config.provider,
+            max_concurrent = new_max,
+            "Translation service config updated (caches preserved)"
+        );
+
         self.config = config;
     }
 
@@ -250,6 +256,50 @@ impl TranslationService {
             TranslationProvider::OpenAI(id) => format!("openai:{}", id),
             TranslationProvider::Copilot => "copilot".to_string(),
         }
+    }
+
+    /// Resolve a model id into a callable OpenAI-compatible endpoint by
+    /// joining `ai_models` (model metadata) with `ai_channels` (credentials +
+    /// base URL + proxy). Returns an error when the model id is not registered
+    /// or the linked channel cannot supply the required fields.
+    fn resolve_ai_model(&self, model_id: &str) -> Result<ResolvedAIModel> {
+        let model = self
+            .config
+            .ai_models
+            .iter()
+            .find(|m| m.id == model_id)
+            .with_context(|| format!("AI model '{}' not found", model_id))?;
+
+        let channel = self
+            .config
+            .ai_channels
+            .iter()
+            .find(|c| c.id == model.channel_id)
+            .with_context(|| {
+                format!(
+                    "AI channel '{}' for model '{}' not found",
+                    model.channel_id, model.id
+                )
+            })?;
+
+        if channel.channel_type != "openai" {
+            anyhow::bail!(
+                "AI model '{}' is linked to a non-OpenAI channel ('{}'); only OpenAI-compatible channels can be resolved here",
+                model.id,
+                channel.channel_type
+            );
+        }
+
+        let api_key = channel.api_key.clone().unwrap_or_default();
+        let base_url = channel.base_url.clone().unwrap_or_default();
+
+        Ok(ResolvedAIModel {
+            name: model.name.clone(),
+            api_key,
+            base_url,
+            model: model.name.clone(),
+            proxy: channel.proxy.clone(),
+        })
     }
 
     fn proxy_cache_key(proxy_config: &ProxyConfig) -> String {
@@ -775,11 +825,14 @@ impl TranslationService {
     ) -> Result<String> {
         // Check cache
         {
-            let guard = self.copilot_tokens.lock().unwrap();
+            let guard = self
+                .copilot_tokens
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Copilot token cache lock poisoned"))?;
             if let Some((token, expiry)) = guard.get(github_token) {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 if now < *expiry {
                     debug!("Using cached Copilot token (expires in {}s)", expiry - now);
@@ -844,7 +897,10 @@ impl TranslationService {
 
         // Update cache
         {
-            let mut guard = self.copilot_tokens.lock().unwrap();
+            let mut guard = self
+                .copilot_tokens
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Copilot token cache lock poisoned"))?;
             guard.insert(
                 github_token.to_string(),
                 (token_data.token.clone(), token_data.expires_at - 60),
@@ -1396,31 +1452,7 @@ impl TranslationService {
             .or(self.config.github_token.as_deref())
             .context("GitHub Copilot not logged in")?;
         let proxy_config = proxy_config.unwrap_or(&self.config.copilot_proxy);
-        let configured_system_prompt = self.build_translation_system_prompt(target_lang);
-        let source_lang_desc = if self.config.source_lang == "auto" {
-            "any language".to_string()
-        } else {
-            self.config.source_lang.clone()
-        };
-        let target_lang_name = Self::get_lang_name(target_lang);
-
-        let _legacy_system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
-            format!(
-                "You are a translator. Translate the current sentence from {} to {}. \
-                 The previous sentences are provided ONLY for context/disambiguation. \
-                 IGNORE the language of the previous sentences. \
-                 Your output MUST be in {}. \
-                 Output ONLY the translation of the current sentence, no labels or explanations.",
-                source_lang_desc, target_lang_name, target_lang_name
-            )
-        } else {
-            format!(
-                "You are a translator. Translate from {} to {}. Output ONLY the translation.",
-                source_lang_desc, target_lang_name
-            )
-        };
-
-        let system_prompt = configured_system_prompt;
+        let system_prompt = self.build_translation_system_prompt(target_lang);
         let user_content = if let Some(ctx) = context {
             if ctx.is_empty() {
                 text.to_string()
@@ -1458,12 +1490,7 @@ impl TranslationService {
         context: Option<&[String]>,
         target_lang: &str,
     ) -> Result<String> {
-        let endpoint = self
-            .config
-            .openai_endpoints
-            .iter()
-            .find(|e| e.id == endpoint_id)
-            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+        let endpoint = self.resolve_ai_model(endpoint_id)?;
 
         if endpoint.api_key.trim().is_empty() {
             anyhow::bail!(
@@ -1493,33 +1520,8 @@ impl TranslationService {
             text.to_string()
         };
 
-        let configured_system_prompt = self.build_translation_system_prompt(target_lang);
-        let source_lang_desc = if self.config.source_lang == "auto" {
-            "any language".to_string()
-        } else {
-            self.config.source_lang.clone()
-        };
-
-        let target_lang_name = Self::get_lang_name(target_lang);
-
-        let _legacy_system_prompt = if context.map(|c| !c.is_empty()).unwrap_or(false) {
-            format!(
-                "You are a translator. Translate the current sentence from {} to {}. \
-                 The previous sentences are provided ONLY for context/disambiguation. \
-                 IGNORE the language of the previous sentences. \
-                 Your output MUST be in {}. \
-                 Output ONLY the translation of the current sentence, no labels or explanations.",
-                source_lang_desc, target_lang_name, target_lang_name
-            )
-        } else {
-            format!(
-                "You are a translator. Translate from {} to {}. Output ONLY the translation.",
-                source_lang_desc, target_lang_name
-            )
-        };
-
-        let system_prompt = configured_system_prompt;
-        self.send_openai_request(endpoint, &system_prompt, &user_content, None)
+        let system_prompt = self.build_translation_system_prompt(target_lang);
+        self.send_openai_request(&endpoint, &system_prompt, &user_content, None)
             .await
     }
 
@@ -1540,7 +1542,7 @@ impl TranslationService {
 
     async fn send_openai_messages(
         &self,
-        endpoint: &OpenAIEndpoint,
+        endpoint: &ResolvedAIModel,
         messages: &[ChatMessage],
         max_tokens: Option<u32>,
     ) -> Result<String> {
@@ -1642,7 +1644,7 @@ impl TranslationService {
     /// Helper for OpenAI requests
     async fn send_openai_request(
         &self,
-        endpoint: &OpenAIEndpoint,
+        endpoint: &ResolvedAIModel,
         system_prompt: &str,
         user_content: &str,
         max_tokens: Option<u32>,
@@ -1666,7 +1668,7 @@ impl TranslationService {
 
     async fn send_openai_request_stream<F>(
         &self,
-        endpoint: &OpenAIEndpoint,
+        endpoint: &ResolvedAIModel,
         system_prompt: &str,
         user_content: &str,
         on_chunk: F,
@@ -1879,14 +1881,9 @@ impl TranslationService {
             provider_id
         };
 
-        let endpoint = self
-            .config
-            .openai_endpoints
-            .iter()
-            .find(|e| e.id == endpoint_id)
-            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+        let endpoint = self.resolve_ai_model(endpoint_id)?;
 
-        self.send_openai_messages(endpoint, &messages, Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS))
+        self.send_openai_messages(&endpoint, &messages, Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS))
             .await
     }
 
@@ -1976,15 +1973,10 @@ impl TranslationService {
             provider_id
         };
 
-        let endpoint = self
-            .config
-            .openai_endpoints
-            .iter()
-            .find(|e| e.id == endpoint_id)
-            .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+        let endpoint = self.resolve_ai_model(endpoint_id)?;
 
         self.send_openai_request(
-            endpoint,
+            &endpoint,
             &system_prompt,
             text,
             Some(SUMMARY_MAX_OUTPUT_TOKENS),
@@ -2032,15 +2024,10 @@ impl TranslationService {
                         provider_id
                     };
 
-                    let endpoint = self
-                        .config
-                        .openai_endpoints
-                        .iter()
-                        .find(|e| e.id == endpoint_id)
-                        .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+                    let endpoint = self.resolve_ai_model(endpoint_id)?;
 
                     self.send_openai_request_stream(
-                        endpoint,
+                        &endpoint,
                         &system_prompt,
                         text,
                         on_chunk,
@@ -2071,15 +2058,10 @@ impl TranslationService {
                     provider_id
                 };
 
-                let endpoint = self
-                    .config
-                    .openai_endpoints
-                    .iter()
-                    .find(|e| e.id == endpoint_id)
-                    .context(format!("OpenAI endpoint '{}' not found", endpoint_id))?;
+                let endpoint = self.resolve_ai_model(endpoint_id)?;
 
                 self.send_openai_request_stream(
-                    endpoint,
+                    &endpoint,
                     &system_prompt,
                     text,
                     on_chunk,

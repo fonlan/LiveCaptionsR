@@ -1,6 +1,8 @@
 #![cfg(windows)]
 
 use anyhow::{Context, Result};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -563,10 +565,32 @@ pub struct CaptionStream {
     watcher: LiveCaptionsWatcher,
     window: Option<IUIAutomationElement>,
     running: Arc<AtomicBool>,
-    last_text: String,
-    last_user: Option<String>,
+    /// Hash of the last emitted caption text. We intentionally do not retain
+    /// the string itself: the deduplication only needs equality.
+    last_text_hash: u64,
+    /// Hash of the last emitted user label (or 0 when absent).
+    last_user_hash: u64,
     window_hidden: bool,
     error_count: u32,
+}
+
+fn hash_caption_text(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hash_caption_user(user: &Option<String>) -> u64 {
+    match user {
+        Some(name) => {
+            let mut hasher = DefaultHasher::new();
+            // Use a domain prefix so that empty `Some("")` hashes differently from `None`.
+            1u8.hash(&mut hasher);
+            name.hash(&mut hasher);
+            hasher.finish()
+        }
+        None => 0,
+    }
 }
 
 impl CaptionStream {
@@ -576,8 +600,8 @@ impl CaptionStream {
             watcher,
             window: None,
             running: Arc::new(AtomicBool::new(false)),
-            last_text: String::new(),
-            last_user: None,
+            last_text_hash: 0,
+            last_user_hash: 0,
             window_hidden: false,
             error_count: 0,
         })
@@ -648,15 +672,16 @@ impl CaptionStream {
 
         match result {
             Ok((user, text)) => {
-                if !text.is_empty() {
-                    // eprintln!("[LiveCaptions Raw] User: {:?}, Text: {}", user, text);
-                }
                 self.error_count = 0;
 
-                if !text.is_empty() && (text != self.last_text || user != self.last_user) {
-                    self.last_text = text.clone();
-                    self.last_user = user.clone();
-                    return Some((user, text));
+                if !text.is_empty() {
+                    let text_hash = hash_caption_text(&text);
+                    let user_hash = hash_caption_user(&user);
+                    if text_hash != self.last_text_hash || user_hash != self.last_user_hash {
+                        self.last_text_hash = text_hash;
+                        self.last_user_hash = user_hash;
+                        return Some((user, text));
+                    }
                 }
             }
             Err(e) => {

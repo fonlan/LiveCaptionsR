@@ -1,9 +1,9 @@
 // Constants
-export const SIMILARITY_THRESHOLD = 0.66;
+const SIMILARITY_THRESHOLD = 0.66;
 
 // --- Utility Functions ---
 
-export function levenshteinDistance(a: string, b: string): number {
+function levenshteinDistance(a: string, b: string): number {
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
 
@@ -32,11 +32,11 @@ export function calculateSimilarity(a: string, b: string): number {
   return 1 - distance / maxLength;
 }
 
-export function stripTrailingPunctuation(text: string): string {
+function stripTrailingPunctuation(text: string): string {
   return text.replace(/[.!?。！？，,;；:：\s]+$/, '');
 }
 
-export function isContinuation(oldText: string, newText: string): boolean {
+function isContinuation(oldText: string, newText: string): boolean {
   if (!oldText || !newText) return false;
   const oldStripped = stripTrailingPunctuation(oldText).toLowerCase();
   const newLower = newText.toLowerCase();
@@ -49,7 +49,7 @@ export function shouldOverwrite(oldText: string, newText: string): boolean {
   return calculateSimilarity(oldText, newText) > SIMILARITY_THRESHOLD;
 }
 
-export function isDecimalPoint(text: string, dotIndex: number): boolean {
+function isDecimalPoint(text: string, dotIndex: number): boolean {
   if (dotIndex <= 0 || dotIndex >= text.length - 1) return false;
   return /\d/.test(text[dotIndex - 1]) && /\d/.test(text[dotIndex + 1]);
 }
@@ -61,7 +61,7 @@ export function isEOSPunctuation(text: string, index: number): boolean {
   return false;
 }
 
-export function findLastEOSIndex(text: string): number {
+function findLastEOSIndex(text: string): number {
   for (let i = text.length - 1; i >= 0; i--) {
     if (isEOSPunctuation(text, i)) return i;
   }
@@ -72,11 +72,6 @@ export function getLatestCaption(text: string): string {
   if (!text.trim()) return "";
   const lastEOS = findLastEOSIndex(text);
   return lastEOS >= 0 ? text.slice(lastEOS + 1).trim() : text.trim();
-}
-
-export function endsWithEOS(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.length > 0 && isEOSPunctuation(trimmed, trimmed.length - 1);
 }
 
 export function generateId(): string {

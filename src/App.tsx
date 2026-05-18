@@ -33,7 +33,6 @@ import {
   Session, 
   SessionMetadata, 
   TeamsWindowInfo,
-  Toast,
   TranslationStatus,
 } from "./types";
 import { 
@@ -69,6 +68,7 @@ import {
   generateId
 } from "./utils/textUtils";
 import { filterDuplicateSentences, getNewSentences } from "./utils/captionProcessing";
+import { useToasts } from "./hooks/useToasts";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -326,7 +326,7 @@ function App() {
   const [cardsState, dispatchCards] = useReducer(cardsReducer, EMPTY_CARDS_STATE);
   const cards = cardsState.cards;
   const [partialText, setPartialText] = useState<string>("");
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const { toasts, addToast } = useToasts();
   const [autoFollow, setAutoFollow] = useState<boolean>(true);
   const [listScrollTop, setListScrollTop] = useState(0);
   const [listViewportHeight, setListViewportHeight] = useState(0);
@@ -390,6 +390,9 @@ function App() {
   const queuedViewportHeightRef = useRef<number>(0);
   const isRunningRef = useRef<boolean>(false);
   const activeSessionIdRef = useRef<string | null>(null);
+  const activeSessionNameRef = useRef<string>("");
+  const activeSessionCreatedAtRef = useRef<number>(0);
+  const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
 
   const normalizedCardSearchQuery = useMemo(
     () => normalizeCardSearchKeyword(cardSearchQuery),
@@ -453,18 +456,6 @@ function App() {
       return matches;
     }, []);
   }, [cards, isCardSearchOpen, normalizedCardSearchQuery, tempTranslations]);
-  const activeSessionNameRef = useRef<string>("");
-  const activeSessionCreatedAtRef = useRef<number>(0);
-  const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
-
-
-  const addToast = useCallback((type: 'success' | 'error', message: string) => {
-    const id = generateId();
-    setToasts(prev => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 3000);
-  }, []);
 
   const stopSummaryTypewriter = () => {
     if (summaryTypingTimerRef.current) {
@@ -1247,7 +1238,7 @@ function App() {
     if (config.language && i18n.language !== config.language) {
       i18n.changeLanguage(config.language);
     }
-  }, [config.language]);
+  }, [config.language, i18n]);
 
   useEffect(() => {
     configRef.current = config;

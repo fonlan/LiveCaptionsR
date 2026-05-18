@@ -21,7 +21,8 @@ use windows::{
     Win32::UI::WindowsAndMessaging::*,
 };
 
-// Note: runtime_id module kept for potential future use
+// Generates a stable, hashable identifier (`runtime_id`) for a UIA element,
+// used here to deduplicate captions across polling cycles.
 mod runtime_id;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;

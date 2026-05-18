@@ -18,7 +18,7 @@ function isMeaningfulSentence(text: string): boolean {
  * Splits a continuous text block into an array of complete sentences.
  * Ignores any trailing incomplete sentence.
  */
-export function splitIntoSentences(text: string): string[] {
+function splitIntoSentences(text: string): string[] {
     const sentences: string[] = [];
     let start = 0;
     

@@ -320,10 +320,16 @@ fn init_schema() -> anyhow::Result<()> {
         tx.commit()?;
     }
 
-    // Heal potentially out-of-sync legacy schemas even when user_version is already 5+.
-    let tx = conn.transaction()?;
-    migrate_ai_chat_schema_v5(&tx)?;
-    tx.commit()?;
+    // v6: one-time legacy self-heal pass for users who upgraded through an
+    // older build that did not finish the v5 schema cleanup. Brand-new
+    // installs land directly on v6 via the v5 block above and skip this.
+    let current_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 6 {
+        let tx = conn.transaction()?;
+        migrate_ai_chat_schema_v5(&tx)?;
+        tx.pragma_update(None, "user_version", 6)?;
+        tx.commit()?;
+    }
 
     Ok(())
 }

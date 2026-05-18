@@ -41,7 +41,6 @@
     "closeTooltip": "Close Sidebar",
     "renameTooltip": "Click to rename",
     "deleteTooltip": "Delete Session",
-    "clearAllTooltip": "Delete All Sessions",
     "emptyState": "No saved sessions",
     "searchPlaceholder": "Search session title, original, or translated text",
     "clearFiltersTooltip": "Clear filters",
@@ -66,7 +65,6 @@
     "tabs": {
       "general": "General",
       "translation": "Translation",
-      "ai": "AI Config",
       "summary": "Summary",
       "channels": "Channels",
       "models": "Models"
@@ -126,15 +124,8 @@
       "proxyUrlPlaceholder": "http://127.0.0.1:7890 or socks5://127.0.0.1:1080"
     },
     "ai": {
-      "title": "AI Providers Configuration",
-      "addEndpoint": "Add Endpoint",
       "removeEndpoint": "Remove",
-      "endpointName": "Endpoint Name",
-      "endpointNamePlaceholder": "Endpoint Name",
-      "baseUrl": "Base URL",
-      "baseUrlPlaceholder": "https://api.openai.com/v1",
-      "model": "Model",
-      "modelPlaceholder": "gpt-4o-mini"
+      "baseUrl": "Base URL"
     },
     "channels": {
       "title": "AI Channels",
@@ -172,7 +163,7 @@
       "selectProvider": "Select a provider",
       "prompt": "Custom Summary Prompt",
       "promptPlaceholder": "Leave empty to use built-in prompt",
-      "description": "Configures which AI model generates summaries of your captions. Ensure that selected provider is configured in the \"AI Config\" tab."
+      "description": "Configures which AI model generates summaries of your captions. Ensure that selected provider is configured in the \"Channels\" and \"Models\" tabs."
     }
   },
   "summary": {

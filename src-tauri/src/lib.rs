@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
@@ -18,8 +21,8 @@ use error::AppError;
 use state::AppState;
 use teams::TeamsWindowInfo;
 use translation::{
-    CaptionChatCard, CopilotModel, OpenAIEndpoint, ProxyConfig, TranslationConfig,
-    TranslationProvider, TranslationService,
+    CaptionChatCard, CopilotModel, ProxyConfig, TranslationConfig, TranslationProvider,
+    TranslationService,
 };
 
 // Simple raw caption event - just the text from LiveCaptions
@@ -59,17 +62,6 @@ pub struct ProxyConfigDTO {
     pub enabled: bool,
 }
 
-/// OpenAI endpoint configuration for frontend
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct OpenAIEndpointDTO {
-    pub id: String,
-    pub name: String,
-    pub api_key: String,
-    pub base_url: String,
-    pub model: String,
-    pub proxy: ProxyConfigDTO,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AIChannelDTO {
     pub id: String,
@@ -87,19 +79,6 @@ pub struct AIModelDTO {
     pub id: String,
     pub name: String,
     pub channel_id: String,
-}
-
-impl Default for OpenAIEndpointDTO {
-    fn default() -> Self {
-        Self {
-            id: "default".to_string(),
-            name: "OpenAI".to_string(),
-            api_key: String::new(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4o-mini".to_string(),
-            proxy: ProxyConfigDTO::default(),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -134,9 +113,6 @@ pub struct AppConfig {
     pub ai_channels: Vec<AIChannelDTO>,
     #[serde(default)]
     pub ai_models: Vec<AIModelDTO>,
-    // Legacy support (optional, can be ignored)
-    #[serde(default, skip_serializing)]
-    pub openai_endpoints: Vec<OpenAIEndpointDTO>,
     /// Window background opacity (0.1 to 1.0)
     #[serde(default = "default_opacity")]
     pub opacity: f64,
@@ -216,7 +192,6 @@ impl Default for AppConfig {
             microsoft_proxy: ProxyConfigDTO::default(),
             ai_channels: vec![],
             ai_models: vec![],
-            openai_endpoints: vec![],
             opacity: 1.0,
             openai_context_count: 2,
             translation_prompt: translation::default_translation_prompt(),
@@ -331,12 +306,8 @@ async fn fetch_copilot_models_command(
 
 #[tauri::command]
 fn get_config(state: State<'_, AppState>) -> AppConfig {
-    let mut config = state.config.lock().unwrap();
-    // Load from file if not yet loaded (first call)
-    if let Some(loaded) = load_config_from_file() {
-        *config = loaded;
-    }
-    config.clone()
+    // Config is loaded once at startup (setup hook); just return the cached copy.
+    state.config.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -363,19 +334,15 @@ async fn save_config(
         *current = config.clone();
     }
 
-    // Recreate translation service with new config
-    {
-        let translation_config = config_to_translation_config(&config);
-        let mut service = state.translation_service.lock().unwrap();
-        match TranslationService::new(translation_config) {
-            Ok(s) => *service = Some(s),
-            Err(e) => eprintln!("Warning: Failed to update translation service: {}", e),
-        }
+    // Reuse the existing translation service if any, preserving Copilot tokens
+    // and HTTP/translation caches. Only create a new instance on first init.
+    if let Err(e) = ensure_translation_service(&state, &config) {
+        warn!(error = %e, "Failed to update translation service");
     }
 
     // Persist to file
     if let Err(e) = save_config_to_file(&config) {
-        eprintln!("Warning: Failed to persist config: {}", e);
+        warn!(error = %e, "Failed to persist config");
     }
 
     Ok("Config saved".to_string())
@@ -451,30 +418,6 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         }
     };
 
-    // Convert AI Models (OpenAI type) to OpenAIEndpoints
-    let openai_endpoints = config
-        .ai_models
-        .iter()
-        .filter_map(|m| {
-            let channel = config.ai_channels.iter().find(|c| c.id == m.channel_id)?;
-            if channel.channel_type == "openai" {
-                Some(OpenAIEndpoint {
-                    id: m.id.clone(),
-                    name: m.name.clone(), // Use model name as endpoint name for logs
-                    api_key: channel.api_key.clone().unwrap_or_default(),
-                    base_url: channel.base_url.clone().unwrap_or_default(),
-                    model: m.name.clone(),
-                    proxy: ProxyConfig {
-                        url: channel.proxy.url.clone(),
-                        enabled: channel.proxy.enabled,
-                    },
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
     // Find Copilot proxy from any Copilot channel (for fetching models, token, etc.)
     let copilot_proxy = config
         .ai_channels
@@ -493,6 +436,8 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
         .map(|c| translation::AIChannel {
             id: c.id.clone(),
             channel_type: c.channel_type.clone(),
+            api_key: c.api_key.clone(),
+            base_url: c.base_url.clone(),
             token: c.token.clone(),
             proxy: translation::ProxyConfig {
                 url: c.proxy.url.clone(),
@@ -528,7 +473,6 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
             url: config.microsoft_proxy.url.clone(),
             enabled: config.microsoft_proxy.enabled,
         },
-        openai_endpoints,
         max_concurrent_translations: config.max_concurrent_translations,
         github_token: config.github_token.clone(),
         copilot_model: config.copilot_model.clone(),
@@ -538,30 +482,22 @@ fn config_to_translation_config(config: &AppConfig) -> TranslationConfig {
     }
 }
 
-fn get_or_init_translation_service(state: &AppState) -> Result<TranslationService, String> {
-    // 1. Try to get existing service (fast path)
-    {
-        let guard = state.translation_service.lock().unwrap();
-        if let Some(service) = &*guard {
-            return Ok(service.clone());
-        }
-    }
-
-    // 2. Initialize if missing (slow path)
-    let config = {
-        let mut cfg = state.config.lock().unwrap();
-        // Try to load from file to ensure we have latest persistence
-        if let Some(loaded) = load_config_from_file() {
-            *cfg = loaded;
-        }
-        cfg.clone()
-    };
-
-    let translation_config = config_to_translation_config(&config);
+/// Ensure a TranslationService exists in shared state for the given config.
+///
+/// - If a service already exists, its config is updated in-place (preserving
+///   `copilot_tokens`, `client_cache`, and `translation_cache`).
+/// - Otherwise a fresh service is created and stored.
+///
+/// Returns a clone of the resulting service (the service itself is cheap to clone).
+fn ensure_translation_service(
+    state: &AppState,
+    config: &AppConfig,
+) -> Result<TranslationService, String> {
+    let translation_config = config_to_translation_config(config);
     let mut guard = state.translation_service.lock().unwrap();
 
-    // Double-check in case another thread initialized it while we were getting config
-    if let Some(service) = &*guard {
+    if let Some(service) = guard.as_mut() {
+        service.update_config(translation_config);
         return Ok(service.clone());
     }
 
@@ -572,6 +508,20 @@ fn get_or_init_translation_service(state: &AppState) -> Result<TranslationServic
         }
         Err(e) => Err(format!("Failed to initialize translation service: {}", e)),
     }
+}
+
+fn get_or_init_translation_service(state: &AppState) -> Result<TranslationService, String> {
+    // Fast path: clone the existing service without re-reading config from disk.
+    {
+        let guard = state.translation_service.lock().unwrap();
+        if let Some(service) = &*guard {
+            return Ok(service.clone());
+        }
+    }
+
+    // Slow path: build from current in-memory config (loaded once at startup).
+    let config = state.config.lock().unwrap().clone();
+    ensure_translation_service(state, &config)
 }
 
 /// Translate a single piece of text - called from frontend
@@ -834,14 +784,8 @@ async fn start_caption_watcher(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
-    // Load config
-    let config = {
-        let mut cfg = state.config.lock().unwrap();
-        if let Some(loaded) = load_config_from_file() {
-            *cfg = loaded;
-        }
-        cfg.clone()
-    };
+    // Read in-memory config (loaded once at startup; save_config keeps it in sync).
+    let config = state.config.lock().unwrap().clone();
 
     info!(
         caption_source = %config.caption_source,
@@ -850,25 +794,17 @@ async fn start_caption_watcher(
         "Starting caption watcher"
     );
 
-    // Initialize translation service
-    {
-        let translation_config = config_to_translation_config(&config);
-        let mut service = state.translation_service.lock().unwrap();
-        match TranslationService::new(translation_config) {
-            Ok(s) => *service = Some(s),
-            Err(e) => return Err(AppError::Runtime(format!("Translation init failed: {}", e))),
-        }
-    }
+    // Ensure translation service exists, preserving any cached state.
+    ensure_translation_service(&state, &config).map_err(AppError::Runtime)?;
 
-    // Check if already running
+    if state
+        .caption_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
     {
-        let mut running = state.caption_running.lock().unwrap();
-        if *running {
-            return Err(AppError::Runtime(
-                "Caption watcher already running".to_string(),
-            ));
-        }
-        *running = true;
+        return Err(AppError::Runtime(
+            "Caption watcher already running".to_string(),
+        ));
     }
 
     // Create channel for commands
@@ -930,8 +866,7 @@ fn start_livecaptions_loop(
             error!(error = %e, "Failed to initialize LiveCaptions stream");
             let _ = app.emit("caption-error", format!("Init failed: {}", e));
             let state = app.state::<AppState>();
-            let mut running = state.caption_running.lock().unwrap();
-            *running = false;
+            state.caption_running.store(false, Ordering::Release);
             return;
         }
     };
@@ -951,13 +886,13 @@ fn start_livecaptions_loop(
             error!(error = %e, "Failed to connect LiveCaptions stream");
             let _ = app.emit("caption-error", e.to_string());
             let state = app.state::<AppState>();
-            let mut running = state.caption_running.lock().unwrap();
-            *running = false;
+            state.caption_running.store(false, Ordering::Release);
             return;
         }
     }
 
-    let mut last_text = String::new();
+    // Hash of last emitted caption text; avoids retaining the string just for dedup.
+    let mut last_text_hash: u64 = 0;
     let base_interval = stream.poll_interval();
     let max_backoff_interval = Duration::from_millis(250);
     let mut idle_polls: u32 = 0;
@@ -965,8 +900,7 @@ fn start_livecaptions_loop(
     while stream.is_running() {
         {
             let state = app.state::<AppState>();
-            let running = state.caption_running.lock().unwrap();
-            if !*running {
+            if !state.caption_running.load(Ordering::Acquire) {
                 stream.stop();
                 break;
             }
@@ -985,22 +919,30 @@ fn start_livecaptions_loop(
         let mut had_activity = false;
 
         if let Some((user, text)) = stream.get_next_caption() {
-            if text == last_text {
-                // No effective update, keep backing off progressively
-            } else {
-                last_text = text.clone();
+            let text_hash = {
+                let mut hasher = DefaultHasher::new();
+                text.hash(&mut hasher);
+                hasher.finish()
+            };
+
+            if text_hash != last_text_hash {
+                last_text_hash = text_hash;
 
                 if text.starts_with("[ERROR]") {
                     let _ = app.emit("caption-error", text);
                     had_activity = true;
                 } else {
-                    // Log caption with preview (truncate to 100 chars)
-                    let preview = if text.chars().count() > 100 {
-                        format!("{}...", text.chars().take(100).collect::<String>())
-                    } else {
-                        text.clone()
-                    };
-                    debug!(user = ?user, caption_preview = %preview, "Received LiveCaptions caption");
+                    // Only build the preview string when debug logging is enabled.
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        let preview: String = if text.chars().count() > 100 {
+                            let mut p: String = text.chars().take(100).collect();
+                            p.push_str("...");
+                            p
+                        } else {
+                            text.clone()
+                        };
+                        debug!(user = ?user, caption_preview = %preview, "Received LiveCaptions caption");
+                    }
 
                     let timestamp = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1042,8 +984,7 @@ fn start_livecaptions_loop(
     }
 
     let state = app.state::<AppState>();
-    let mut running = state.caption_running.lock().unwrap();
-    *running = false;
+    state.caption_running.store(false, Ordering::Release);
     let _ = app.emit("caption-status", "Stopped");
 }
 
@@ -1075,8 +1016,7 @@ fn start_teams_caption_loop(
             error!(error = %e, "Failed to initialize Teams stream");
             let _ = app.emit("caption-error", format!("Teams init failed: {}", e));
             let state = app.state::<AppState>();
-            let mut running = state.caption_running.lock().unwrap();
-            *running = false;
+            state.caption_running.store(false, Ordering::Release);
             return;
         }
     };
@@ -1095,13 +1035,14 @@ fn start_teams_caption_loop(
             error!(error = %e, "Failed to connect Teams stream");
             let _ = app.emit("caption-error", e.to_string());
             let state = app.state::<AppState>();
-            let mut running = state.caption_running.lock().unwrap();
-            *running = false;
+            state.caption_running.store(false, Ordering::Release);
             return;
         }
     }
 
-    let mut last_caption_signature = String::new();
+    // Two-tuple hash signature: (card identity hash, content hash). Avoids the
+    // per-poll `format!` of the whole sentence into a String.
+    let mut last_caption_signature: (u64, u64) = (0, 0);
     let base_interval = stream.poll_interval();
     let max_backoff_interval = Duration::from_millis(450);
     let mut idle_polls: u32 = 0;
@@ -1109,8 +1050,7 @@ fn start_teams_caption_loop(
     while stream.is_running() {
         {
             let state = app.state::<AppState>();
-            let running = state.caption_running.lock().unwrap();
-            if !*running {
+            if !state.caption_running.load(Ordering::Acquire) {
                 stream.stop();
                 break;
             }
@@ -1135,13 +1075,20 @@ fn start_teams_caption_loop(
             let card_id = message.card_id.trim().to_string();
             let card_index = message.card_index;
             let source_id = message.source_id.trim().to_string();
-            let current_signature = format!(
-                "{}|{}|{}|{}",
-                card_id,
-                source_id,
-                user.as_deref().unwrap_or("").trim(),
-                text.trim()
-            );
+
+            let card_hash = {
+                let mut hasher = DefaultHasher::new();
+                card_id.hash(&mut hasher);
+                source_id.hash(&mut hasher);
+                hasher.finish()
+            };
+            let content_hash = {
+                let mut hasher = DefaultHasher::new();
+                user.as_deref().unwrap_or("").trim().hash(&mut hasher);
+                text.trim().hash(&mut hasher);
+                hasher.finish()
+            };
+            let current_signature = (card_hash, content_hash);
 
             if current_signature == last_caption_signature {
                 // No effective update, keep backing off progressively
@@ -1208,8 +1155,7 @@ fn start_teams_caption_loop(
     }
 
     let state = app.state::<AppState>();
-    let mut running = state.caption_running.lock().unwrap();
-    *running = false;
+    state.caption_running.store(false, Ordering::Release);
     let _ = app.emit("caption-status", "Stopped");
 }
 
@@ -1221,8 +1167,7 @@ fn stop_caption_watcher(state: State<'_, AppState>) -> Result<String, AppError> 
         config.caption_source.clone()
     };
 
-    let mut running = state.caption_running.lock().unwrap();
-    *running = false;
+    state.caption_running.store(false, Ordering::Release);
 
     // Only close LiveCaptions if that was the source
     if caption_source != "teams" {
@@ -1236,8 +1181,7 @@ fn stop_caption_watcher(state: State<'_, AppState>) -> Result<String, AppError> 
 
 #[tauri::command]
 fn is_watcher_running(state: State<'_, AppState>) -> bool {
-    let running = state.caption_running.lock().unwrap();
-    *running
+    state.caption_running.load(Ordering::Acquire)
 }
 
 // --- Session Management Commands ---
@@ -1561,29 +1505,27 @@ pub fn run() {
 
     // Install panic hook to catch all panics
     std::panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info
-            .location()
-            .unwrap_or_else(|| panic_info.location().unwrap());
+        // Avoid panicking inside the panic hook itself: use safe defaults when
+        // location info is unavailable.
+        let (file, line, column) = match panic_info.location() {
+            Some(loc) => (loc.file(), loc.line(), loc.column()),
+            None => ("<unknown>", 0, 0),
+        };
         let msg = panic_info.to_string();
         let backtrace = std::backtrace::Backtrace::capture();
 
         tracing::error!(
             panic_msg = %msg,
-            file = location.file(),
-            line = location.line(),
-            column = location.column(),
+            file,
+            line,
+            column,
             backtrace = %backtrace,
             "PANIC occurred"
         );
 
         // Also print to stderr for immediate visibility
         eprintln!("!!! PANIC !!!");
-        eprintln!(
-            "Location: {}:{}:{}",
-            location.file(),
-            location.line(),
-            location.column()
-        );
+        eprintln!("Location: {}:{}:{}", file, line, column);
         eprintln!("Message: {}", msg);
         eprintln!("Backtrace:\n{}", backtrace);
     }));
@@ -1701,8 +1643,7 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { .. } => {
             // Ensure LiveCaptions is closed on exit
             let state = app_handle.state::<AppState>();
-            let mut running = state.caption_running.lock().unwrap();
-            *running = false;
+            state.caption_running.store(false, Ordering::Release);
             let _ = livecaptions::close_livecaptions();
         }
         _ => {}
