@@ -69,6 +69,7 @@ import { useToasts } from "./hooks/useToasts";
 import { useFooterLayout } from "./hooks/useFooterLayout";
 import { useCardSearch } from "./hooks/useCardSearch";
 import { useAutoFollowScroll } from "./hooks/useAutoFollowScroll";
+import { useSessions } from "./hooks/useSessions";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -297,10 +298,6 @@ function App() {
   const [sessionTranslationCompleted, setSessionTranslationCompleted] = useState(0);
   
   // Session State
-  const [sessions, setSessions] = useState<SessionMetadata[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [activeSessionName, setActiveSessionName] = useState<string>("");
-  const [activeSessionCreatedAt, setActiveSessionCreatedAt] = useState<number>(0);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -326,7 +323,6 @@ function App() {
   const sessionTranslationTotalRef = useRef(0);
   const sessionTranslationCompletedRef = useRef(0);
   const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeSummaryRequestIdRef = useRef<string | null>(null);
   const summaryTypingQueueRef = useRef("");
   const summaryTypingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -352,9 +348,6 @@ function App() {
   const chatMessagesRef = useRef<AIChatMessage[]>([]);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
   const isRunningRef = useRef<boolean>(false);
-  const activeSessionIdRef = useRef<string | null>(null);
-  const activeSessionNameRef = useRef<string>("");
-  const activeSessionCreatedAtRef = useRef<number>(0);
   const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
 
   const toggleWatcherLabel = isRunning ? t("controls.stop") : t("controls.start");
@@ -381,6 +374,21 @@ function App() {
   } = useAutoFollowScroll({
     contentSignals: [cards, cardsState.indexById, partialText],
   });
+
+  const {
+    sessions,
+    setSessions,
+    refreshSessionList,
+    activeSessionId,
+    activeSessionName,
+    activeSessionCreatedAt,
+    activeSessionIdRef,
+    activeSessionNameRef,
+    activeSessionCreatedAtRef,
+    setActiveSession,
+    clearActiveSession,
+    setActiveSessionName,
+  } = useSessions({ cards });
 
   const stopSummaryTypewriter = () => {
     if (summaryTypingTimerRef.current) {
@@ -916,23 +924,16 @@ function App() {
 
   // --- Session Management ---
 
-  const refreshSessionList = async () => {
-    try {
-      const list = await invoke<SessionMetadata[]>("get_sessions");
-      setSessions(list);
-    } catch (e) {
-      console.error("Failed to load sessions:", e);
-    }
-  };
-
   const handleCreateSession = async (name?: string) => {
     try {
       const sessionName = name || `Session ${new Date().toLocaleString()}`;
       const session = await invoke<Session>("create_session", { name: sessionName });
       await refreshSessionList();
-      setActiveSessionId(session.id);
-      setActiveSessionName(session.name);
-      setActiveSessionCreatedAt(session.created_at);
+      setActiveSession({
+        id: session.id,
+        name: session.name,
+        createdAt: session.created_at,
+      });
       dispatchCards({ type: "reset", cards: [] }); // Clear cards for new session
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(true);
@@ -978,9 +979,11 @@ function App() {
           },
         }).catch(e => console.error("Failed to normalize loaded session:", e));
       }
-      setActiveSessionId(session.id);
-      setActiveSessionName(session.name);
-      setActiveSessionCreatedAt(session.created_at);
+      setActiveSession({
+        id: session.id,
+        name: session.name,
+        createdAt: session.created_at,
+      });
       dispatchCards({ type: "reset", cards: normalized.cards });
       setTempTranslations({}); // Clear temp translations
       setAutoFollow(false); // Don't auto-scroll when loading history
@@ -1004,9 +1007,7 @@ function App() {
       await invoke("delete_session_data", { id });
       await refreshSessionList();
       if (activeSessionId === id) {
-        setActiveSessionId(null);
-        setActiveSessionName("");
-        setActiveSessionCreatedAt(0);
+        clearActiveSession();
         dispatchCards({ type: "reset", cards: [] });
         setTempTranslations({}); // Clear temp translations
         lastProcessedCardRef.current = null;
@@ -1031,9 +1032,7 @@ function App() {
       await refreshSessionList();
       
       // Reset current session state
-      setActiveSessionId(null);
-      setActiveSessionName("");
-      setActiveSessionCreatedAt(0);
+      clearActiveSession();
       dispatchCards({ type: "reset", cards: [] });
       setTempTranslations({});
       lastProcessedCardRef.current = null;
@@ -1069,29 +1068,6 @@ function App() {
       }
   };
 
-  // Auto-save logic
-  useEffect(() => {
-    if (!activeSessionId || !activeSessionCreatedAt) return;
-
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
-
-    saveTimeoutRef.current = setTimeout(() => {
-        const sessionToSave: Session = {
-            id: activeSessionId,
-            name: activeSessionName,
-            created_at: activeSessionCreatedAt,
-            cards: cards
-        };
-        invoke("save_session_data", { session: sessionToSave }).catch(e => console.error("Auto-save failed", e));
-    }, 2000); // 2 seconds debounce
-
-    return () => {
-        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    };
-  }, [cards, activeSessionId, activeSessionName, activeSessionCreatedAt]); // cards dependency triggers save
-
   // --- Effects ---
 
   useEffect(() => {
@@ -1102,12 +1078,6 @@ function App() {
   useEffect(() => {
     isRunningRef.current = isRunning;
   }, [isRunning]);
-
-  useEffect(() => {
-    activeSessionIdRef.current = activeSessionId;
-    activeSessionNameRef.current = activeSessionName;
-    activeSessionCreatedAtRef.current = activeSessionCreatedAt;
-  }, [activeSessionId, activeSessionName, activeSessionCreatedAt]);
 
   useEffect(() => {
     activeChatSessionIdRef.current = activeChatSessionId;
