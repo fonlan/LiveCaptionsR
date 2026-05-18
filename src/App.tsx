@@ -72,6 +72,7 @@ import { useAIChat, buildChatSessionTitleFromQuestion } from "./hooks/useAIChat"
 import { useCaptionVisibility } from "./hooks/useCaptionVisibility";
 import { useSummaryStream } from "./hooks/useSummaryStream";
 import { useCardJump } from "./hooks/useCardJump";
+import { useSessionTranslationProgress } from "./hooks/useSessionTranslationProgress";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -269,9 +270,6 @@ function App() {
   const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
-  const [isSessionTranslating, setIsSessionTranslating] = useState(false);
-  const [sessionTranslationTotal, setSessionTranslationTotal] = useState(0);
-  const [sessionTranslationCompleted, setSessionTranslationCompleted] = useState(0);
   
   // Session State
   const [isRenaming, setIsRenaming] = useState(false);
@@ -300,9 +298,6 @@ function App() {
   const cardsRef = useRef<SentenceCard[]>([]);
   const cardIndexRef = useRef<Record<string, number>>({});
   const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
-  const activeSessionTranslationBatchIdRef = useRef<string | null>(null);
-  const sessionTranslationTotalRef = useRef(0);
-  const sessionTranslationCompletedRef = useRef(0);
   const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
 
   const lastFullTextRef = useRef<string>("");
@@ -497,24 +492,6 @@ function App() {
     recentSentenceSeenAtRef.current.clear();
   };
 
-  const resetSessionTranslationProgress = () => {
-    activeSessionTranslationBatchIdRef.current = null;
-    sessionTranslationTotalRef.current = 0;
-    sessionTranslationCompletedRef.current = 0;
-    setIsSessionTranslating(false);
-    setSessionTranslationTotal(0);
-    setSessionTranslationCompleted(0);
-  };
-
-  const startSessionTranslationProgress = (batchId: string, total: number) => {
-    activeSessionTranslationBatchIdRef.current = batchId;
-    sessionTranslationTotalRef.current = total;
-    sessionTranslationCompletedRef.current = 0;
-    setIsSessionTranslating(total > 0);
-    setSessionTranslationTotal(total);
-    setSessionTranslationCompleted(0);
-  };
-
   const hasPendingLiveTranslations = (): boolean => {
     if (pendingTranslationCardIdRef.current) return true;
 
@@ -659,22 +636,6 @@ function App() {
     });
 
     return { cards, changed };
-  };
-
-  const markSessionTranslationProgressStep = (batchId: string) => {
-    if (activeSessionTranslationBatchIdRef.current !== batchId) return;
-
-    const total = sessionTranslationTotalRef.current;
-    if (total <= 0) return;
-
-    const next = Math.min(total, sessionTranslationCompletedRef.current + 1);
-    sessionTranslationCompletedRef.current = next;
-    setSessionTranslationCompleted(next);
-
-    if (next >= total) {
-      setIsSessionTranslating(false);
-      addToast('success', t("toast.sessionTranslationComplete", { completed: next, total }));
-    }
   };
 
   const {
@@ -1517,6 +1478,16 @@ function App() {
     failSummary: failSummaryStream,
   } = useSummaryStream();
 
+  const {
+    isSessionTranslating,
+    sessionTranslationTotal,
+    sessionTranslationCompleted,
+    sessionTranslationProgressPercent,
+    startSessionTranslationProgress,
+    markSessionTranslationProgressStep,
+    resetSessionTranslationProgress,
+  } = useSessionTranslationProgress({ addToast, t });
+
   const toggleVisibility = async () => {
     if (!isRunning) return;
     try {
@@ -1978,10 +1949,6 @@ function App() {
   const handleWindowClose = () => {
     void runWindowAction(window => window.close());
   };
-
-  const sessionTranslationProgressPercent = sessionTranslationTotal > 0
-    ? Math.round((sessionTranslationCompleted / sessionTranslationTotal) * 100)
-    : 0;
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background font-sans text-text-primary">
