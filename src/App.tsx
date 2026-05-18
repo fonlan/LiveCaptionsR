@@ -71,6 +71,7 @@ import { useSessions } from "./hooks/useSessions";
 import { useAIChat, buildChatSessionTitleFromQuestion } from "./hooks/useAIChat";
 import { useCaptionVisibility } from "./hooks/useCaptionVisibility";
 import { useSummaryStream } from "./hooks/useSummaryStream";
+import { useCardJump } from "./hooks/useCardJump";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -285,7 +286,6 @@ function App() {
   const cards = cardsState.cards;
   const [partialText, setPartialText] = useState<string>("");
   const { toasts, addToast } = useToasts();
-  const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
    
    // Teams Modal State
   const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
@@ -313,8 +313,6 @@ function App() {
   const syncCountRef = useRef<number>(0);
   const isFirstCaptionRef = useRef<boolean>(true);
   const overlayMouseDownRef = useRef<boolean>(false);
-  const chatCardJumpTimerRef = useRef<number | null>(null);
-  const chatCardHighlightClearTimerRef = useRef<number | null>(null);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
   const isRunningRef = useRef<boolean>(false);
   const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
@@ -679,9 +677,18 @@ function App() {
     }
   };
 
-  const clearHighlightedCard = useCallback(() => {
-    setHighlightedCardId(null);
-  }, []);
+  const {
+    highlightedCardId,
+    clearHighlightedCard,
+    setJumpHighlightedCard,
+    jumpToCardByNumber,
+  } = useCardJump({
+    scrollContainerRef,
+    cardsRef,
+    disableAutoFollow,
+    addToast,
+    t,
+  });
 
   const {
     isChatOpen,
@@ -881,17 +888,6 @@ function App() {
   useEffect(() => {
     configRef.current = config;
   }, [config]);
-
-  useEffect(() => {
-    return () => {
-      if (chatCardJumpTimerRef.current !== null) {
-        window.clearTimeout(chatCardJumpTimerRef.current);
-      }
-      if (chatCardHighlightClearTimerRef.current !== null) {
-        window.clearTimeout(chatCardHighlightClearTimerRef.current);
-      }
-    };
-  }, []);
 
   const clampChatSidebarWidth = useCallback((value: number): number => {
     const viewportMax = Math.floor(window.innerWidth * 0.85);
@@ -1697,140 +1693,6 @@ function App() {
         timestamp: card.timestamp,
       }));
   };
-
-  const setJumpHighlightedCard = (cardId: string) => {
-    setHighlightedCardId(cardId);
-    if (chatCardHighlightClearTimerRef.current !== null) {
-      window.clearTimeout(chatCardHighlightClearTimerRef.current);
-    }
-    chatCardHighlightClearTimerRef.current = window.setTimeout(() => {
-      setHighlightedCardId(prev => (prev === cardId ? null : prev));
-      chatCardHighlightClearTimerRef.current = null;
-    }, 1800);
-  };
-
-  const clampCardJumpScrollTop = (container: HTMLDivElement, top: number): number => {
-    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    return Math.max(0, Math.min(maxScrollTop, Math.round(top)));
-  };
-
-  const estimateCardJumpScrollTop = (
-    container: HTMLDivElement,
-    targetIndex: number,
-    totalCards: number,
-  ): number => {
-    if (totalCards <= 1) return 0;
-    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    const ratio = targetIndex / Math.max(1, totalCards - 1);
-    return clampCardJumpScrollTop(container, maxScrollTop * ratio - container.clientHeight * 0.45);
-  };
-
-  const collectRenderedCardEntries = (container: HTMLDivElement): Array<{ number: number; element: HTMLElement }> => {
-    return Array.from(container.querySelectorAll<HTMLElement>("[data-card-number]"))
-      .map(element => ({
-        number: Number.parseInt(element.dataset.cardNumber ?? "", 10),
-        element,
-      }))
-      .filter(item => Number.isFinite(item.number) && item.number > 0)
-      .sort((a, b) => a.number - b.number);
-  };
-
-  const triggerCardJumpAnimation = (node: HTMLElement) => {
-    node.classList.remove("chat-card-jump-anim");
-    void node.offsetWidth;
-    node.classList.add("chat-card-jump-anim");
-    window.setTimeout(() => {
-      node.classList.remove("chat-card-jump-anim");
-    }, 1100);
-  };
-
-  const jumpToCardByNumber = useCallback((cardNumber: number) => {
-    if (!Number.isInteger(cardNumber) || cardNumber <= 0) {
-      return false;
-    }
-
-    const targetIndex = cardNumber - 1;
-    const targetCard = cardsRef.current[targetIndex];
-    if (!targetCard) {
-      addToast("error", t("chat.cardNotFound", { number: cardNumber }));
-      return false;
-    }
-
-    const container = scrollContainerRef.current;
-    if (!container) {
-      return false;
-    }
-
-    if (chatCardJumpTimerRef.current !== null) {
-      window.clearTimeout(chatCardJumpTimerRef.current);
-      chatCardJumpTimerRef.current = null;
-    }
-
-    disableAutoFollow();
-
-    const totalCards = cardsRef.current.length;
-    const maxAttempts = 48;
-    const targetScrollTop = estimateCardJumpScrollTop(container, targetIndex, totalCards);
-    container.scrollTo({ top: targetScrollTop, behavior: "auto" });
-
-    const locateAndScroll = (attempt: number) => {
-      const node = container.querySelector<HTMLElement>(`[data-card-number="${cardNumber}"]`);
-      if (node) {
-        node.scrollIntoView({ behavior: "smooth", block: "center" });
-        triggerCardJumpAnimation(node);
-        setJumpHighlightedCard(targetCard.id);
-        return;
-      }
-
-      if (attempt >= maxAttempts) {
-        addToast("error", t("chat.cardJumpFailed", { number: cardNumber }));
-        return;
-      }
-
-      const renderedEntries = collectRenderedCardEntries(container);
-
-      if (renderedEntries.length === 0) {
-        container.scrollTo({
-          top: estimateCardJumpScrollTop(container, targetIndex, totalCards),
-          behavior: "auto",
-        });
-      } else {
-        const firstVisible = renderedEntries[0];
-        const lastVisible = renderedEntries[renderedEntries.length - 1];
-        const minVisible = firstVisible.number;
-        const maxVisible = lastVisible.number;
-
-        if (cardNumber < minVisible) {
-          const estimated = estimateCardJumpScrollTop(container, targetIndex, totalCards);
-          const nextTop = container.scrollTop - Math.max(240, Math.abs(container.scrollTop - estimated) * 0.7);
-          container.scrollTo({ top: clampCardJumpScrollTop(container, nextTop), behavior: "auto" });
-        } else if (cardNumber > maxVisible) {
-          const estimated = estimateCardJumpScrollTop(container, targetIndex, totalCards);
-          const nextTop = container.scrollTop + Math.max(240, Math.abs(estimated - container.scrollTop) * 0.7);
-          container.scrollTo({ top: clampCardJumpScrollTop(container, nextTop), behavior: "auto" });
-        } else {
-          const cardSpan = Math.max(1, lastVisible.number - firstVisible.number);
-          const pixelSpan = Math.max(1, lastVisible.element.offsetTop - firstVisible.element.offsetTop);
-          const pixelsPerCard = pixelSpan / cardSpan;
-          const estimatedOffsetTop =
-            firstVisible.element.offsetTop + (cardNumber - firstVisible.number) * pixelsPerCard;
-          const desiredTop = estimatedOffsetTop - container.clientHeight * 0.45;
-          container.scrollTo({
-            top: clampCardJumpScrollTop(container, desiredTop),
-            behavior: "auto",
-          });
-        }
-      }
-
-      chatCardJumpTimerRef.current = window.setTimeout(() => {
-        chatCardJumpTimerRef.current = null;
-        locateAndScroll(attempt + 1);
-      }, 24);
-    };
-
-    locateAndScroll(0);
-    return true;
-  }, [addToast, t]);
 
   const handleChatCardReferenceClick = (cardNumber: number) => {
     jumpToCardByNumber(cardNumber);
