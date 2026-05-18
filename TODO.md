@@ -87,11 +87,14 @@
   - [x] 新建 `src/hooks/useSessionTranslationProgress.ts`：批量翻译进度 + percent memo + 完成 toast
   - [x] 新建 `src/hooks/useWindowActions.ts`：titlebar 最小化/最大化/关闭
   - [x] 新建 `src/hooks/useChatActions.ts`：handleSend/Stop/StartNew/Select 聊天交互
+  - [x] 新建 `src/hooks/useAppStartup.ts`：mount-time bootstrap（version / config / watcher / sessions）+ startup metric
+  - [x] 新建 `src/hooks/useDocumentChrome.ts`：data-theme / --app-opacity / prod contextmenu 抑制
+  - [x] 新建 `src/hooks/useSidebarResize.ts`：单 sidebar 拖拽调宽（width 状态 + mousemove/mouseup effect + body cursor 覆盖；clamp 由 caller 提供以处理跨 sidebar 联动）
   - [ ] 新建 `src/hooks/useCaptionStream.ts`：字幕事件订阅 + cards reducer + partial text *(待后续 PR — 与 translation 请求管理 + translateAndDisplay 深度耦合)*
   - [x] 每个 hook 单独导出明确的 API（state + actions），refs 仅在必须时外泄并标注用途
 - **Done When**：
-  - [ ] `App.tsx` ≤ 800 行（当前 2233 行；P0-5 落地降幅约 ~620 行，剩余主要为 caption pipeline + 翻译请求管理）
-  - [x] `src/hooks/` 至少 6 个文件（当前 12 个）
+  - [ ] `App.tsx` ≤ 800 行（当前 2111 行；P0-5 落地降幅约 ~750 行，剩余主要为 caption pipeline + 翻译请求管理）
+  - [x] `src/hooks/` 至少 6 个文件（当前 15 个）
   - [x] `npx tsc --noEmit` 通过
   - [ ] UI 行为回归通过（启动监听、翻译、聊天、Teams 切换、会话切换、自动滚动）*(待人工回归)*
 
