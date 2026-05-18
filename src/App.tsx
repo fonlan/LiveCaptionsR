@@ -70,6 +70,7 @@ import { useAutoFollowScroll } from "./hooks/useAutoFollowScroll";
 import { useSessions } from "./hooks/useSessions";
 import { useAIChat, buildChatSessionTitleFromQuestion } from "./hooks/useAIChat";
 import { useCaptionVisibility } from "./hooks/useCaptionVisibility";
+import { useSummaryStream } from "./hooks/useSummaryStream";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -78,8 +79,6 @@ const MAX_TRANSLATION_BATCH_SIZE = 10;
 const RECENT_SENTENCE_DEDUP_WINDOW_MS = 45_000;
 const RECENT_SENTENCE_MAX_TRACKED = 800;
 const RECENT_SENTENCE_MIN_LENGTH = 8;
-const SUMMARY_TYPEWRITER_INTERVAL_MS = 16;
-const SUMMARY_TYPEWRITER_CHARS_PER_TICK = 3;
 const SESSION_SIDEBAR_MIN_MAIN_WIDTH = 360;
 const CHAT_SIDEBAR_DEFAULT_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
 const CHAT_SIDEBAR_MIN_WIDTH = SESSION_SIDEBAR_DEFAULT_WIDTH;
@@ -119,14 +118,6 @@ type TranslationResultEvent = {
   status: TranslationStatus | 'error';
   error?: string | null;
   is_retry: boolean;
-};
-
-type SummaryStreamEvent = {
-  request_id: string;
-  status: 'chunk' | 'done' | 'error';
-  chunk?: string | null;
-  full_text?: string | null;
-  error?: string | null;
 };
 
 type CaptionChatCardInput = {
@@ -274,8 +265,6 @@ function App() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
-  const [summaryText, setSummaryText] = useState<string>("");
-  const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
@@ -315,11 +304,6 @@ function App() {
   const sessionTranslationTotalRef = useRef(0);
   const sessionTranslationCompletedRef = useRef(0);
   const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
-  const activeSummaryRequestIdRef = useRef<string | null>(null);
-  const summaryTypingQueueRef = useRef("");
-  const summaryTypingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const summaryStreamDoneRef = useRef(false);
-  const summaryFinalTextRef = useRef("");
 
   const lastFullTextRef = useRef<string>("");
   const lastProcessedCardRef = useRef<SentenceCard | null>(null);
@@ -374,53 +358,6 @@ function App() {
     clearActiveSession,
     setActiveSessionName,
   } = useSessions({ cards });
-
-  const stopSummaryTypewriter = () => {
-    if (summaryTypingTimerRef.current) {
-      clearInterval(summaryTypingTimerRef.current);
-      summaryTypingTimerRef.current = null;
-    }
-  };
-
-  const finishSummaryStreamIfReady = () => {
-    if (!summaryStreamDoneRef.current || summaryTypingQueueRef.current.length > 0) {
-      return;
-    }
-
-    stopSummaryTypewriter();
-    activeSummaryRequestIdRef.current = null;
-    const finalText = summaryFinalTextRef.current;
-    setSummaryText(currentText => {
-      if (currentText !== finalText) {
-        return finalText;
-      }
-      return currentText;
-    });
-    setIsSummarizing(false);
-  };
-
-  const ensureSummaryTypewriterRunning = () => {
-    if (summaryTypingTimerRef.current) {
-      return;
-    }
-
-    summaryTypingTimerRef.current = setInterval(() => {
-      const queue = summaryTypingQueueRef.current;
-      if (queue.length === 0) {
-        finishSummaryStreamIfReady();
-        return;
-      }
-
-      const take = Math.min(SUMMARY_TYPEWRITER_CHARS_PER_TICK, queue.length);
-      const nextChunk = queue.slice(0, take);
-      summaryTypingQueueRef.current = queue.slice(take);
-      setSummaryText(prev => prev + nextChunk);
-
-      if (summaryTypingQueueRef.current.length === 0) {
-        finishSummaryStreamIfReady();
-      }
-    }, SUMMARY_TYPEWRITER_INTERVAL_MS);
-  };
 
   const clearPendingSessionRequests = () => {
     const filtered: Record<string, PendingTranslationRequest> = {};
@@ -1456,41 +1393,6 @@ function App() {
       }
     });
 
-    const unlistenSummaryStream = listen<SummaryStreamEvent>("summary-stream", (event) => {
-      const payload = event.payload;
-      if (!activeSummaryRequestIdRef.current || payload.request_id !== activeSummaryRequestIdRef.current) {
-        return;
-      }
-
-      if (payload.status === 'chunk') {
-        if (payload.chunk) {
-          summaryTypingQueueRef.current += payload.chunk;
-          ensureSummaryTypewriterRunning();
-        }
-        return;
-      }
-
-      if (payload.status === 'done') {
-        summaryFinalTextRef.current = payload.full_text ?? summaryFinalTextRef.current;
-        summaryStreamDoneRef.current = true;
-        finishSummaryStreamIfReady();
-        return;
-      }
-
-      if (payload.status === 'error') {
-        stopSummaryTypewriter();
-        summaryTypingQueueRef.current = "";
-        summaryStreamDoneRef.current = true;
-        activeSummaryRequestIdRef.current = null;
-        const errorMessage = payload.error
-          ? `Error generating summary: ${payload.error}`
-          : "Error generating summary";
-        summaryFinalTextRef.current = errorMessage;
-        setSummaryText(errorMessage);
-        setIsSummarizing(false);
-      }
-    });
-
     const unlistenRaw = listen<RawCaption>("caption-raw", async (event) => {
       const fullText = event.payload.text;
       const user = event.payload.user;
@@ -1602,22 +1504,22 @@ function App() {
 
     return () => {
       unlistenTranslationResult.then(f => f());
-      unlistenSummaryStream.then(f => f());
       unlistenRaw.then(f => f());
       unlistenStatus.then(f => f());
       unlistenError.then(f => f());
     };
   }, []);
 
-  useEffect(() => {
-    return () => {
-      stopSummaryTypewriter();
-    };
-  }, []);
-
   const { isWindowVisible } = useCaptionVisibility({
     hideSystemWindow: config.hide_system_window ?? false,
   });
+
+  const {
+    summaryText,
+    isSummarizing,
+    beginSummary,
+    failSummary: failSummaryStream,
+  } = useSummaryStream();
 
   const toggleVisibility = async () => {
     if (!isRunning) return;
@@ -1734,14 +1636,7 @@ function App() {
 
     if (cards.length === 0 || !activeSessionId || !activeSessionCreatedAt) return;
     setIsSummaryOpen(true);
-    setIsSummarizing(true);
-    setSummaryText("");
-    stopSummaryTypewriter();
-    summaryTypingQueueRef.current = "";
-    summaryStreamDoneRef.current = false;
-    summaryFinalTextRef.current = "";
-    const requestId = generateId();
-    activeSummaryRequestIdRef.current = requestId;
+    const requestId = beginSummary();
 
     try {
       const sessionToSave: Session = {
@@ -1760,13 +1655,7 @@ function App() {
       });
     } catch (err) {
       console.error("Summary error:", err);
-      activeSummaryRequestIdRef.current = null;
-      summaryTypingQueueRef.current = "";
-      summaryFinalTextRef.current = "";
-      summaryStreamDoneRef.current = true;
-      stopSummaryTypewriter();
-      setSummaryText(`Error generating summary: ${err}`);
-      setIsSummarizing(false);
+      failSummaryStream(`Error generating summary: ${err}`);
     }
   };
 
