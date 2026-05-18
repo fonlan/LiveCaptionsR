@@ -82,11 +82,16 @@
   - [x] 新建 `src/hooks/useSessions.ts`：会话列表 + active triple + refs + 自动保存 debounce
   - [x] 新建 `src/hooks/useAIChat.ts`：聊天数据层（会话/消息/refs/存储助手 + clearChatSessionState）
   - [x] 新建 `src/hooks/useCaptionVisibility.ts`：caption 源窗口可见性 + `caption-visibility` 监听
-  - [ ] 新建 `src/hooks/useCaptionStream.ts`：字幕事件订阅 + cards reducer + partial text *(待后续 PR — 与 translation 请求管理高度耦合)*
+  - [x] 新建 `src/hooks/useSummaryStream.ts`：streamed summary state + typewriter + `summary-stream` 监听
+  - [x] 新建 `src/hooks/useCardJump.ts`：jumpToCardByNumber + highlight + scroll-into-view loop
+  - [x] 新建 `src/hooks/useSessionTranslationProgress.ts`：批量翻译进度 + percent memo + 完成 toast
+  - [x] 新建 `src/hooks/useWindowActions.ts`：titlebar 最小化/最大化/关闭
+  - [x] 新建 `src/hooks/useChatActions.ts`：handleSend/Stop/StartNew/Select 聊天交互
+  - [ ] 新建 `src/hooks/useCaptionStream.ts`：字幕事件订阅 + cards reducer + partial text *(待后续 PR — 与 translation 请求管理 + translateAndDisplay 深度耦合)*
   - [x] 每个 hook 单独导出明确的 API（state + actions），refs 仅在必须时外泄并标注用途
 - **Done When**：
-  - [ ] `App.tsx` ≤ 800 行（当前 2640 行；P0-5 落地降幅约 230 行，待 useCaptionStream + 拆 send/streaming 进一步降低）
-  - [x] `src/hooks/` 至少 6 个文件（当前 7 个）
+  - [ ] `App.tsx` ≤ 800 行（当前 2233 行；P0-5 落地降幅约 ~620 行，剩余主要为 caption pipeline + 翻译请求管理）
+  - [x] `src/hooks/` 至少 6 个文件（当前 12 个）
   - [x] `npx tsc --noEmit` 通过
   - [ ] UI 行为回归通过（启动监听、翻译、聊天、Teams 切换、会话切换、自动滚动）*(待人工回归)*
 

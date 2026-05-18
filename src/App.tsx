@@ -10,7 +10,6 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
-import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import "./App.css";
@@ -19,13 +18,9 @@ import {
   AppConfig, 
   CaptionChatCardInput,
   DEFAULT_CONFIG, 
-  DEFAULT_PROXY,
-  DEFAULT_SUMMARY_PROMPT,
-  DEFAULT_TRANSLATION_PROMPT,
   RawCaption, 
   SentenceCard, 
   Session, 
-  SessionMetadata, 
   TeamsWindowInfo,
   TranslationStatus,
 } from "./types";
@@ -74,6 +69,7 @@ import { useCardJump } from "./hooks/useCardJump";
 import { useSessionTranslationProgress } from "./hooks/useSessionTranslationProgress";
 import { useWindowActions } from "./hooks/useWindowActions";
 import { useChatActions } from "./hooks/useChatActions";
+import { useAppStartup } from "./hooks/useAppStartup";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -260,9 +256,9 @@ function App() {
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [status, setStatus] = useState<string>(t("status.ready"));
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [appVersion, setAppVersion] = useState<string>("");
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
-  const [appVersion, setAppVersion] = useState<string>("");
   const [isTranslateModalOpen, setIsTranslateModalOpen] = useState<boolean>(false);
   const [tempTranslations, setTempTranslations] = useState<Record<string, { translated: string; status: TranslationStatus }>>({});
   
@@ -941,85 +937,14 @@ function App() {
     };
   }, [isChatSidebarResizing]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function init() {
-      const frontendInitBegin = performance.now();
-      const bootMark = (window as Window & { __LCR_BOOT_TS__?: number }).__LCR_BOOT_TS__;
-      const webviewBootMs =
-        typeof bootMark === "number" && Number.isFinite(bootMark)
-          ? Math.max(0, Math.round(frontendInitBegin - bootMark))
-          : null;
-      const [versionResult, configResult, runningResult, sessionsResult] = await Promise.allSettled([
-        getVersion(),
-        invoke<AppConfig>("get_config"),
-        invoke<boolean>("is_watcher_running"),
-        invoke<SessionMetadata[]>("get_sessions"),
-      ]);
-
-      if (cancelled) {
-        return;
-      }
-
-      if (versionResult.status === "fulfilled") {
-        setAppVersion(versionResult.value);
-      } else {
-        console.error("Failed to load app version:", versionResult.reason);
-      }
-
-      if (configResult.status === "fulfilled") {
-        const savedConfig = configResult.value;
-        setConfig({
-          ...DEFAULT_CONFIG,
-          ...savedConfig,
-          summary_prompt: savedConfig.summary_prompt || DEFAULT_SUMMARY_PROMPT, // Ensure default prompt if empty
-          translation_prompt: savedConfig.translation_prompt ?? DEFAULT_TRANSLATION_PROMPT,
-          google_proxy: savedConfig.google_proxy || DEFAULT_PROXY,
-          microsoft_proxy: savedConfig.microsoft_proxy || DEFAULT_PROXY,
-        });
-      } else {
-        console.error("Failed to load config:", configResult.reason);
-      }
-
-      if (runningResult.status === "fulfilled") {
-        const running = runningResult.value;
-        setIsRunning(running);
-        isRunningRef.current = running;
-        if (running) setStatus("Running");
-      } else {
-        console.error("Failed to query watcher status:", runningResult.reason);
-      }
-
-      if (sessionsResult.status === "fulfilled") {
-        setSessions(sessionsResult.value);
-      } else {
-        console.error("Failed to load sessions:", sessionsResult.reason);
-      }
-
-      const frontendInitMs = Math.max(0, Math.round(performance.now() - frontendInitBegin));
-      const perceivedStartupMs = frontendInitMs + (webviewBootMs ?? 0);
-      console.info(
-        `[startup] frontend init completed in ${frontendInitMs}ms (webview_boot_ms=${webviewBootMs ?? "unknown"}, perceived_startup_ms=${perceivedStartupMs})`,
-      );
-      void invoke("log_startup_metric", {
-        frontendInitMs,
-        webviewBootMs,
-        initSource: "frontend",
-        configLoaded: configResult.status === "fulfilled",
-        sessionsLoaded: sessionsResult.status === "fulfilled",
-        watcherStateLoaded: runningResult.status === "fulfilled",
-      }).catch(err => {
-        console.warn("Failed to report startup metric:", err);
-      });
-    }
-
-    void init();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  useAppStartup({
+    setAppVersion,
+    setConfig,
+    setIsRunning,
+    setStatus,
+    setSessions,
+    isRunningRef,
+  });
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', config.theme || 'dark');
