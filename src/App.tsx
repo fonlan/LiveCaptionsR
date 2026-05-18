@@ -71,6 +71,7 @@ import { useWindowActions } from "./hooks/useWindowActions";
 import { useChatActions } from "./hooks/useChatActions";
 import { useAppStartup } from "./hooks/useAppStartup";
 import { useDocumentChrome } from "./hooks/useDocumentChrome";
+import { useSidebarResize } from "./hooks/useSidebarResize";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -267,10 +268,6 @@ function App() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [sessionSidebarWidth, setSessionSidebarWidth] = useState<number>(SESSION_SIDEBAR_DEFAULT_WIDTH);
-  const [isSessionSidebarResizing, setIsSessionSidebarResizing] = useState<boolean>(false);
-  const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
-  const [isChatSidebarResizing, setIsChatSidebarResizing] = useState<boolean>(false);
 
   const [cardsState, dispatchCards] = useReducer(cardsReducer, EMPTY_CARDS_STATE);
   const cards = cardsState.cards;
@@ -285,8 +282,6 @@ function App() {
   const [authChannelId, setAuthChannelId] = useState<string | null>(null);
 
   const historyEndRef = useRef<HTMLDivElement>(null);
-  const sessionSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const cardsRef = useRef<SentenceCard[]>([]);
   const cardIndexRef = useRef<Record<string, number>>({});
   const pendingTranslationRequestsRef = useRef<Record<string, PendingTranslationRequest>>({});
@@ -842,9 +837,18 @@ function App() {
     configRef.current = config;
   }, [config]);
 
+  // The two sidebars constrain each other (e.g. growing the session
+  // sidebar shrinks the chat sidebar's max), so each clamp needs to
+  // read the *current* width of the other sidebar. We thread that via
+  // refs so the clamp callbacks themselves can keep stable identities,
+  // and so we don't have to fight declaration ordering between the
+  // clamps and the useSidebarResize calls below.
+  const sessionSidebarWidthRef = useRef<number>(SESSION_SIDEBAR_DEFAULT_WIDTH);
+  const chatSidebarWidthRef = useRef<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
+
   const clampChatSidebarWidth = useCallback((value: number): number => {
     const viewportMax = Math.floor(window.innerWidth * 0.85);
-    const occupiedSessionSidebarWidth = isSidebarOpen ? sessionSidebarWidth : 0;
+    const occupiedSessionSidebarWidth = isSidebarOpen ? sessionSidebarWidthRef.current : 0;
     const layoutMax = Math.max(
       0,
       Math.floor(window.innerWidth - occupiedSessionSidebarWidth - SESSION_SIDEBAR_MIN_MAIN_WIDTH),
@@ -853,22 +857,60 @@ function App() {
     const minWidth = Math.min(CHAT_SIDEBAR_MIN_WIDTH, maxWidth);
 
     return Math.max(minWidth, Math.min(maxWidth, Math.round(value)));
-  }, [isSidebarOpen, sessionSidebarWidth]);
+  }, [isSidebarOpen]);
 
   const clampSessionSidebarWidth = useCallback((value: number): number => {
-    const availableWidth = window.innerWidth - (isChatOpen ? chatSidebarWidth : 0) - SESSION_SIDEBAR_MIN_MAIN_WIDTH;
+    const availableWidth =
+      window.innerWidth -
+      (isChatOpen ? chatSidebarWidthRef.current : 0) -
+      SESSION_SIDEBAR_MIN_MAIN_WIDTH;
     const maxWidth = Math.max(
       SESSION_SIDEBAR_MIN_WIDTH,
       Math.min(SESSION_SIDEBAR_MAX_WIDTH, Math.floor(availableWidth)),
     );
 
     return Math.max(SESSION_SIDEBAR_MIN_WIDTH, Math.min(maxWidth, Math.round(value)));
-  }, [chatSidebarWidth, isChatOpen]);
+  }, [isChatOpen]);
+
+  const {
+    width: sessionSidebarWidth,
+    setWidth: setSessionSidebarWidth,
+    isResizing: isSessionSidebarResizing,
+    handleResizeStart: handleSessionSidebarResizeStart,
+  } = useSidebarResize({
+    defaultWidth: SESSION_SIDEBAR_DEFAULT_WIDTH,
+    clamp: clampSessionSidebarWidth,
+    deltaSign: 1,
+  });
+
+  const {
+    width: chatSidebarWidth,
+    setWidth: setChatSidebarWidth,
+    handleResizeStart: handleChatSidebarResizeStart,
+  } = useSidebarResize({
+    defaultWidth: CHAT_SIDEBAR_DEFAULT_WIDTH,
+    clamp: clampChatSidebarWidth,
+    deltaSign: -1,
+  });
 
   useEffect(() => {
-    setSessionSidebarWidth(prev => clampSessionSidebarWidth(prev));
-  }, [clampSessionSidebarWidth]);
+    sessionSidebarWidthRef.current = sessionSidebarWidth;
+  }, [sessionSidebarWidth]);
 
+  useEffect(() => {
+    chatSidebarWidthRef.current = chatSidebarWidth;
+  }, [chatSidebarWidth]);
+
+  // Re-clamp the session sidebar whenever the chat sidebar's geometry
+  // changes (its max width depends on the chat sidebar). The clamp
+  // reads chatSidebarWidthRef internally, so we trigger this manually
+  // on chatSidebarWidth/isChatOpen changes instead of routing them
+  // through the clamp's dependency identity.
+  useEffect(() => {
+    setSessionSidebarWidth(prev => clampSessionSidebarWidth(prev));
+  }, [chatSidebarWidth, clampSessionSidebarWidth, setSessionSidebarWidth]);
+
+  // Re-clamp both sidebars whenever the window itself resizes.
   useEffect(() => {
     const handleWindowResize = () => {
       setSessionSidebarWidth(prev => clampSessionSidebarWidth(prev));
@@ -880,63 +922,12 @@ function App() {
     return () => {
       window.removeEventListener("resize", handleWindowResize);
     };
-  }, [clampChatSidebarWidth, clampSessionSidebarWidth]);
-
-  useEffect(() => {
-    if (!isSessionSidebarResizing) return;
-
-    const handleMouseMove = (event: MouseEvent) => {
-      const resizeState = sessionSidebarResizeRef.current;
-      if (!resizeState) return;
-      const deltaX = event.clientX - resizeState.startX;
-      setSessionSidebarWidth(clampSessionSidebarWidth(resizeState.startWidth + deltaX));
-    };
-
-    const handleMouseUp = () => {
-      setIsSessionSidebarResizing(false);
-      sessionSidebarResizeRef.current = null;
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-  }, [clampSessionSidebarWidth, isSessionSidebarResizing]);
-
-  useEffect(() => {
-    if (!isChatSidebarResizing) return;
-
-    const handleMouseMove = (event: MouseEvent) => {
-      const resizeState = chatSidebarResizeRef.current;
-      if (!resizeState) return;
-      const deltaX = resizeState.startX - event.clientX;
-      setChatSidebarWidth(clampChatSidebarWidth(resizeState.startWidth + deltaX));
-    };
-
-    const handleMouseUp = () => {
-      setIsChatSidebarResizing(false);
-      chatSidebarResizeRef.current = null;
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-  }, [isChatSidebarResizing]);
+  }, [
+    clampChatSidebarWidth,
+    clampSessionSidebarWidth,
+    setChatSidebarWidth,
+    setSessionSidebarWidth,
+  ]);
 
   useAppStartup({
     setAppVersion,
@@ -1537,24 +1528,6 @@ function App() {
     if (!model) return modelId;
     const channel = config.ai_channels.find(item => item.id === model.channel_id);
     return `${model.name} (${channel?.name || 'Unknown'})`;
-  };
-
-  const handleSessionSidebarResizeStart = (event: ReactMouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    sessionSidebarResizeRef.current = {
-      startX: event.clientX,
-      startWidth: sessionSidebarWidth,
-    };
-    setIsSessionSidebarResizing(true);
-  };
-
-  const handleChatSidebarResizeStart = (event: ReactMouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    chatSidebarResizeRef.current = {
-      startX: event.clientX,
-      startWidth: chatSidebarWidth,
-    };
-    setIsChatSidebarResizing(true);
   };
 
   const preloadChatSidebar = useCallback(() => {
