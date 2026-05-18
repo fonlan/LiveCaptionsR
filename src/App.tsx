@@ -70,6 +70,7 @@ import { useSessionTranslationProgress } from "./hooks/useSessionTranslationProg
 import { useWindowActions } from "./hooks/useWindowActions";
 import { useChatActions } from "./hooks/useChatActions";
 import { useAppStartup } from "./hooks/useAppStartup";
+import { useDocumentChrome } from "./hooks/useDocumentChrome";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -946,28 +947,7 @@ function App() {
     isRunningRef,
   });
 
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', config.theme || 'dark');
-  }, [config.theme]);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty('--app-opacity', (config.opacity ?? 1.0).toString());
-  }, [config.opacity]);
-
-  // Disable Context Menu in Production
-  useEffect(() => {
-    if (import.meta.env.PROD) {
-      const handleContextMenu = (e: MouseEvent) => {
-        e.preventDefault();
-      };
-      
-      document.addEventListener('contextmenu', handleContextMenu);
-
-      return () => {
-        document.removeEventListener('contextmenu', handleContextMenu);
-      };
-    }
-  }, []);
+  useDocumentChrome({ theme: config.theme, opacity: config.opacity });
 
   // --- Logic ---
 
