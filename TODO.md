@@ -71,23 +71,24 @@
 
 ---
 
-### [ ] 5. 拆分 `App.tsx`（God Component，3188 行）— 部分进行中
+### [~] 5. 拆分 `App.tsx`（God Component） — 已大幅推进
 - **位置**：`src/App.tsx`
 - **问题**：49 `useState` + 1 `useReducer` + 51 `useRef` + 30 `useEffect`，业务边界模糊；`src/hooks/` 目录为空。
-- **行动**（建议每个 hook 一个独立 PR）：
-  - [ ] 新建 `src/hooks/useSessions.ts`：会话列表/重命名/自动保存 debounce
-  - [ ] 新建 `src/hooks/useCaptionStream.ts`：字幕事件订阅 + cards reducer + partial text
-  - [ ] 新建 `src/hooks/useAIChat.ts`：聊天会话状态/消息发送
-  - [ ] 新建 `src/hooks/useAutoFollowScroll.ts`：自动滚动 + RAF 节流
-  - [ ] 新建 `src/hooks/useFooterLayout.ts`：footer 自适应 / `ResizeObserver`
-  - [x] 新建 `src/hooks/useToasts.ts`：toast 状态机（已完成，作为后续 hook 提取的模板）
-  - [ ] 新建 `src/hooks/useCardSearch.ts`：卡片搜索 + matches memo
-  - [ ] 每个 hook 单独导出明确的 API（state + actions），避免外泄 ref
+- **行动**（每个 hook 一个独立 PR，已落地的 hook 见下）：
+  - [x] 新建 `src/hooks/useToasts.ts`：toast 状态机（首发模板）
+  - [x] 新建 `src/hooks/useFooterLayout.ts`：footer 自适应 / `ResizeObserver`
+  - [x] 新建 `src/hooks/useCardSearch.ts`：卡片搜索 + matches memo + 全局快捷键
+  - [x] 新建 `src/hooks/useAutoFollowScroll.ts`：scroll container ref + auto-follow 状态机 + rAF 节流
+  - [x] 新建 `src/hooks/useSessions.ts`：会话列表 + active triple + refs + 自动保存 debounce
+  - [x] 新建 `src/hooks/useAIChat.ts`：聊天数据层（会话/消息/refs/存储助手 + clearChatSessionState）
+  - [x] 新建 `src/hooks/useCaptionVisibility.ts`：caption 源窗口可见性 + `caption-visibility` 监听
+  - [ ] 新建 `src/hooks/useCaptionStream.ts`：字幕事件订阅 + cards reducer + partial text *(待后续 PR — 与 translation 请求管理高度耦合)*
+  - [x] 每个 hook 单独导出明确的 API（state + actions），refs 仅在必须时外泄并标注用途
 - **Done When**：
-  - [ ] `App.tsx` ≤ 800 行（当前 ≈ 2800 行）
-  - [ ] `src/hooks/` 至少 6 个文件（当前 1 个）
+  - [ ] `App.tsx` ≤ 800 行（当前 2640 行；P0-5 落地降幅约 230 行，待 useCaptionStream + 拆 send/streaming 进一步降低）
+  - [x] `src/hooks/` 至少 6 个文件（当前 7 个）
   - [x] `npx tsc --noEmit` 通过
-  - [ ] UI 行为回归通过（启动监听、翻译、聊天、Teams 切换、会话切换、自动滚动）*(待后续 PR + 人工回归)*
+  - [ ] UI 行为回归通过（启动监听、翻译、聊天、Teams 切换、会话切换、自动滚动）*(待人工回归)*
 
 ---
 
