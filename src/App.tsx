@@ -18,8 +18,6 @@ import "./App.css";
 import "./App.legacy.css";
 import { 
   AIChatMessage,
-  AIChatSession,
-  AIChatSessionMetadata,
   AppConfig, 
   DEFAULT_CONFIG, 
   DEFAULT_PROXY,
@@ -70,6 +68,7 @@ import { useFooterLayout } from "./hooks/useFooterLayout";
 import { useCardSearch } from "./hooks/useCardSearch";
 import { useAutoFollowScroll } from "./hooks/useAutoFollowScroll";
 import { useSessions } from "./hooks/useSessions";
+import { useAIChat, buildChatSessionTitleFromQuestion } from "./hooks/useAIChat";
 
 // --- Constants ---
 const MAX_IDLE_INTERVAL = 10;
@@ -277,15 +276,6 @@ function App() {
   const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(false);
   const [summaryText, setSummaryText] = useState<string>("");
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
-  const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
-  const [chatMessages, setChatMessages] = useState<AIChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState<string>("");
-  const [chatModelId, setChatModelId] = useState<string>("");
-  const [isChatSending, setIsChatSending] = useState<boolean>(false);
-  const [chatSessions, setChatSessions] = useState<AIChatSessionMetadata[]>([]);
-  const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
-  const [activeChatSessionName, setActiveChatSessionName] = useState<string>("");
-  const [activeChatSessionCreatedAt, setActiveChatSessionCreatedAt] = useState<number>(0);
   const [sessionSidebarWidth, setSessionSidebarWidth] = useState<number>(SESSION_SIDEBAR_DEFAULT_WIDTH);
   const [isSessionSidebarResizing, setIsSessionSidebarResizing] = useState<boolean>(false);
   const [chatSidebarWidth, setChatSidebarWidth] = useState<number>(CHAT_SIDEBAR_DEFAULT_WIDTH);
@@ -341,11 +331,6 @@ function App() {
   const chatSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const chatCardJumpTimerRef = useRef<number | null>(null);
   const chatCardHighlightClearTimerRef = useRef<number | null>(null);
-  const chatActiveRequestIdRef = useRef<string | null>(null);
-  const activeChatSessionIdRef = useRef<string | null>(null);
-  const activeChatSessionNameRef = useRef<string>("");
-  const activeChatSessionCreatedAtRef = useRef<number>(0);
-  const chatMessagesRef = useRef<AIChatMessage[]>([]);
   const recentSentenceSeenAtRef = useRef<Map<string, number>>(new Map());
   const isRunningRef = useRef<boolean>(false);
   const stopFinalizeInFlightRef = useRef<Promise<void> | null>(null);
@@ -757,170 +742,40 @@ function App() {
     }
   };
 
-  const formatChatSessionTimestamp = (timestampSec: number): string => {
-    const date = new Date(timestampSec * 1000);
-    const pad = (value: number): string => String(value).padStart(2, "0");
-    const year = date.getFullYear();
-    const month = pad(date.getMonth() + 1);
-    const day = pad(date.getDate());
-    const hours = pad(date.getHours());
-    const minutes = pad(date.getMinutes());
-    return `${year}-${month}-${day} ${hours}:${minutes}`;
-  };
-
-  const buildDefaultChatSessionName = (timestampSec: number = Math.floor(Date.now() / 1000)): string =>
-    `[${formatChatSessionTimestamp(timestampSec)}]`;
-
-  const buildChatSessionTitleFromQuestion = (
-    question: string,
-    timestampSec: number = Math.floor(Date.now() / 1000),
-  ): string => {
-    const compactQuestion = question.replace(/\s+/g, " ").trim();
-    const titleQuestion =
-      compactQuestion.length > 48
-        ? `${compactQuestion.slice(0, 48)}...`
-        : compactQuestion;
-    return `[${formatChatSessionTimestamp(timestampSec)}] ${titleQuestion}`;
-  };
-
-  const normalizeLoadedChatMessages = (
-    messages: AIChatMessage[],
-  ): { messages: AIChatMessage[]; changed: boolean } => {
-    let changed = false;
-    const normalized = messages.map((message, index) => {
-      const nextStatus = message.status === "loading" ? "error" : message.status;
-      const nextCreatedAt = message.created_at || Math.floor(Date.now() / 1000) + index;
-      if (nextStatus !== message.status || nextCreatedAt !== message.created_at) {
-        changed = true;
-      }
-      return {
-        ...message,
-        status: nextStatus,
-        created_at: nextCreatedAt,
-      };
-    });
-    return { messages: normalized, changed };
-  };
-
-  const refreshChatSessionList = useCallback(async (sessionId: string) => {
-    try {
-      const list = await invoke<AIChatSessionMetadata[]>("get_ai_chat_sessions", { sessionId });
-      if (activeSessionIdRef.current === sessionId) {
-        setChatSessions(list);
-      }
-      return list;
-    } catch (e) {
-      console.error("Failed to load AI chat sessions:", e);
-      return [] as AIChatSessionMetadata[];
-    }
+  const clearHighlightedCard = useCallback(() => {
+    setHighlightedCardId(null);
   }, []);
 
-  const saveActiveChatSessionSnapshot = useCallback(async (
-    messagesOverride?: AIChatMessage[],
-    options?: { refreshList?: boolean },
-  ) => {
-    const translationSessionId = activeSessionIdRef.current;
-    const chatSessionId = activeChatSessionIdRef.current;
-    if (!translationSessionId || !chatSessionId) {
-      return;
-    }
-
-    const createdAt = activeChatSessionCreatedAtRef.current || Math.floor(Date.now() / 1000);
-    const updatedAt = Math.floor(Date.now() / 1000);
-    const sessionToSave: AIChatSession = {
-      id: chatSessionId,
-      session_id: translationSessionId,
-      name: activeChatSessionNameRef.current || buildDefaultChatSessionName(),
-      created_at: createdAt,
-      updated_at: updatedAt,
-      messages: messagesOverride ?? chatMessagesRef.current,
-    };
-
-    try {
-      await invoke("save_ai_chat_session_data", { chatSession: sessionToSave });
-      if (options?.refreshList) {
-        await refreshChatSessionList(translationSessionId);
-      }
-    } catch (e) {
-      console.error("Failed to save AI chat session:", e);
-    }
-  }, [refreshChatSessionList]);
-
-  const loadChatSessionById = useCallback(async (chatSessionId: string) => {
-    const chatSession = await invoke<AIChatSession>("load_ai_chat_session_data", {
-      id: chatSessionId,
-    });
-    const normalized = normalizeLoadedChatMessages(chatSession.messages);
-
-    setActiveChatSessionId(chatSession.id);
-    setActiveChatSessionName(chatSession.name);
-    setActiveChatSessionCreatedAt(chatSession.created_at);
-    activeChatSessionIdRef.current = chatSession.id;
-    activeChatSessionNameRef.current = chatSession.name;
-    activeChatSessionCreatedAtRef.current = chatSession.created_at;
-
-    setChatMessages(normalized.messages);
-    chatMessagesRef.current = normalized.messages;
-    setChatInput("");
-    setHighlightedCardId(null);
-    setIsChatSending(false);
-    chatActiveRequestIdRef.current = null;
-
-    if (normalized.changed) {
-      await saveActiveChatSessionSnapshot(normalized.messages, { refreshList: true });
-    }
-  }, [saveActiveChatSessionSnapshot]);
-
-  const activateUnsavedChatDraft = useCallback((
-    translationSessionId: string,
-    createdAtSec: number = Math.floor(Date.now() / 1000),
-  ): AIChatSession => {
-    const draftId = generateId();
-    const draftName = buildDefaultChatSessionName(createdAtSec);
-    const draft: AIChatSession = {
-      id: draftId,
-      session_id: translationSessionId,
-      name: draftName,
-      created_at: createdAtSec,
-      updated_at: createdAtSec,
-      messages: [],
-    };
-
-    setActiveChatSessionId(draft.id);
-    setActiveChatSessionName(draft.name);
-    setActiveChatSessionCreatedAt(draft.created_at);
-    activeChatSessionIdRef.current = draft.id;
-    activeChatSessionNameRef.current = draft.name;
-    activeChatSessionCreatedAtRef.current = draft.created_at;
-    chatActiveRequestIdRef.current = null;
-    setIsChatSending(false);
-    setChatMessages([]);
-    chatMessagesRef.current = [];
-    setChatInput("");
-    setHighlightedCardId(null);
-    return draft;
-  }, []);
-
-  const ensureActiveChatSession = useCallback(() => {
-    const translationSessionId = activeSessionIdRef.current;
-    if (!translationSessionId) {
-      return null;
-    }
-
-    const currentId = activeChatSessionIdRef.current;
-    if (currentId && activeChatSessionCreatedAtRef.current) {
-      return {
-        id: currentId,
-        session_id: translationSessionId,
-        name: activeChatSessionNameRef.current || buildDefaultChatSessionName(),
-        created_at: activeChatSessionCreatedAtRef.current,
-        updated_at: Math.floor(Date.now() / 1000),
-        messages: chatMessagesRef.current,
-      } as AIChatSession;
-    }
-
-    return activateUnsavedChatDraft(translationSessionId);
-  }, [activateUnsavedChatDraft]);
+  const {
+    isChatOpen,
+    setIsChatOpen,
+    chatMessages,
+    setChatMessages,
+    chatMessagesRef,
+    chatInput,
+    setChatInput,
+    chatModelId,
+    setChatModelId,
+    isChatSending,
+    setIsChatSending,
+    chatActiveRequestIdRef,
+    chatSessions,
+    activeChatSessionId,
+    setActiveChatSessionName,
+    activeChatSessionIdRef,
+    activeChatSessionNameRef,
+    clearChatSessionState,
+    saveActiveChatSessionSnapshot,
+    loadChatSessionById,
+    activateUnsavedChatDraft,
+    ensureActiveChatSession,
+  } = useAIChat({
+    activeSessionId,
+    activeSessionIdRef,
+    availableModels: config.ai_models,
+    summaryProvider: config.summary_provider,
+    onResetHighlightedCard: clearHighlightedCard,
+  });
 
   // --- Session Management ---
 
@@ -1079,16 +934,6 @@ function App() {
     isRunningRef.current = isRunning;
   }, [isRunning]);
 
-  useEffect(() => {
-    activeChatSessionIdRef.current = activeChatSessionId;
-    activeChatSessionNameRef.current = activeChatSessionName;
-    activeChatSessionCreatedAtRef.current = activeChatSessionCreatedAt;
-  }, [activeChatSessionId, activeChatSessionName, activeChatSessionCreatedAt]);
-
-  useEffect(() => {
-    chatMessagesRef.current = chatMessages;
-  }, [chatMessages]);
-
   // Handle language change from config
   useEffect(() => {
     if (config.language && i18n.language !== config.language) {
@@ -1099,53 +944,6 @@ function App() {
   useEffect(() => {
     configRef.current = config;
   }, [config]);
-
-  useEffect(() => {
-    setChatModelId(prev => {
-      if (prev && config.ai_models.some(model => model.id === prev)) {
-        return prev;
-      }
-
-      const summaryProvider = config.summary_provider?.trim();
-      if (summaryProvider && config.ai_models.some(model => model.id === summaryProvider)) {
-        return summaryProvider;
-      }
-
-      return config.ai_models[0]?.id || "";
-    });
-  }, [config.ai_models, config.summary_provider]);
-
-  useEffect(() => {
-    chatActiveRequestIdRef.current = null;
-    setIsChatSending(false);
-
-    const loadChatSessionsForActiveSession = async () => {
-      if (!activeSessionId) {
-        setChatSessions([]);
-        setActiveChatSessionId(null);
-        setActiveChatSessionName("");
-        setActiveChatSessionCreatedAt(0);
-        activeChatSessionIdRef.current = null;
-        activeChatSessionNameRef.current = "";
-        activeChatSessionCreatedAtRef.current = 0;
-        setChatMessages([]);
-        chatMessagesRef.current = [];
-        setChatInput("");
-        setHighlightedCardId(null);
-        return;
-      }
-
-      activateUnsavedChatDraft(activeSessionId);
-
-      try {
-        await refreshChatSessionList(activeSessionId);
-      } catch (e) {
-        console.error("Failed to load AI chat sessions:", e);
-      }
-    };
-
-    void loadChatSessionsForActiveSession();
-  }, [activeSessionId, activateUnsavedChatDraft, refreshChatSessionList]);
 
   useEffect(() => {
     return () => {
@@ -2314,17 +2112,9 @@ function App() {
   };
 
   const handleStartNewChatSession = () => {
-    chatActiveRequestIdRef.current = null;
-    setIsChatSending(false);
-
     const translationSessionId = activeSessionIdRef.current;
     if (!translationSessionId) {
-      setChatSessions([]);
-      setActiveChatSessionId(null);
-      setActiveChatSessionName("");
-      setActiveChatSessionCreatedAt(0);
-      setChatMessages([]);
-      chatMessagesRef.current = [];
+      clearChatSessionState();
       addToast("error", t("chat.sessionRequired"));
       return;
     }
