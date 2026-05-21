@@ -1157,6 +1157,91 @@ impl TranslationService {
         .await
     }
 
+    async fn send_copilot_messages_stream<F>(
+        &self,
+        messages: &[ChatMessage],
+        github_token: &str,
+        model_override: Option<&str>,
+        proxy_config: &ProxyConfig,
+        on_chunk: F,
+        max_tokens: Option<u32>,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        let token = self.get_copilot_token(github_token, proxy_config).await?;
+
+        let client = self.get_or_create_client(proxy_config)?;
+        let url = "https://api.githubcopilot.com/chat/completions";
+
+        let model = model_override.unwrap_or(&self.config.copilot_model);
+        let request = ChatRequest {
+            model: model.to_string(),
+            messages: messages.to_vec(),
+            temperature: 0.1,
+            stream: Some(true),
+            max_tokens,
+        };
+
+        debug!(
+            method = "POST",
+            url = %url,
+            model = %model,
+            message_count = request.messages.len(),
+            "Sending Copilot API streaming messages request"
+        );
+
+        let start = std::time::Instant::now();
+        let response = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("User-Agent", "GitHubCopilot/1.155.0")
+            .header("Editor-Version", "vscode/1.85.0")
+            .header("Copilot-Integration-Id", "vscode-chat")
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                if proxy_config.is_active() {
+                    let err = anyhow::anyhow!(
+                        "Network request failed via proxy {}: {} (URL: {})",
+                        proxy_config.url.as_deref().unwrap_or("?"),
+                        e,
+                        url
+                    );
+                    error!("{}", err);
+                    err
+                } else {
+                    let err =
+                        anyhow::anyhow!("Network request failed (no proxy): {} (URL: {})", e, url);
+                    error!("{}", err);
+                    err
+                }
+            })
+            .context("Failed to send streaming messages request to Copilot")?;
+
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received Copilot API streaming messages response headers"
+        );
+
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                error_body = %text,
+                "Copilot API streaming messages error"
+            );
+            anyhow::bail!("Copilot API error {}: {}", status, text);
+        }
+
+        let raw = Self::consume_sse_chat_response(response, on_chunk).await?;
+        Ok(Self::clean_thinking_content(&raw))
+    }
+
     async fn send_copilot_request_stream<F>(
         &self,
         system_prompt: &str,
@@ -1666,6 +1751,94 @@ impl TranslationService {
         .await
     }
 
+    async fn send_openai_messages_stream<F>(
+        &self,
+        endpoint: &ResolvedAIModel,
+        messages: &[ChatMessage],
+        on_chunk: F,
+        max_tokens: Option<u32>,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        if endpoint.api_key.trim().is_empty() {
+            anyhow::bail!(
+                "OpenAI API key not configured for endpoint '{}'",
+                endpoint.name
+            );
+        }
+
+        let client = self.get_or_create_client(&endpoint.proxy)?;
+        let url = format!(
+            "{}/chat/completions",
+            endpoint.base_url.trim_end_matches('/')
+        );
+
+        let request = ChatRequest {
+            model: endpoint.model.clone(),
+            messages: messages.to_vec(),
+            temperature: 0.3,
+            stream: Some(true),
+            max_tokens,
+        };
+
+        let api_key_preview = if endpoint.api_key.chars().count() >= 4 {
+            format!(
+                "{}...",
+                endpoint.api_key.chars().take(4).collect::<String>()
+            )
+        } else {
+            "***".to_string()
+        };
+
+        debug!(
+            method = "POST",
+            url = %url,
+            api_key = %api_key_preview,
+            model = %endpoint.model,
+            message_count = request.messages.len(),
+            "Sending OpenAI API streaming messages request"
+        );
+
+        let start = std::time::Instant::now();
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", endpoint.api_key))
+            .header("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send streaming messages request to OpenAI")?;
+
+        let status = response.status();
+        debug!(
+            status = %status,
+            duration_ms = %start.elapsed().as_millis(),
+            "Received OpenAI API streaming messages response headers"
+        );
+
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            error!(
+                status = %status,
+                error_body = %error_text,
+                "OpenAI API streaming messages error"
+            );
+            return Err(anyhow::anyhow!(
+                "Translation failed: {} - {}",
+                status,
+                error_text
+            ));
+        }
+
+        let raw = Self::consume_sse_chat_response(response, on_chunk).await?;
+        Ok(Self::clean_thinking_content(&raw))
+    }
+
     async fn send_openai_request_stream<F>(
         &self,
         endpoint: &ResolvedAIModel,
@@ -1798,12 +1971,11 @@ impl TranslationService {
         lines.join("\n")
     }
 
-    pub async fn chat_with_captions(
+    fn build_caption_chat_messages(
         &self,
         question: &str,
         cards: &[CaptionChatCard],
-        provider_id: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<ChatMessage>> {
         let normalized_question = question.trim();
         if normalized_question.is_empty() {
             anyhow::bail!("Question cannot be empty");
@@ -1834,6 +2006,17 @@ impl TranslationService {
             role: "user".to_string(),
             content: format!("QUESTION:\n{}", normalized_question),
         });
+
+        Ok(messages)
+    }
+
+    pub async fn chat_with_captions(
+        &self,
+        question: &str,
+        cards: &[CaptionChatCard],
+        provider_id: &str,
+    ) -> Result<String> {
+        let messages = self.build_caption_chat_messages(question, cards)?;
 
         if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
             if let Some(channel) = self
@@ -1885,6 +2068,108 @@ impl TranslationService {
 
         self.send_openai_messages(&endpoint, &messages, Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS))
             .await
+    }
+
+    pub async fn chat_with_captions_stream<F>(
+        &self,
+        question: &str,
+        cards: &[CaptionChatCard],
+        provider_id: &str,
+        on_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        let messages = self.build_caption_chat_messages(question, cards)?;
+
+        let stream_result =
+            if let Some(model) = self.config.ai_models.iter().find(|m| m.id == provider_id) {
+                if let Some(channel) = self
+                    .config
+                    .ai_channels
+                    .iter()
+                    .find(|c| c.id == model.channel_id && c.channel_type == "copilot")
+                {
+                    let github_token = channel
+                        .token
+                        .as_ref()
+                        .context("Copilot channel not logged in")?;
+                    self.send_copilot_messages_stream(
+                        &messages,
+                        github_token,
+                        Some(&model.name),
+                        &channel.proxy,
+                        on_chunk,
+                        Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS),
+                    )
+                    .await
+                } else {
+                    let endpoint_id = if provider_id.starts_with("openai:") {
+                        provider_id.strip_prefix("openai:").unwrap_or("default")
+                    } else {
+                        provider_id
+                    };
+
+                    let endpoint = self.resolve_ai_model(endpoint_id)?;
+                    self.send_openai_messages_stream(
+                        &endpoint,
+                        &messages,
+                        on_chunk,
+                        Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS),
+                    )
+                    .await
+                }
+            } else if provider_id == "copilot" {
+                let github_token = self
+                    .config
+                    .github_token
+                    .as_ref()
+                    .context("GitHub Copilot not logged in")?;
+                self.send_copilot_messages_stream(
+                    &messages,
+                    github_token,
+                    None,
+                    &self.config.copilot_proxy,
+                    on_chunk,
+                    Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS),
+                )
+                .await
+            } else {
+                let endpoint_id = if provider_id.starts_with("openai:") {
+                    provider_id.strip_prefix("openai:").unwrap_or("default")
+                } else {
+                    provider_id
+                };
+
+                let endpoint = self.resolve_ai_model(endpoint_id)?;
+                self.send_openai_messages_stream(
+                    &endpoint,
+                    &messages,
+                    on_chunk,
+                    Some(CAPTION_CHAT_MAX_OUTPUT_TOKENS),
+                )
+                .await
+            };
+
+        match stream_result {
+            Ok(response) => Ok(response),
+            Err(stream_error) => {
+                warn!(
+                    provider_id = %provider_id,
+                    error = %stream_error,
+                    "AI chat streaming failed, retrying with non-stream request"
+                );
+                self.chat_with_captions(question, cards, provider_id)
+                    .await
+                    .map_err(|fallback_error| {
+                        anyhow::anyhow!(
+                            "AI chat stream failed: {}. Fallback non-stream request failed: {}",
+                            stream_error,
+                            fallback_error
+                        )
+                    })
+            }
+        }
     }
 
     fn build_summary_system_prompt(&self) -> String {

@@ -1,10 +1,30 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { TFunction } from "i18next";
 import type { AIChatMessage, AIChatSession, CaptionChatCardInput } from "../types";
 import { generateId } from "../utils/textUtils";
 import type { AddToast } from "./useToasts";
 import { buildChatSessionTitleFromQuestion } from "./useAIChat";
+
+const CHAT_TYPEWRITER_INTERVAL_MS = 16;
+const CHAT_TYPEWRITER_CHARS_PER_TICK = 3;
+
+type ChatStreamEvent = {
+  request_id: string;
+  status: "chunk" | "done" | "error";
+  chunk?: string | null;
+  full_text?: string | null;
+  error?: string | null;
+};
+
+type ChatStreamState = {
+  requestId: string | null;
+  assistantMessageId: string | null;
+  typingQueue: string;
+  streamDone: boolean;
+  finalText: string;
+};
 
 export type UseChatActionsOptions = {
   chatInput: string;
@@ -70,6 +90,184 @@ export function useChatActions({
   addToast,
   t,
 }: UseChatActionsOptions): UseChatActionsResult {
+  const typingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chatStreamStateRef = useRef<ChatStreamState>({
+    requestId: null,
+    assistantMessageId: null,
+    typingQueue: "",
+    streamDone: false,
+    finalText: "",
+  });
+
+  const stopChatTypewriter = useCallback(() => {
+    if (typingTimerRef.current) {
+      clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+  }, []);
+
+  const applyAssistantMessageUpdate = useCallback(
+    (
+      assistantMessageId: string,
+      update: (message: AIChatMessage) => AIChatMessage,
+    ): AIChatMessage[] => {
+      const nextMessages = chatMessagesRef.current.map(message =>
+        message.id === assistantMessageId ? update(message) : message,
+      );
+      setChatMessages(nextMessages);
+      chatMessagesRef.current = nextMessages;
+      return nextMessages;
+    },
+    [chatMessagesRef, setChatMessages],
+  );
+
+  const finishChatStreamIfReady = useCallback(() => {
+    const streamState = chatStreamStateRef.current;
+    if (
+      !streamState.requestId
+      || !streamState.assistantMessageId
+      || !streamState.streamDone
+      || streamState.typingQueue.length > 0
+    ) {
+      return;
+    }
+
+    const finishedRequestId = streamState.requestId;
+    const assistantMessageId = streamState.assistantMessageId;
+    const finalText = streamState.finalText;
+    stopChatTypewriter();
+
+    const nextMessages = applyAssistantMessageUpdate(assistantMessageId, message => ({
+      ...message,
+      content: finalText || message.content,
+      status: "done",
+    }));
+
+    chatStreamStateRef.current = {
+      requestId: null,
+      assistantMessageId: null,
+      typingQueue: "",
+      streamDone: false,
+      finalText: "",
+    };
+
+    if (chatActiveRequestIdRef.current === finishedRequestId) {
+      chatActiveRequestIdRef.current = null;
+      setIsChatSending(false);
+    }
+    void saveActiveChatSessionSnapshot(nextMessages, { refreshList: true });
+  }, [
+    applyAssistantMessageUpdate,
+    chatActiveRequestIdRef,
+    saveActiveChatSessionSnapshot,
+    setIsChatSending,
+    stopChatTypewriter,
+  ]);
+
+  const ensureChatTypewriterRunning = useCallback(() => {
+    if (typingTimerRef.current) {
+      return;
+    }
+
+    typingTimerRef.current = setInterval(() => {
+      const streamState = chatStreamStateRef.current;
+      if (streamState.typingQueue.length === 0) {
+        finishChatStreamIfReady();
+        return;
+      }
+
+      const take = Math.min(CHAT_TYPEWRITER_CHARS_PER_TICK, streamState.typingQueue.length);
+      const nextChunk = streamState.typingQueue.slice(0, take);
+      streamState.typingQueue = streamState.typingQueue.slice(take);
+
+      if (streamState.assistantMessageId) {
+        applyAssistantMessageUpdate(streamState.assistantMessageId, message => ({
+          ...message,
+          content: message.content + nextChunk,
+        }));
+      }
+
+      if (streamState.typingQueue.length === 0) {
+        finishChatStreamIfReady();
+      }
+    }, CHAT_TYPEWRITER_INTERVAL_MS);
+  }, [applyAssistantMessageUpdate, finishChatStreamIfReady]);
+
+  const failChatStream = useCallback(
+    (assistantMessageId: string, errorMessage: string, requestId: string) => {
+      stopChatTypewriter();
+      chatStreamStateRef.current = {
+        requestId: null,
+        assistantMessageId: null,
+        typingQueue: "",
+        streamDone: false,
+        finalText: "",
+      };
+
+      const nextMessages = applyAssistantMessageUpdate(assistantMessageId, message => ({
+        ...message,
+        content: errorMessage,
+        status: "error",
+      }));
+
+      if (chatActiveRequestIdRef.current === requestId) {
+        chatActiveRequestIdRef.current = null;
+        setIsChatSending(false);
+      }
+      void saveActiveChatSessionSnapshot(nextMessages, { refreshList: true });
+    },
+    [
+      applyAssistantMessageUpdate,
+      chatActiveRequestIdRef,
+      saveActiveChatSessionSnapshot,
+      setIsChatSending,
+      stopChatTypewriter,
+    ],
+  );
+
+  useEffect(() => {
+    const unlistenChatStream = listen<ChatStreamEvent>("chat-stream", event => {
+      const payload = event.payload;
+      const streamState = chatStreamStateRef.current;
+      if (!streamState.requestId || payload.request_id !== streamState.requestId) {
+        return;
+      }
+
+      if (payload.status === "chunk") {
+        if (payload.chunk) {
+          streamState.typingQueue += payload.chunk;
+          ensureChatTypewriterRunning();
+        }
+        return;
+      }
+
+      if (payload.status === "done") {
+        streamState.finalText = payload.full_text ?? streamState.finalText;
+        streamState.streamDone = true;
+        finishChatStreamIfReady();
+        return;
+      }
+
+      if (payload.status === "error" && streamState.assistantMessageId) {
+        const errorMessage = payload.error
+          ? `${t("chat.errorPrefix")} ${payload.error}`
+          : t("chat.errorPrefix");
+        failChatStream(streamState.assistantMessageId, errorMessage, payload.request_id);
+      }
+    });
+
+    return () => {
+      unlistenChatStream.then(f => f());
+      stopChatTypewriter();
+    };
+  }, [
+    ensureChatTypewriterRunning,
+    failChatStream,
+    finishChatStreamIfReady,
+    stopChatTypewriter,
+    t,
+  ]);
+
   const handleSendChatMessage = useCallback(async () => {
     if (isChatSending) return;
 
@@ -122,47 +320,31 @@ export function useChatActions({
     setChatMessages(queuedMessages);
     chatMessagesRef.current = queuedMessages;
     chatActiveRequestIdRef.current = requestId;
+    stopChatTypewriter();
+    chatStreamStateRef.current = {
+      requestId,
+      assistantMessageId,
+      typingQueue: "",
+      streamDone: false,
+      finalText: "",
+    };
     setIsChatSending(true);
     await saveActiveChatSessionSnapshot(queuedMessages);
 
     try {
-      const response = await invoke<string>("chat_with_captions", {
+      await invoke("chat_with_captions_stream", {
         providerId,
         question,
         cards: cardsSnapshot,
+        requestId,
       });
-
-      if (chatActiveRequestIdRef.current !== requestId) {
-        return;
-      }
-
-      const nextMessages = chatMessagesRef.current.map(message =>
-        message.id === assistantMessageId
-          ? { ...message, content: response, status: "done" as const }
-          : message,
-      );
-      setChatMessages(nextMessages);
-      chatMessagesRef.current = nextMessages;
-      await saveActiveChatSessionSnapshot(nextMessages, { refreshList: true });
     } catch (err) {
       if (chatActiveRequestIdRef.current !== requestId) {
         return;
       }
 
       const errorMessage = `${t("chat.errorPrefix")} ${String(err)}`;
-      const nextMessages = chatMessagesRef.current.map(message =>
-        message.id === assistantMessageId
-          ? { ...message, content: errorMessage, status: "error" as const }
-          : message,
-      );
-      setChatMessages(nextMessages);
-      chatMessagesRef.current = nextMessages;
-      await saveActiveChatSessionSnapshot(nextMessages, { refreshList: true });
-    } finally {
-      if (chatActiveRequestIdRef.current === requestId) {
-        chatActiveRequestIdRef.current = null;
-        setIsChatSending(false);
-      }
+      failChatStream(assistantMessageId, errorMessage, requestId);
     }
   }, [
     activeChatSessionNameRef,
@@ -174,12 +356,14 @@ export function useChatActions({
     chatMessagesRef,
     chatModelId,
     ensureActiveChatSession,
+    failChatStream,
     isChatSending,
     saveActiveChatSessionSnapshot,
     setActiveChatSessionName,
     setChatInput,
     setChatMessages,
     setIsChatSending,
+    stopChatTypewriter,
     t,
   ]);
 
@@ -187,6 +371,14 @@ export function useChatActions({
     if (!isChatSending) return;
 
     chatActiveRequestIdRef.current = null;
+    stopChatTypewriter();
+    chatStreamStateRef.current = {
+      requestId: null,
+      assistantMessageId: null,
+      typingQueue: "",
+      streamDone: false,
+      finalText: "",
+    };
     setIsChatSending(false);
 
     const nextMessages = chatMessagesRef.current.map(message =>
@@ -204,6 +396,7 @@ export function useChatActions({
     saveActiveChatSessionSnapshot,
     setChatMessages,
     setIsChatSending,
+    stopChatTypewriter,
     t,
   ]);
 

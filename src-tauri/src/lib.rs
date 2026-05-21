@@ -55,6 +55,15 @@ pub struct SummaryStreamEvent {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatStreamEvent {
+    pub request_id: String,
+    pub status: String, // "chunk" | "done" | "error"
+    pub chunk: Option<String>,
+    pub full_text: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Proxy configuration for frontend
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ProxyConfigDTO {
@@ -776,6 +785,77 @@ async fn chat_with_captions(
         Ok(response) => Ok(response),
         Err(e) => Err(AppError::Runtime(format!("AI chat error: {}", e))),
     }
+}
+
+#[tauri::command]
+async fn chat_with_captions_stream(
+    provider_id: String,
+    question: String,
+    cards: Vec<CaptionChatCard>,
+    request_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let svc = get_or_init_translation_service(&state).map_err(AppError::Runtime)?;
+    let app_for_task = app.clone();
+    let provider_id_for_task = provider_id.clone();
+    let question_for_task = question.clone();
+    let cards_for_task = cards.clone();
+    let request_id_for_task = request_id.clone();
+
+    tokio::spawn(async move {
+        let chunk_request_id = request_id_for_task.clone();
+        let result = svc
+            .chat_with_captions_stream(
+                &question_for_task,
+                &cards_for_task,
+                &provider_id_for_task,
+                move |chunk| {
+                    app_for_task
+                        .emit(
+                            "chat-stream",
+                            ChatStreamEvent {
+                                request_id: chunk_request_id.clone(),
+                                status: "chunk".to_string(),
+                                chunk: Some(chunk.to_string()),
+                                full_text: None,
+                                error: None,
+                            },
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to emit chat chunk: {}", e))
+                },
+            )
+            .await;
+
+        match result {
+            Ok(response) => {
+                let _ = app.emit(
+                    "chat-stream",
+                    ChatStreamEvent {
+                        request_id,
+                        status: "done".to_string(),
+                        chunk: None,
+                        full_text: Some(response),
+                        error: None,
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "chat-stream",
+                    ChatStreamEvent {
+                        request_id,
+                        status: "error".to_string(),
+                        chunk: None,
+                        full_text: None,
+                        error: Some(format!("AI chat error: {}", e)),
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(())
 }
 
 /// Start caption watcher - simplified to only emit raw text
@@ -1570,6 +1650,7 @@ pub fn run() {
             summarize_session_by_id,
             summarize_session_by_id_stream,
             chat_with_captions,
+            chat_with_captions_stream,
             set_always_on_top,
             create_session,
             save_session_data,

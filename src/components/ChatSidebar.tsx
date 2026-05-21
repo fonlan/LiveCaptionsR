@@ -342,7 +342,7 @@ export function ChatSidebar({
                   className={`max-w-[92%] rounded-2xl px-3.5 py-2.5 text-sm leading-6 border select-text ${message.role === "user" ? "bg-primary-dim border-primary/30 text-text-primary" : "bg-card border-border text-text-primary"} ${message.status === "error" ? "border-error/70" : ""}`}
                 >
                   {message.role === "assistant" ? (
-                    message.status === "loading" ? (
+                    message.status === "loading" && message.content.trim().length === 0 ? (
                       <div className="text-text-secondary flex items-center gap-2 select-none">
                         <span className="spinner inline-block" />
                         <span>{t("chat.thinking")}</span>
@@ -352,6 +352,9 @@ export function ChatSidebar({
                         <Markdown remarkPlugins={[remarkGfm, remarkCardReference]} components={markdownComponents}>
                           {message.content}
                         </Markdown>
+                        {message.status === "loading" && (
+                          <span className="spinner inline-block ml-1 align-[-2px]" />
+                        )}
                       </div>
                     )
                   ) : (
